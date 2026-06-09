@@ -13,6 +13,9 @@ It consists of
 - email address
 - display name
 - possibly empty list of groups
+- possibly linked google account to authenticate against
+
+Not every actor can authenticate against the backend.
 
 ### Groups
 
@@ -30,6 +33,8 @@ An issue consists of
 - assigned / responsible actors
 - attached artifacts
 - visibility by group (question: inheritance of visibility?)
+- open / closed / completed
+- attached checks
 
 ### Artifacts
 
@@ -37,6 +42,11 @@ An artifact is something attached to an issue, e.g. a pull request on github, a 
 on a github repository.
 
 Which artifacts are possible should be extensible by the user.
+
+### Checks
+
+A check is a condition on the issue and its attached artifacts: For example if a certain
+CI run passes on an attached branch. This also needs to be extensible.
 
 ## Technical background
 
@@ -64,6 +74,7 @@ Both components need to be extensible (by a plugin system?), to support new arti
 ### Backend
 
 - Import: e.g. github issues, google docs by line
+- Future: authentication against other sources, e.g., an internal password
 
 ### Frontend
 
