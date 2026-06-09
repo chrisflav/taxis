@@ -1,6 +1,12 @@
 name = "issues"
 version = "0.1.0"
 defaultTargets = ["issues"]
+testDriver = "test"
+
+[[require]]
+name = "leansqlite"
+git = "https://github.com/leanprover/leansqlite"
+rev = "v4.31.0"
 
 [[lean_lib]]
 name = "Issues"
@@ -8,3 +14,7 @@ name = "Issues"
 [[lean_exe]]
 name = "issues"
 root = "Main"
+
+[[lean_exe]]
+name = "test"
+root = "Tests"

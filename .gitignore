@@ -1,1 +1,6 @@
 /.lake
+/issues.sqlite
+/issues.sqlite-wal
+/issues.sqlite-shm
+/.env
+.env.local
