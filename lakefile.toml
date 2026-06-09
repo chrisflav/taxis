@@ -1,0 +1,10 @@
+name = "issues"
+version = "0.1.0"
+defaultTargets = ["issues"]
+
+[[lean_lib]]
+name = "Issues"
+
+[[lean_exe]]
+name = "issues"
+root = "Main"
