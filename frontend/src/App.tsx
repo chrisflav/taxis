@@ -59,7 +59,11 @@ export function App() {
         <div className="spacer" />
         {meLoaded && <LoginBar me={me} onChange={refreshMe} />}
       </header>
-      <main>{view}</main>
+      {/* Keying on the auth identity remounts the view whenever the user signs in or out, so it
+          re-fetches and never shows data from the previous session. */}
+      <main key={me ? `actor-${me.id}` : "anon"}>
+        {meLoaded ? view : <div className="muted" style={{ padding: 20 }}>Loading…</div>}
+      </main>
     </>
   );
 }
