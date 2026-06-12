@@ -194,3 +194,20 @@ tr.issue-row:hover { background: var(--panel-2); cursor: pointer; }
 .graph-card-title { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .graph-card-line { display: flex; gap: 4px; flex-wrap: wrap; overflow: hidden; align-items: center; }
 .graph-edge { stroke: var(--muted); stroke-width: 1.5; fill: none; }
+
+.spacer { flex: 1; }
+
+/* Pagination bar */
+.pagination { margin-top: 10px; gap: 10px; }
+.pagination select { padding: 4px 6px; }
+
+/* Comments */
+.comment { padding: 10px 0; border-bottom: 1px solid var(--border); }
+.comment:last-of-type { border-bottom: none; }
+
+/* API token secret */
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.token-secret {
+  flex: 1; overflow-x: auto; white-space: nowrap; background: var(--panel-2);
+  border: 1px solid var(--border); border-radius: var(--radius); padding: 6px 10px;
+}

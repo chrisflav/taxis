@@ -72,7 +72,8 @@ structure IssueInput where
   state : IssueState := .open
   locked : Bool := false
   labels : Array LabelId := #[]
-  parents : Array IssueId := #[]
+  parent : Option IssueId := none
+  dependencies : Array IssueId := #[]
   assignees : Array ActorId := #[]
   visibility : Array GroupId := #[]
 deriving ToJson
@@ -84,21 +85,36 @@ instance : FromJson IssueInput where
     state := ← jsonFieldD? j "state" .open
     locked := ← jsonFieldD? j "locked" false
     labels := ← jsonFieldD? j "labels" #[]
-    parents := ← jsonFieldD? j "parents" #[]
+    parent := ← jsonFieldOpt? j "parent"
+    dependencies := ← jsonFieldD? j "dependencies" #[]
     assignees := ← jsonFieldD? j "assignees" #[]
     visibility := ← jsonFieldD? j "visibility" #[] }
 
-/-- Body for updating an issue; absent scalar/relation fields are left unchanged. -/
+/-- Body for updating an issue; absent scalar/relation fields are left unchanged. `parent` is
+    three-valued: absent leaves it unchanged, `null` clears it, a value sets it. -/
 structure IssueUpdate where
   title : Option String := none
   description : Option String := none
   state : Option IssueState := none
   locked : Option Bool := none
   labels : Option (Array LabelId) := none
-  parents : Option (Array IssueId) := none
+  parent : Option (Option IssueId) := none
+  dependencies : Option (Array IssueId) := none
   assignees : Option (Array ActorId) := none
   visibility : Option (Array GroupId) := none
-deriving ToJson, FromJson
+deriving ToJson
+
+instance : FromJson IssueUpdate where
+  fromJson? j := do pure {
+    title := ← jsonFieldOpt? j "title"
+    description := ← jsonFieldOpt? j "description"
+    state := ← jsonFieldOpt? j "state"
+    locked := ← jsonFieldOpt? j "locked"
+    labels := ← jsonFieldOpt? j "labels"
+    parent := ← jsonFieldTri? j "parent"
+    dependencies := ← jsonFieldOpt? j "dependencies"
+    assignees := ← jsonFieldOpt? j "assignees"
+    visibility := ← jsonFieldOpt? j "visibility" }
 
 /-- Body for attaching an artifact to an issue. -/
 structure ArtifactInput where
@@ -119,5 +135,19 @@ instance : FromJson CheckInput where
   fromJson? j := do pure {
     kind := ← jsonField? j "kind"
     config := ← jsonFieldD? j "config" .null }
+
+/-- Body for posting a comment on an issue. -/
+structure CommentInput where
+  body : String
+
+instance : FromJson CommentInput where
+  fromJson? j := do pure { body := ← jsonField? j "body" }
+
+/-- Body for creating an API token. -/
+structure TokenInput where
+  name : String := ""
+
+instance : FromJson TokenInput where
+  fromJson? j := do pure { name := ← jsonFieldD? j "name" "" }
 
 end Issues

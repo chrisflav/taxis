@@ -1,6 +1,9 @@
 import type {
   Actor,
+  ApiToken,
+  ApiTokenCreated,
   Check,
+  Comment,
   GraphData,
   Group,
   Issue,
@@ -76,6 +79,18 @@ export const api = {
   runCheck: (id: number) => req<Check>(`/checks/${id}/run`, { method: "POST" }),
   deleteCheck: (id: number) => req<unknown>(`/checks/${id}`, { method: "DELETE" }),
 
+  addComment: (issueId: number, body: string) =>
+    req<Comment>(`/issues/${issueId}/comments`, {
+      method: "POST",
+      body: JSON.stringify({ body }),
+    }),
+  deleteComment: (id: number) => req<unknown>(`/comments/${id}`, { method: "DELETE" }),
+
+  listTokens: () => req<ApiToken[]>("/me/tokens"),
+  createToken: (name: string) =>
+    req<ApiTokenCreated>("/me/tokens", { method: "POST", body: JSON.stringify({ name }) }),
+  deleteToken: (id: number) => req<unknown>(`/me/tokens/${id}`, { method: "DELETE" }),
+
   listActors: () => req<Actor[]>("/actors"),
   createActor: (body: Record<string, unknown>) =>
     req<Actor>("/actors", { method: "POST", body: JSON.stringify(body) }),
@@ -85,6 +100,9 @@ export const api = {
   listGroups: () => req<Group[]>("/groups"),
   createGroup: (body: Record<string, unknown>) =>
     req<Group>("/groups", { method: "POST", body: JSON.stringify(body) }),
+  updateGroup: (id: number, body: Record<string, unknown>) =>
+    req<Group>(`/groups/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteGroup: (id: number) => req<unknown>(`/groups/${id}`, { method: "DELETE" }),
 
   listLabels: () => req<Label[]>("/labels"),
   createLabel: (body: Record<string, unknown>) =>

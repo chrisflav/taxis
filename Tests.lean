@@ -51,10 +51,13 @@ def main : IO Unit := do
   check "label color stored" (bug.color == "#e11d48")
   check "label default color" ((← createLabel db { name := "chore" }).color == "#6b7280")
   let parent ← createIssue db { title := "Parent" }
-  let child ← createIssue db { title := "Child", parents := #[parent.id], assignees := #[a.id], labels := #[bug.id] }
-  check "child has parent" (child.parents == #[parent.id])
+  let dep ← createIssue db { title := "Dependency" }
+  let child ← createIssue db { title := "Child", parent := some parent.id, dependencies := #[dep.id], assignees := #[a.id], labels := #[bug.id] }
+  check "child has parent" (child.parent == some parent.id)
+  check "child has dependency" (child.dependencies == #[dep.id])
   check "child has assignee" (child.assignees == #[a.id])
   check "child has label" (child.labels == #[bug.id])
+  check "dependency edge recorded" ((← allDependencyEdges db).any (fun (i, d) => i.val == child.id.val && d.val == dep.id.val))
   check "label lookup by name" ((← getOrCreateLabelByName db "bug") == bug.id)
 
   -- locking
@@ -70,17 +73,22 @@ def main : IO Unit := do
   check "locked allows assignee change" lockAssignee
   let _ ← updateIssue db child.id { locked := some false }
 
-  -- cycle detection
+  -- parent cycle detection (child's parent is `parent`; making `parent`'s parent `child` cycles)
   let cyclic ←
-    try let _ ← updateIssue db parent.id { parents := some #[child.id] }; pure false
+    try let _ ← updateIssue db parent.id { parent := some (some child.id) }; pure false
     catch _ => pure true
-  check "cycle rejected" cyclic
+  check "parent cycle rejected" cyclic
+
+  -- clearing the parent via an explicit null
+  let _ ← updateIssue db child.id { parent := some none }
+  check "parent cleared" (((← getIssue db child.id).bind (·.parent)).isNone)
+  let _ ← updateIssue db child.id { parent := some (some parent.id) }
 
   -- search + filter
   let found ← listIssues db none none (some "Child") none
   check "search finds child" (found.any (·.title == "Child"))
   let openOnly ← listIssues db (some .open) none none none
-  check "state filter" (openOnly.size == 2)
+  check "state filter" (openOnly.size == 3)
 
   -- artifacts + checks
   let art ← createArtifact db child.id { kind := "github-branch", payload := Json.mkObj [("owner", "o"), ("repo", "r"), ("branch", "main")] }
@@ -90,13 +98,41 @@ def main : IO Unit := do
   recordCheckResult db chk.id .passing (some "ok")
   check "check result recorded" (((← getCheck db chk.id).map (·.status)) == some .passing)
 
+  -- comments
+  let cmt ← createComment db child.id (some a.id) { body := "first comment" }
+  check "comment created" (cmt.body == "first comment")
+  check "comment author name" (cmt.authorName == some "Alice")
+  let _ ← createComment db child.id none { body := "system note" }
+  check "comments listed oldest-first" ((← issueComments db child.id).size == 2)
+  check "comment deleted" (← deleteComment db cmt.id)
+  check "one comment remains" ((← issueComments db child.id).size == 1)
+
+  -- api tokens
+  let secret := "issues_pat_deadbeef"
+  let tok ← createToken db a.id "ci-bot" (Crypto.sha256Hex secret) "issues_pat_dead"
+  check "token created" (tok.name == "ci-bot")
+  check "token resolves actor" (((← actorForTokenHash db (Crypto.sha256Hex secret)).map (·.id)) == some a.id)
+  check "wrong token hash resolves nobody" ((← actorForTokenHash db (Crypto.sha256Hex "nope")).isNone)
+  check "token delete scoped to owner" (!(← deleteToken db tok.id ⟨999⟩))
+  check "token deleted by owner" (← deleteToken db tok.id a.id)
+
   -- delete cascade
   check "delete issue" (← deleteIssue db child.id)
   check "artifacts gone after cascade" ((← issueArtifacts db child.id).isEmpty)
+  check "comments gone after cascade" ((← issueComments db child.id).isEmpty)
+
+  IO.println "SHA-256"
+  -- NIST test vectors.
+  check "sha256 empty" (Crypto.sha256Hex "" == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+  check "sha256 abc" (Crypto.sha256Hex "abc" == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+  check "sha256 long"
+    (Crypto.sha256Hex "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
+      == "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1")
 
   IO.println "Plugin registry"
   check "github-branch registered" ((← Plugins.artifactHandler? "github-branch").isSome)
   check "github-ci registered" ((← Plugins.checkHandler? "github-ci").isSome)
+  check "json-endpoint registered" ((← Plugins.checkHandler? "json-endpoint").isSome)
   check "unknown kind absent" ((← Plugins.artifactHandler? "nope").isNone)
   match ← Plugins.artifactHandler? "github-branch" with
   | some h =>

@@ -67,21 +67,30 @@ private def schemas : Json := obj [
   ("CheckInput", schemaObj [("kind", typ "string"), ("config", typ "object")] ["kind"]),
   ("Issue", schemaObj [("id", typ "integer"), ("title", typ "string"), ("description", typ "string"),
     ("state", enumStr ["open", "closed", "completed"]), ("locked", typ "boolean"),
-    ("labels", arrayOf (typ "integer")), ("parents", arrayOf (typ "integer")),
+    ("labels", arrayOf (typ "integer")), ("parent", nullable "integer"),
+    ("dependencies", arrayOf (typ "integer")),
     ("assignees", arrayOf (typ "integer")), ("artifacts", arrayOf (typ "integer")),
     ("visibility", arrayOf (typ "integer")), ("checks", arrayOf (typ "integer")),
     ("createdAt", typ "integer"), ("updatedAt", typ "integer")]),
   ("IssueInput", schemaObj [("title", typ "string"), ("description", typ "string"),
     ("state", enumStr ["open", "closed", "completed"]), ("locked", typ "boolean"),
-    ("labels", arrayOf (typ "integer")), ("parents", arrayOf (typ "integer")),
+    ("labels", arrayOf (typ "integer")), ("parent", nullable "integer"),
+    ("dependencies", arrayOf (typ "integer")),
     ("assignees", arrayOf (typ "integer")), ("visibility", arrayOf (typ "integer"))] ["title"]),
   ("IssueUpdate", schemaObj [("title", typ "string"), ("description", typ "string"),
     ("state", enumStr ["open", "closed", "completed"]), ("locked", typ "boolean"),
-    ("labels", arrayOf (typ "integer")), ("parents", arrayOf (typ "integer")),
+    ("labels", arrayOf (typ "integer")), ("parent", nullable "integer"),
+    ("dependencies", arrayOf (typ "integer")),
     ("assignees", arrayOf (typ "integer")), ("visibility", arrayOf (typ "integer"))]),
+  ("Comment", schemaObj [("id", typ "integer"), ("issueId", typ "integer"), ("authorId", nullable "integer"),
+    ("authorName", nullable "string"), ("body", typ "string"), ("createdAt", typ "integer"), ("updatedAt", typ "integer")]),
+  ("CommentInput", schemaObj [("body", typ "string")] ["body"]),
+  ("ApiToken", schemaObj [("id", typ "integer"), ("actorId", typ "integer"), ("name", typ "string"),
+    ("tokenPrefix", typ "string"), ("createdAt", typ "integer"), ("lastUsed", nullable "integer")]),
+  ("ApiTokenCreated", schemaObj [("token", ref "ApiToken"), ("secret", typ "string")]),
   ("IssueDetail", schemaObj [("issue", ref "Issue"), ("assignedActors", arrayOf (ref "Actor")),
     ("issueLabels", arrayOf (ref "Label")), ("attachedArtifacts", arrayOf (ref "Artifact")),
-    ("attachedChecks", arrayOf (ref "Check"))]),
+    ("attachedChecks", arrayOf (ref "Check")), ("comments", arrayOf (ref "Comment"))]),
   ("Plugins", schemaObj [("artifactKinds", arrayOf (typ "string")), ("checkKinds", arrayOf (typ "string"))]),
   ("Graph", schemaObj [("nodes", arrayOf (typ "object")), ("edges", arrayOf (typ "object"))]),
   ("Deleted", schemaObj [("deleted", typ "boolean")])
@@ -137,7 +146,8 @@ private def paths : Json := obj [
   ("/issues", obj [
     ("get", operation "Issues" "List issues"
       [queryParam "state" "Filter by state (open/closed/completed)", queryParam "label" "Filter by label id",
-       queryParam "q" "LIKE text search on title/description", queryParam "assignee" "Filter by assignee id"]
+       queryParam "q" "LIKE text search on title/description", queryParam "assignee" "Filter by assignee id",
+       queryParam "limit" "Maximum number of issues to return", queryParam "offset" "Number of issues to skip"]
       none [("200", jsonResp "Issues" (arrayOf (ref "Issue")))]),
     ("post", operation "Issues" "Create an issue" [] (some (jsonBody (ref "IssueInput"))) [("201", jsonResp "Created" (ref "Issue"))])]),
   ("/issues/{id}", obj [
@@ -156,6 +166,17 @@ private def paths : Json := obj [
     ("post", operation "Checks" "Attach a check to an issue" [idParam] (some (jsonBody (ref "CheckInput"))) [("201", jsonResp "Created" (ref "Check"))])]),
   ("/checks/{id}/run", obj [("post", operation "Checks" "Evaluate a check now" [idParam] none [("200", jsonResp "Updated check" (ref "Check"))])]),
   ("/checks/{id}", obj [("delete", operation "Checks" "Delete a check" [idParam] none [("200", jsonResp "Deleted" (ref "Deleted"))])]),
+
+  ("/issues/{id}/comments", obj [
+    ("get", operation "Comments" "List comments on an issue" [idParam] none [("200", jsonResp "Comments" (arrayOf (ref "Comment")))]),
+    ("post", operation "Comments" "Post a comment on an issue" [idParam] (some (jsonBody (ref "CommentInput"))) [("201", jsonResp "Created" (ref "Comment"))])]),
+  ("/comments/{id}", obj [("delete", operation "Comments" "Delete a comment (author or admin only)" [idParam] none [("200", jsonResp "Deleted" (ref "Deleted"))])]),
+
+  ("/me/tokens", obj [
+    ("get", operation "Auth" "List your API tokens" [] none [("200", jsonResp "Tokens" (arrayOf (ref "ApiToken")))]),
+    ("post", operation "Auth" "Create an API token; the secret is shown only once" []
+      (some (jsonBody (schemaObj [("name", typ "string")]))) [("201", jsonResp "Created" (ref "ApiTokenCreated"))])]),
+  ("/me/tokens/{id}", obj [("delete", operation "Auth" "Revoke one of your API tokens" [idParam] none [("200", jsonResp "Deleted" (ref "Deleted"))])]),
 
   ("/import/github", obj [("post", operation "Import" "Import issues from a GitHub repository"
     [] (some (jsonBody (schemaObj [("owner", typ "string"), ("repo", typ "string"), ("state", typ "string")] ["owner", "repo"])))
@@ -192,7 +213,7 @@ def spec : Json := obj [
   ("info", obj [("title", str "Issue Tracker API"), ("version", str "0.1.0"),
     ("description", str "REST API for the Lean issue tracker. All endpoints are served under `/api`.")]),
   ("servers", arr [obj [("url", str "/api")]]),
-  ("tags", arr (["Issues", "Labels", "Actors", "Groups", "Artifacts", "Checks", "Import", "Auth", "System"].map
+  ("tags", arr (["Issues", "Comments", "Labels", "Actors", "Groups", "Artifacts", "Checks", "Import", "Auth", "System"].map
     (fun t => obj [("name", str t)]))),
   ("paths", paths),
   ("components", obj [("schemas", schemas)])

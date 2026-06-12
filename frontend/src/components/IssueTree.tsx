@@ -2,22 +2,20 @@ import { useState } from "react";
 import type { Issue, Label } from "../types";
 import { LabelChip } from "./LabelChip";
 
-// Hierarchical view. Top-level nodes are foundational issues (those that depend on nothing);
-// unfolding a node reveals the issues that depend on it, indented, one dependency-chain step
-// at a time.
+// Hierarchical view over the single `parent` (containment) relation. Top-level nodes are issues
+// with no parent present in the set; unfolding a node reveals its child issues, indented.
 export function IssueTree({ issues, labels }: { issues: Issue[]; labels: Label[] }) {
-  // Map each issue id to the issues that list it as a parent (i.e. that depend on it).
+  // Map each issue id to the issues whose parent is it (i.e. its children).
   const childrenByParent = new Map<number, Issue[]>();
-  issues.forEach((i) =>
-    i.parents.forEach((p) => {
-      if (!childrenByParent.has(p)) childrenByParent.set(p, []);
-      childrenByParent.get(p)!.push(i);
-    })
-  );
-  // Roots are issues with no dependency present in this (possibly filtered) set, so every
-  // matching issue appears — as a root or nested under a visible dependency.
+  issues.forEach((i) => {
+    if (i.parent == null) return;
+    if (!childrenByParent.has(i.parent)) childrenByParent.set(i.parent, []);
+    childrenByParent.get(i.parent)!.push(i);
+  });
+  // Roots are issues with no parent present in this (possibly filtered) set, so every matching
+  // issue appears — as a root or nested under its visible parent.
   const idSet = new Set(issues.map((i) => i.id));
-  const topLevel = issues.filter((i) => !i.parents.some((p) => idSet.has(p)));
+  const topLevel = issues.filter((i) => i.parent == null || !idSet.has(i.parent));
 
   if (topLevel.length === 0) return <div className="panel muted">No issues.</div>;
 
@@ -57,7 +55,7 @@ function TreeNode({
         {issue.locked && <span title="locked">🔒</span>}
         <span className={`badge ${issue.state}`}>{issue.state}</span>
         {issue.labels.map((l) => { const lbl = labelOf(l); return lbl ? <LabelChip key={l} label={lbl} /> : null; })}
-        {hasChildren && <span className="muted small">{children.length} dependent{children.length > 1 ? "s" : ""}</span>}
+        {hasChildren && <span className="muted small">{children.length} child{children.length > 1 ? "ren" : ""}</span>}
       </div>
       {expanded && !cyclic &&
         children.map((c) => (

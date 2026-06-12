@@ -15,11 +15,22 @@ interface Placed {
   y: number;
 }
 
-// Lay issues out in rows by dependency depth (longest chain of dependencies present in the set).
+// Lay issues out in rows by dependency depth (longest chain of dependencies present in the set),
+// then run a few barycenter passes so each node drifts toward the average position of its
+// neighbours. This makes the layout symmetric: a node that many others depend on ends up centred
+// over its dependents rather than pinned to the left. Edges are the `dependencies` relation.
 function layout(issues: Issue[], nodeH: number) {
   const idSet = new Set(issues.map((i) => i.id));
+  const issueById = new Map(issues.map((i) => [i.id, i]));
   const parentsOf = new Map<number, number[]>();
-  issues.forEach((i) => parentsOf.set(i.id, i.parents.filter((p) => idSet.has(p))));
+  const childrenOf = new Map<number, number[]>();
+  issues.forEach((i) => parentsOf.set(i.id, i.dependencies.filter((p) => idSet.has(p))));
+  issues.forEach((i) =>
+    (parentsOf.get(i.id) ?? []).forEach((p) => {
+      if (!childrenOf.has(p)) childrenOf.set(p, []);
+      childrenOf.get(p)!.push(i.id);
+    }),
+  );
 
   const depthMemo = new Map<number, number>();
   const depthOf = (id: number, stack: Set<number>): number => {
@@ -33,27 +44,69 @@ function layout(issues: Issue[], nodeH: number) {
     return d;
   };
 
-  const layers = new Map<number, Issue[]>();
+  // layers[d] = ids at depth d.
+  const layers: number[][] = [];
   for (const i of issues) {
     const d = depthOf(i.id, new Set());
-    if (!layers.has(d)) layers.set(d, []);
-    layers.get(d)!.push(i);
+    (layers[d] ||= []).push(i.id);
   }
 
-  const placed = new Map<number, Placed>();
-  let maxRow = 0;
-  for (const [depth, ns] of layers) {
-    ns.forEach((issue, i) => {
-      placed.set(issue.id, { issue, x: X_GAP + i * (NODE_W + X_GAP), y: Y_GAP + depth * (nodeH + Y_GAP) });
-    });
-    maxRow = Math.max(maxRow, ns.length);
+  // Slot (float column) position per node; seed with the index within the layer.
+  const x = new Map<number, number>();
+  layers.forEach((layer) => layer.forEach((id, idx) => x.set(id, idx)));
+  const mean = (xs: number[]) => (xs.length ? xs.reduce((s, n) => s + n, 0) / xs.length : 0);
+
+  // One relaxation sweep over `order`: place each node at the average slot of its neighbours,
+  // then de-overlap left-to-right with a minimum one-slot gap and re-centre the row so the mean
+  // barycenter (and thus overall symmetry) is preserved.
+  const relax = (order: number[][], neighborsOf: Map<number, number[]>) => {
+    for (const layer of order) {
+      if (layer.length === 0) continue;
+      const desired = layer.map((id) => {
+        const ns = (neighborsOf.get(id) ?? []).filter((n) => x.has(n));
+        return ns.length ? mean(ns.map((n) => x.get(n)!)) : x.get(id)!;
+      });
+      const idxs = layer.map((_, k) => k).sort((a, b) => desired[a] - desired[b]);
+      const pos = new Array<number>(layer.length);
+      let last = -Infinity;
+      for (const k of idxs) {
+        const p = Math.max(desired[k], last + 1);
+        pos[k] = p;
+        last = p;
+      }
+      const shift = mean(desired) - mean(pos);
+      layer.forEach((id, k) => x.set(id, pos[k] + shift));
+    }
+  };
+
+  const bottomUp = layers.slice().reverse();
+  for (let iter = 0; iter < 6; iter++) {
+    relax(layers, parentsOf);
+    relax(bottomUp, childrenOf);
   }
+
+  let minX = Infinity;
+  let maxX = -Infinity;
+  x.forEach((v) => { minX = Math.min(minX, v); maxX = Math.max(maxX, v); });
+  if (!isFinite(minX)) { minX = 0; maxX = 0; }
+
+  const placed = new Map<number, Placed>();
+  layers.forEach((layer, depth) => {
+    layer.forEach((id) => {
+      const slot = x.get(id)! - minX;
+      placed.set(id, {
+        issue: issueById.get(id)!,
+        x: X_GAP + slot * (NODE_W + X_GAP),
+        y: Y_GAP + depth * (nodeH + Y_GAP),
+      });
+    });
+  });
 
   const edges: { child: number; parent: number }[] = [];
   issues.forEach((i) => (parentsOf.get(i.id) ?? []).forEach((p) => edges.push({ child: i.id, parent: p })));
 
-  const width = Math.max(1, maxRow) * (NODE_W + X_GAP) + X_GAP;
-  const height = (layers.size || 1) * (nodeH + Y_GAP) + Y_GAP;
+  const width = (maxX - minX) * (NODE_W + X_GAP) + NODE_W + 2 * X_GAP;
+  const height = (layers.length || 1) * (nodeH + Y_GAP) + Y_GAP;
   return { placed, edges, width, height };
 }
 

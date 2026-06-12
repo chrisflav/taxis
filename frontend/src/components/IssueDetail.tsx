@@ -4,6 +4,11 @@ import { api } from "../api";
 import { Modal, ConfirmModal } from "./Modal";
 import { LabelChip } from "./LabelChip";
 
+// Render a Unix (seconds) timestamp in the viewer's locale.
+function fmtTime(ts: number): string {
+  return new Date(ts * 1000).toLocaleString();
+}
+
 export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
   const [detail, setDetail] = useState<Detail | null>(null);
   const [plugins, setPlugins] = useState<Plugins | null>(null);
@@ -43,7 +48,12 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
           </div>
         )}
         <div className="row small muted">
-          <span>Parents: {issue.parents.length ? issue.parents.map((p) => (
+          <span>Parent: {issue.parent != null
+            ? <a href={`#/issues/${issue.parent}`}>#{issue.parent}</a>
+            : "none"}</span>
+        </div>
+        <div className="row small muted" style={{ marginTop: 4 }}>
+          <span>Depends on: {issue.dependencies.length ? issue.dependencies.map((p) => (
             <a key={p} href={`#/issues/${p}`} style={{ marginRight: 6 }}>#{p}</a>
           )) : "none"}</span>
         </div>
@@ -102,6 +112,8 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
         ))}
         {detail.attachedChecks.length === 0 && <div className="muted small" style={{ marginTop: 8 }}>None attached</div>}
       </div>
+
+      <CommentsSection detail={detail} me={me} onChange={load} />
 
       {me && (
         <div className="actions-bar">
@@ -236,5 +248,66 @@ function AttachModal({
         </div>
       </form>
     </Modal>
+  );
+}
+
+// Discussion thread on an issue: existing comments plus (for signed-in users) a box to add one.
+// A comment can be removed by its author or an admin.
+function CommentsSection({
+  detail, me, onChange,
+}: {
+  detail: Detail;
+  me: Actor | null;
+  onChange: () => void;
+}) {
+  const [body, setBody] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const comments = detail.comments ?? [];
+
+  const post = (e: React.FormEvent) => {
+    e.preventDefault();
+    const text = body.trim();
+    if (!text) return;
+    setBusy(true);
+    api.addComment(detail.issue.id, text)
+      .then(() => { setBody(""); setErr(null); onChange(); })
+      .catch((e2) => setErr(String(e2)))
+      .finally(() => setBusy(false));
+  };
+
+  const canDelete = (authorId: number | null) => !!me && (me.admin || me.id === authorId);
+
+  return (
+    <div className="panel">
+      <h3 style={{ marginTop: 0 }}>Comments <span className="muted small">({comments.length})</span></h3>
+      {comments.length === 0 && <div className="muted small">No comments yet.</div>}
+      {comments.map((c) => (
+        <div key={c.id} className="comment">
+          <div className="row" style={{ justifyContent: "space-between" }}>
+            <span className="small">
+              <strong>{c.authorName ?? "(unknown)"}</strong>
+              <span className="muted"> · {fmtTime(c.createdAt)}{c.updatedAt !== c.createdAt ? " (edited)" : ""}</span>
+            </span>
+            {canDelete(c.authorId) && (
+              <button className="danger" onClick={() => api.deleteComment(c.id).then(onChange).catch((e2) => setErr(String(e2)))}>Delete</button>
+            )}
+          </div>
+          <div style={{ whiteSpace: "pre-wrap", marginTop: 4 }}>{c.body}</div>
+        </div>
+      ))}
+
+      {me ? (
+        <form onSubmit={post} style={{ marginTop: 12 }}>
+          {err && <div className="error small">{err}</div>}
+          <textarea value={body} onChange={(e) => setBody(e.target.value)} placeholder="Add a comment…" />
+          <div className="row" style={{ justifyContent: "flex-end", marginTop: 8 }}>
+            <button className="primary" type="submit" disabled={busy || !body.trim()}>Comment</button>
+          </div>
+        </form>
+      ) : (
+        <div className="muted small" style={{ marginTop: 12 }}>Sign in to comment.</div>
+      )}
+    </div>
   );
 }

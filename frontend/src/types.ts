@@ -46,7 +46,8 @@ export interface Issue {
   state: IssueState;
   locked: boolean;
   labels: number[];
-  parents: number[];
+  parent: number | null;
+  dependencies: number[];
   assignees: number[];
   artifacts: number[];
   visibility: number[];
@@ -55,17 +56,42 @@ export interface Issue {
   updatedAt: number;
 }
 
+export interface Comment {
+  id: number;
+  issueId: number;
+  authorId: number | null;
+  authorName: string | null;
+  body: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ApiToken {
+  id: number;
+  actorId: number;
+  name: string;
+  tokenPrefix: string;
+  createdAt: number;
+  lastUsed: number | null;
+}
+
+export interface ApiTokenCreated {
+  token: ApiToken;
+  secret: string;
+}
+
 export interface IssueDetail {
   issue: Issue;
   assignedActors: Actor[];
   issueLabels: Label[];
   attachedArtifacts: Artifact[];
   attachedChecks: Check[];
+  comments: Comment[];
 }
 
 export interface GraphData {
   nodes: { id: number; title: string; state: IssueState; labels: number[] }[];
-  edges: { child: number; parent: number }[];
+  edges: { issue: number; dependsOn: number }[];
 }
 
 export interface FieldSpec {

@@ -4,6 +4,7 @@ import Issues.Server.Auth
 import Issues.Server.OpenApi
 import Issues.Db
 import Issues.Plugins
+import Issues.Crypto
 import Issues.Checks.Engine
 import Issues.Import
 
@@ -109,7 +110,9 @@ def listIssuesH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
   let labelId := (req.query "label").bind (·.toInt?) |>.map (fun n => (⟨Int64.ofInt n⟩ : LabelId))
   let q := req.query "q"
   let assignee := (req.query "assignee").bind (·.toInt?) |>.map (fun n => (⟨Int64.ofInt n⟩ : ActorId))
-  let issues ← ctx.dbM (fun db => Db.listIssues db state labelId q assignee)
+  let limit := (req.query "limit").bind (·.toNat?)
+  let offset := (req.query "offset").bind (·.toNat?) |>.getD 0
+  let issues ← ctx.dbM (fun db => Db.listIssues db state labelId q assignee limit offset)
   ok (toJson (issues.filter (visibleTo req.actor)))
 
 /-- A non-admin actor may only restrict visibility to groups they belong to. -/
@@ -140,7 +143,8 @@ private def loadDetail (db : Db.Conn) (id : IssueId) : IO (Option IssueDetail) :
     let issueLabels ← issue.labels.filterMapM (Db.getLabel db ·)
     let attachedArtifacts ← (← Db.issueArtifacts db id).mapM toArtifactView
     let attachedChecks ← Db.issueChecks db id
-    pure (some { issue, assignedActors, issueLabels, attachedArtifacts, attachedChecks })
+    let comments ← Db.issueComments db id
+    pure (some { issue, assignedActors, issueLabels, attachedArtifacts, attachedChecks, comments })
 
 def getIssueH (ctx : AppContext) (id : Int64) (actor : Option Actor) : ApiM ApiResponse := do
   match ← ctx.dbM (loadDetail · ⟨id⟩) with
@@ -220,15 +224,16 @@ def runCheckH (ctx : AppContext) (id : Int64) : ApiM ApiResponse := do
 def graphH (ctx : AppContext) (actor : Option Actor) : ApiM ApiResponse := do
   let (issues, edges) ← ctx.dbM (fun db => do
     let issues ← Db.listIssues db none none none none
-    let edges ← Db.allParentEdges db
+    let edges ← Db.allDependencyEdges db
     pure (issues, edges))
   let visible := issues.filter (visibleTo actor)
   let visibleIds : Std.HashSet Int64 := visible.foldl (fun s i => s.insert i.id.val) {}
   let nodes := visible.map fun i =>
     Json.mkObj [("id", toJson i.id), ("title", i.title), ("state", toJson i.state), ("labels", toJson i.labels)]
-  let edgeJson := (edges.filter fun (child, parent) =>
-      visibleIds.contains child.val && visibleIds.contains parent.val).map fun (child, parent) =>
-    Json.mkObj [("child", toJson child), ("parent", toJson parent)]
+  -- Edges are dependency edges: `issue` depends on `dependsOn`.
+  let edgeJson := (edges.filter fun (iss, dep) =>
+      visibleIds.contains iss.val && visibleIds.contains dep.val).map fun (iss, dep) =>
+    Json.mkObj [("issue", toJson iss), ("dependsOn", toJson dep)]
   ok (Json.mkObj [("nodes", Json.arr nodes), ("edges", Json.arr edgeJson)])
 
 /-! ## Import -/
@@ -289,6 +294,62 @@ def importGdocH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
   let inputs := Import.linesToIssues text
   let ids ← ctx.dbM (fun db => inputs.mapM (fun i => do pure (← Db.createIssue db i).id))
   created (Json.mkObj [("imported", ids.size), ("issueIds", toJson ids)])
+
+/-! ## Comments -/
+
+def listCommentsH (ctx : AppContext) (issueId : Int64) : ApiM ApiResponse := do
+  ok (toJson (← ctx.dbM (Db.issueComments · ⟨issueId⟩)))
+
+def createCommentH (ctx : AppContext) (issueId : Int64) (req : Req) : ApiM ApiResponse := do
+  let input ← parseBody CommentInput req.body
+  if input.body.trimAscii.isEmpty then fail (.badRequest "comment body must not be empty")
+  let authorId := req.actor.map (·.id)
+  match ← ctx.dbM (fun db => do
+      match ← Db.getIssue db ⟨issueId⟩ with
+      | none => pure none
+      | some _ => some <$> Db.createComment db ⟨issueId⟩ authorId input) with
+  | some c => created (toJson c)
+  | none => fail (.notFound s!"issue {issueId} not found")
+
+def deleteCommentH (ctx : AppContext) (id : Int64) (req : Req) : ApiM ApiResponse := do
+  match ← ctx.dbM (Db.getComment · ⟨id⟩) with
+  | none => fail (.notFound s!"comment {id} not found")
+  | some c =>
+    let isAuthor := req.actor.isSome && (req.actor.map (·.id.val)) == (c.authorId.map (·.val))
+    let isAdmin := req.actor.map (·.admin) |>.getD false
+    unless isAuthor || isAdmin do
+      fail (.forbidden "only the comment's author or an admin may delete it")
+    if ← ctx.dbM (Db.deleteComment · ⟨id⟩) then
+      ok (Json.mkObj [("deleted", true)])
+    else fail (.notFound s!"comment {id} not found")
+
+/-! ## API tokens -/
+
+def listTokensH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
+  match req.actor with
+  | none => fail (.unauthorized "authentication required")
+  | some a => ok (toJson (← ctx.dbM (Db.listTokens · a.id)))
+
+def createTokenH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
+  match req.actor with
+  | none => fail (.unauthorized "authentication required")
+  | some a =>
+    let input ← parseBody TokenInput req.body
+    -- Generate a high-entropy secret; store only its SHA-256 hash. The plaintext is returned
+    -- exactly once, here, and cannot be recovered afterwards.
+    let secret := "issues_pat_" ++ (← liftIO randomToken)
+    let hash := Crypto.sha256Hex secret
+    let pfx := String.ofList (secret.toList.take 15)
+    let tok ← ctx.dbM (Db.createToken · a.id input.name hash pfx)
+    created (toJson ({ token := tok, secret } : ApiTokenCreated))
+
+def deleteTokenH (ctx : AppContext) (id : Int64) (req : Req) : ApiM ApiResponse := do
+  match req.actor with
+  | none => fail (.unauthorized "authentication required")
+  | some a =>
+    if ← ctx.dbM (Db.deleteToken · ⟨id⟩ a.id) then
+      ok (Json.mkObj [("deleted", true)])
+    else fail (.notFound s!"token {id} not found")
 
 /-! ## Plugins -/
 
@@ -364,6 +425,14 @@ def dispatch (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
   | .post, ["issues", id, "checks"] => createCheckH ctx (← Req.parseId id) req
   | .post, ["checks", id, "run"] => runCheckH ctx (← Req.parseId id)
   | .delete, ["checks", id] => deleteCheckH ctx (← Req.parseId id)
+
+  | .get, ["issues", id, "comments"] => listCommentsH ctx (← Req.parseId id)
+  | .post, ["issues", id, "comments"] => createCommentH ctx (← Req.parseId id) req
+  | .delete, ["comments", id] => deleteCommentH ctx (← Req.parseId id) req
+
+  | .get, ["me", "tokens"] => listTokensH ctx req
+  | .post, ["me", "tokens"] => createTokenH ctx req
+  | .delete, ["me", "tokens", id] => deleteTokenH ctx (← Req.parseId id) req
 
   | .post, ["import", "github"] => importGithubH ctx req
   | .post, ["import", "gdoc"] => importGdocH ctx req

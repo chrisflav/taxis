@@ -1,5 +1,6 @@
 import Issues.Server.Router
 import Issues.Db
+import Issues.Crypto
 import Issues.Http.Client
 
 /-!
@@ -165,10 +166,25 @@ def devLoginH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
   pure { status := .ok, body := Json.mkObj [("token", token), ("actor", toJson actor)],
          headers := #[("Set-Cookie", sessionCookie token secure)] }
 
-/-- Resolve the actor for a request from its session cookie. -/
-def resolveActor (ctx : AppContext) (req : Req) : IO Req := do
+/-- Resolve the actor from a session cookie. -/
+private def resolveBySession (ctx : AppContext) (req : Req) : IO Req := do
   match req.sessionToken with
   | none => pure req
   | some tok => pure { req with actor := ← ctx.withDb (Db.sessionActor · tok) }
+
+/-- Resolve the actor for a request. An `Authorization: Bearer <token>` header (used by bots)
+    takes precedence; the presented secret is hashed and looked up, never compared in plaintext.
+    Absent or unrecognised, we fall back to the session cookie. -/
+def resolveActor (ctx : AppContext) (req : Req) : IO Req := do
+  match req.header "authorization" with
+  | some raw =>
+    let raw := raw.trimAscii.toString
+    if raw.startsWith "Bearer " then
+      let secret := (raw.drop 7).trimAscii.toString
+      match ← ctx.withDb (Db.actorForTokenHash · (Crypto.sha256Hex secret)) with
+      | some a => pure { req with actor := some a }
+      | none => resolveBySession ctx req
+    else resolveBySession ctx req
+  | none => resolveBySession ctx req
 
 end Issues.Server

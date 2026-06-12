@@ -40,4 +40,12 @@ def jsonFieldD? [FromJson α] (j : Json) (name : String) (dflt : α) : Except St
   | .ok .null => pure dflt
   | .ok v => fromJson? v
 
+/-- Helper for update payloads distinguishing three cases of a nullable field: absent ⇒ `none`
+    (leave unchanged), explicit `null` ⇒ `some none` (clear it), a value ⇒ `some (some v)` (set it). -/
+def jsonFieldTri? [FromJson α] (j : Json) (name : String) : Except String (Option (Option α)) := do
+  match j.getObjVal? name with
+  | .error _ => pure none
+  | .ok .null => pure (some none)
+  | .ok v => (fun x => some (some x)) <$> fromJson? v
+
 end Issues

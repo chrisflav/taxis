@@ -3,19 +3,19 @@ import type { Actor, Group } from "../types";
 import { api } from "../api";
 import { Modal, ConfirmModal } from "./Modal";
 import { MultiSelect } from "./MultiSelect";
+import { Pagination, usePagination } from "./Pagination";
 
 export function Admin() {
   const [groups, setGroups] = useState<Group[]>([]);
   const loadGroups = () => api.listGroups().then(setGroups).catch(() => {});
   useEffect(() => { loadGroups(); }, []);
 
+  // Actors first, then groups below, each with its own search + pagination.
   return (
     <div>
       <h2>Admin</h2>
-      <div className="grid-2">
-        <ActorsPanel groups={groups} />
-        <GroupsPanel groups={groups} onChange={loadGroups} />
-      </div>
+      <ActorsPanel groups={groups} />
+      <GroupsPanel groups={groups} onChange={loadGroups} />
       <ImportPanel />
     </div>
   );
@@ -24,6 +24,7 @@ export function Admin() {
 function ActorsPanel({ groups }: { groups: Group[] }) {
   const [actors, setActors] = useState<Actor[]>([]);
   const [err, setErr] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
   const [editing, setEditing] = useState<Actor | "new" | null>(null);
   const [deleting, setDeleting] = useState<Actor | null>(null);
 
@@ -32,16 +33,29 @@ function ActorsPanel({ groups }: { groups: Group[] }) {
 
   const groupName = (id: number) => groups.find((g) => g.id === id)?.name ?? `#${id}`;
 
+  const q = query.trim().toLowerCase();
+  const filtered = actors.filter(
+    (a) => !q || a.displayName.toLowerCase().includes(q) || a.email.toLowerCase().includes(q),
+  );
+  const pager = usePagination(filtered, 10);
+  useEffect(() => { pager.setPage(0); }, [q]);
+
   return (
     <div className="panel">
       <div className="row" style={{ justifyContent: "space-between" }}>
-        <h3 style={{ margin: 0 }}>Actors</h3>
+        <h3 style={{ margin: 0 }}>Actors <span className="muted small">({actors.length})</span></h3>
         <button onClick={() => setEditing("new")}>+ Add actor</button>
       </div>
+      <input
+        placeholder="Search actors by name or email…"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        style={{ marginTop: 8 }}
+      />
       {err && <div className="error small">{err}</div>}
       <table>
         <tbody>
-          {actors.map((a) => (
+          {pager.pageItems.map((a) => (
             <tr key={a.id}>
               <td className="muted">{a.id}</td>
               <td>
@@ -57,8 +71,12 @@ function ActorsPanel({ groups }: { groups: Group[] }) {
               </td>
             </tr>
           ))}
+          {filtered.length === 0 && (
+            <tr><td colSpan={3} className="muted small" style={{ padding: 16 }}>No matching actors</td></tr>
+          )}
         </tbody>
       </table>
+      <Pagination {...pager} />
 
       {editing && (
         <ActorModal
@@ -127,38 +145,85 @@ function ActorModal({ actor, groups, onClose, onSaved }: {
 }
 
 function GroupsPanel({ groups, onChange }: { groups: Group[]; onChange: () => void }) {
-  const [adding, setAdding] = useState(false);
+  const [query, setQuery] = useState("");
+  const [editing, setEditing] = useState<Group | "new" | null>(null);
+  const [deleting, setDeleting] = useState<Group | null>(null);
+
+  const q = query.trim().toLowerCase();
+  const filtered = groups.filter(
+    (g) => !q || g.name.toLowerCase().includes(q) || (g.description ?? "").toLowerCase().includes(q),
+  );
+  const pager = usePagination(filtered, 10);
+  useEffect(() => { pager.setPage(0); }, [q]);
 
   return (
     <div className="panel">
       <div className="row" style={{ justifyContent: "space-between" }}>
-        <h3 style={{ margin: 0 }}>Groups</h3>
-        <button onClick={() => setAdding(true)}>+ Add group</button>
+        <h3 style={{ margin: 0 }}>Groups <span className="muted small">({groups.length})</span></h3>
+        <button onClick={() => setEditing("new")}>+ Add group</button>
       </div>
+      <input
+        placeholder="Search groups…"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        style={{ marginTop: 8 }}
+      />
       <table>
         <tbody>
-          {groups.map((g) => (
-            <tr key={g.id}><td className="muted">{g.id}</td><td>{g.name}</td><td className="muted small">{g.description ?? ""}</td></tr>
+          {pager.pageItems.map((g) => (
+            <tr key={g.id}>
+              <td className="muted">{g.id}</td>
+              <td>{g.name}</td>
+              <td className="muted small">{g.description ?? ""}</td>
+              <td className="row">
+                <button onClick={() => setEditing(g)}>Edit</button>
+                <button className="danger" onClick={() => setDeleting(g)}>Delete</button>
+              </td>
+            </tr>
           ))}
+          {filtered.length === 0 && (
+            <tr><td colSpan={4} className="muted small" style={{ padding: 16 }}>No matching groups</td></tr>
+          )}
         </tbody>
       </table>
-      {adding && <GroupModal onClose={() => setAdding(false)} onSaved={() => { setAdding(false); onChange(); }} />}
+      <Pagination {...pager} />
+
+      {editing && (
+        <GroupModal
+          group={editing === "new" ? null : editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => { setEditing(null); onChange(); }}
+        />
+      )}
+      {deleting && (
+        <ConfirmModal
+          title="Delete group"
+          message={`Delete group "${deleting.name}"? It will be removed from actors and issue visibility.`}
+          confirmLabel="Delete"
+          danger
+          onConfirm={() => api.deleteGroup(deleting.id).then(() => { setDeleting(null); onChange(); })}
+          onCancel={() => setDeleting(null)}
+        />
+      )}
     </div>
   );
 }
 
-function GroupModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
+function GroupModal({ group, onClose, onSaved }: { group: Group | null; onClose: () => void; onSaved: () => void }) {
+  const editing = group != null;
+  const [name, setName] = useState(group?.name ?? "");
+  const [description, setDescription] = useState(group?.description ?? "");
   const [err, setErr] = useState<string | null>(null);
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
-    api.createGroup({ name, description: description || undefined }).then(onSaved).catch((e2) => setErr(String(e2)));
+    const body = { name, description: description || undefined };
+    const p = editing ? api.updateGroup(group!.id, body) : api.createGroup(body);
+    p.then(onSaved).catch((e2) => setErr(String(e2)));
   };
 
   return (
-    <Modal title="Add group" onClose={onClose}>
+    <Modal title={editing ? "Edit group" : "Add group"} onClose={onClose}>
       <form onSubmit={submit}>
         {err && <div className="error small">{err}</div>}
         <label>Name</label>
@@ -167,7 +232,7 @@ function GroupModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => 
         <input value={description} onChange={(e) => setDescription(e.target.value)} />
         <div className="row" style={{ justifyContent: "flex-end", marginTop: 16 }}>
           <button type="button" onClick={onClose}>Cancel</button>
-          <button className="primary" type="submit">Add</button>
+          <button className="primary" type="submit">{editing ? "Save" : "Add"}</button>
         </div>
       </form>
     </Modal>

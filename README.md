@@ -21,10 +21,18 @@ An extensible issue tracker built in Lean 4, with a REST API backend and a TypeS
 - **Groups** — sets of actors used as a visibility filter.
 - **Labels** — reusable named tags (name + description), managed on their own page; an issue
   can carry any number of them.
-- **Issues** — title, description, lifecycle state (`open`/`closed`/`completed`), labels,
-  parent issues (a dependency DAG, cycle-checked), assignees, visibility groups, artifacts,
-  and checks.
-- **Artifacts / Checks** — extensible, plugin-backed (see above).
+- **Issues** — title, description, lifecycle state (`open`/`closed`/`completed`), labels, a single
+  optional **parent** (a hierarchical/containment relation, cycle-checked up the parent chain),
+  a set of **dependencies** (other issues it depends on — the dependency graph), assignees,
+  visibility groups, artifacts, checks, and comments. The **Tree** view is built from the parent
+  relation; the **Graph** view's edges are the dependencies.
+- **Comments** — a discussion thread on each issue; anyone signed in may comment, and a comment
+  can be removed by its author or an admin.
+- **Artifacts / Checks** — extensible, plugin-backed (see above). Built-in check kinds include
+  `github-ci` and `json-endpoint` (fetch a JSON URL and assert a condition on a value at a path).
+- **API tokens** — bots authenticate with a personal access token (`Authorization: Bearer …`).
+  Only a SHA-256 hash is stored; the secret is shown once, at creation. Manage them under
+  **Tokens** in the UI or `GET|POST /api/me/tokens`, `DELETE /api/me/tokens/:id`.
 
 ## Build & run
 
@@ -112,10 +120,12 @@ served at **`/docs`**, backed by the OpenAPI spec at `GET /api/openapi.json`.
 - `GET|POST /actors`, `GET|PATCH|DELETE /actors/:id`
 - `GET|POST /groups`, `GET|PATCH|DELETE /groups/:id`
 - `GET|POST /labels`, `GET|PATCH|DELETE /labels/:id`
-- `GET /issues` (filters: `state`, `label` = label id, `q`, `assignee`), `POST /issues`,
-  `GET|PATCH|DELETE /issues/:id`
+- `GET /issues` (filters: `state`, `label` = label id, `q`, `assignee`; paging: `limit`, `offset`),
+  `POST /issues`, `GET|PATCH|DELETE /issues/:id`
 - `POST /issues/:id/artifacts`, `DELETE /artifacts/:id`
 - `GET|POST /issues/:id/checks`, `POST /checks/:id/run`, `DELETE /checks/:id`
+- `GET|POST /issues/:id/comments`, `DELETE /comments/:id`
+- `GET|POST /me/tokens`, `DELETE /me/tokens/:id`
 - `POST /import/github`, `POST /import/gdoc`
 - Auth: `GET /auth/google/login`, `GET /auth/google/callback`, `POST /auth/logout`,
   `POST /auth/dev-login`, `GET /me`

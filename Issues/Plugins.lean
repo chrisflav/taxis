@@ -1,5 +1,7 @@
 import Issues.Plugins.Registry
 import Issues.Plugins.Github
+import Issues.Plugins.Source
+import Issues.Plugins.JsonCheck
 
 /-!
 # Plugins

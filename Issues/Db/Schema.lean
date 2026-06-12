@@ -15,7 +15,7 @@ the FTS5 extension.
 namespace Issues.Db
 
 /-- The schema version this build expects. -/
-def schemaVersion : Int64 := 5
+def schemaVersion : Int64 := 7
 
 /-- The complete DDL, safe to run repeatedly. -/
 def schemaSql : String :=
@@ -50,10 +50,12 @@ def schemaSql : String :=
     state TEXT NOT NULL DEFAULT 'open',
     locked INTEGER NOT NULL DEFAULT 0,
     label TEXT,
+    parent_id INTEGER REFERENCES issues(id) ON DELETE SET NULL,
     created_at INTEGER NOT NULL DEFAULT (unixepoch()),
     updated_at INTEGER NOT NULL DEFAULT (unixepoch())
   );
   CREATE INDEX IF NOT EXISTS idx_issues_state ON issues(state);
+  CREATE INDEX IF NOT EXISTS idx_issues_parent ON issues(parent_id);
 
   CREATE TABLE IF NOT EXISTS labels (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -69,12 +71,12 @@ def schemaSql : String :=
   );
   CREATE INDEX IF NOT EXISTS idx_issue_labels_label ON issue_labels(label_id);
 
-  CREATE TABLE IF NOT EXISTS issue_parents (
-    child_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
-    parent_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
-    PRIMARY KEY (child_id, parent_id)
+  CREATE TABLE IF NOT EXISTS issue_dependencies (
+    issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+    depends_on_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+    PRIMARY KEY (issue_id, depends_on_id)
   );
-  CREATE INDEX IF NOT EXISTS idx_issue_parents_parent ON issue_parents(parent_id);
+  CREATE INDEX IF NOT EXISTS idx_issue_dependencies_dep ON issue_dependencies(depends_on_id);
 
   CREATE TABLE IF NOT EXISTS issue_assignees (
     issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
@@ -116,6 +118,28 @@ def schemaSql : String :=
     expires_at INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_sessions_actor ON sessions(actor_id);
+
+  CREATE TABLE IF NOT EXISTS comments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+    author_id INTEGER REFERENCES actors(id) ON DELETE SET NULL,
+    body TEXT NOT NULL,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+  );
+  CREATE INDEX IF NOT EXISTS idx_comments_issue ON comments(issue_id);
+  CREATE INDEX IF NOT EXISTS idx_comments_author ON comments(author_id);
+
+  CREATE TABLE IF NOT EXISTS api_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor_id INTEGER NOT NULL REFERENCES actors(id) ON DELETE CASCADE,
+    name TEXT NOT NULL DEFAULT '',
+    token_hash TEXT NOT NULL UNIQUE,
+    prefix TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    last_used INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_api_tokens_actor ON api_tokens(actor_id);
   "
 
 /-- A single-column row holding the stored schema version. -/
@@ -133,6 +157,13 @@ def migrate (db : Conn) : IO Unit := do
   try db.exec "ALTER TABLE labels ADD COLUMN color TEXT NOT NULL DEFAULT '#6b7280'" catch _ => pure ()
   try db.exec "ALTER TABLE issues ADD COLUMN locked INTEGER NOT NULL DEFAULT 0" catch _ => pure ()
   try db.exec "ALTER TABLE actors ADD COLUMN admin INTEGER NOT NULL DEFAULT 0" catch _ => pure ()
+  try db.exec "ALTER TABLE issues ADD COLUMN parent_id INTEGER" catch _ => pure ()
+  -- v7 split the old many-to-many `issue_parents` (which modelled dependency edges) into a single
+  -- hierarchical `parent_id` plus an `issue_dependencies` table. Migrate the old edges, which were
+  -- dependencies, into the new table, then retire the old one.
+  try db.exec "INSERT OR IGNORE INTO issue_dependencies (issue_id, depends_on_id)
+    SELECT child_id, parent_id FROM issue_parents" catch _ => pure ()
+  try db.exec "DROP TABLE IF EXISTS issue_parents" catch _ => pure ()
   let rows ← (← db query!"SELECT version FROM schema_version LIMIT 1" as VersionRow).toArray
   if rows.isEmpty then
     db exec!"INSERT INTO schema_version (version) VALUES ({schemaVersion})"

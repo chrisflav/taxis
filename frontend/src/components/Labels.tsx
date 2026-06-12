@@ -3,6 +3,7 @@ import type { Actor, Label } from "../types";
 import { api } from "../api";
 import { Modal, ConfirmModal } from "./Modal";
 import { LabelChip } from "./LabelChip";
+import { Pagination, usePagination } from "./Pagination";
 
 const DEFAULT_COLOR = "#6b7280";
 
@@ -10,11 +11,19 @@ export function LabelsPage({ me }: { me: Actor | null }) {
   const isAdmin = !!me?.admin;
   const [labels, setLabels] = useState<Label[]>([]);
   const [err, setErr] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
   const [editing, setEditing] = useState<Label | "new" | null>(null);
   const [deleting, setDeleting] = useState<Label | null>(null);
 
   const load = () => api.listLabels().then(setLabels).catch((e) => setErr(String(e)));
   useEffect(() => { load(); }, []);
+
+  const q = query.trim().toLowerCase();
+  const filtered = labels.filter(
+    (l) => !q || l.name.toLowerCase().includes(q) || (l.description ?? "").toLowerCase().includes(q),
+  );
+  const pager = usePagination(filtered);
+  useEffect(() => { pager.setPage(0); }, [q]);
 
   return (
     <div>
@@ -23,13 +32,14 @@ export function LabelsPage({ me }: { me: Actor | null }) {
         {isAdmin && <button className="primary" onClick={() => setEditing("new")}>+ Add label</button>}
       </div>
       <p className="muted small">Labels are reusable across issues. Each has a name, an optional description, and a colour.</p>
+      <input placeholder="Search labels…" value={query} onChange={(e) => setQuery(e.target.value)} style={{ maxWidth: 320 }} />
       {err && <div className="panel error">{err}</div>}
 
-      <div className="panel" style={{ padding: 0 }}>
+      <div className="panel" style={{ padding: 0, marginTop: 12 }}>
         <table>
           <thead><tr><th style={{ width: 50 }}>#</th><th>Label</th><th>Description</th><th style={{ width: 140 }}></th></tr></thead>
           <tbody>
-            {labels.map((l) => (
+            {pager.pageItems.map((l) => (
               <tr key={l.id}>
                 <td className="muted">{l.id}</td>
                 <td><LabelChip label={l} /></td>
@@ -40,10 +50,11 @@ export function LabelsPage({ me }: { me: Actor | null }) {
                 </td>
               </tr>
             ))}
-            {labels.length === 0 && <tr><td colSpan={4} className="muted" style={{ textAlign: "center", padding: 24 }}>No labels yet</td></tr>}
+            {filtered.length === 0 && <tr><td colSpan={4} className="muted" style={{ textAlign: "center", padding: 24 }}>No matching labels</td></tr>}
           </tbody>
         </table>
       </div>
+      <Pagination {...pager} />
 
       {editing && (
         <LabelModal

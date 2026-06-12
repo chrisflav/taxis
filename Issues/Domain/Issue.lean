@@ -3,14 +3,16 @@ import Issues.Domain.Enums
 import Issues.Domain.Actor
 import Issues.Domain.Artifact
 import Issues.Domain.Check
+import Issues.Domain.Comment
 import Issues.Domain.Label
 
 /-!
 # Issues
 
-The central entity. An issue carries its lifecycle state, a set of parent issues (forming a
-dependency DAG), assigned actors, attached artifacts, attached checks, and a set of groups
-that may see it (empty ⇒ public).
+The central entity. An issue carries its lifecycle state, an optional single **parent** (a
+hierarchical containment relation — at most one), a set of **dependencies** (other issues it
+depends on, forming the dependency graph), assigned actors, attached artifacts, attached checks,
+and a set of groups that may see it (empty ⇒ public).
 -/
 
 open Lean
@@ -23,10 +25,13 @@ structure Issue where
   title : String
   description : String := ""
   state : IssueState := .open
-  /-- When locked, the title, description, and dependency (parent) relations are frozen. -/
+  /-- When locked, the title, description, parent, and dependency relations are frozen. -/
   locked : Bool := false
   labels : Array LabelId := #[]
-  parents : Array IssueId := #[]
+  /-- The single hierarchical parent (containing issue), if any. -/
+  parent : Option IssueId := none
+  /-- Other issues this one depends on (the dependency graph). -/
+  dependencies : Array IssueId := #[]
   assignees : Array ActorId := #[]
   artifacts : Array ArtifactId := #[]
   visibility : Array GroupId := #[]
@@ -42,6 +47,7 @@ structure IssueDetail where
   issueLabels : Array Label := #[]
   attachedArtifacts : Array ArtifactView := #[]
   attachedChecks : Array Check := #[]
+  comments : Array Comment := #[]
 deriving Inhabited, ToJson, FromJson
 
 end Issues
