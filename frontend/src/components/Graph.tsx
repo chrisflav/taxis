@@ -4,6 +4,7 @@ import { api } from "../api";
 import { emptyFilters, matchesFilters, type IssueFilterState } from "../filters";
 import { Filters } from "./Filters";
 import { LabelChip } from "./LabelChip";
+import { Markdown } from "./Markdown";
 
 const NODE_W = 210;
 const X_GAP = 28;
@@ -183,7 +184,7 @@ export function GraphView() {
             >
               <div className="row" style={{ gap: 6 }}>
                 <span className="muted small">#{p.issue.id}</span>
-                <span className="graph-card-title">{p.issue.title}</span>
+                <span className="graph-card-title"><Markdown text={p.issue.title} inline /></span>
                 {p.issue.locked && <span title="locked">🔒</span>}
               </div>
               <div><span className={`badge ${p.issue.state}`}>{p.issue.state}</span></div>

@@ -3,6 +3,7 @@ import type { Actor, Issue, Label } from "../types";
 import { api } from "../api";
 import { emptyFilters, matchesFilters, type IssueFilterState } from "../filters";
 import { LabelChip } from "./LabelChip";
+import { Markdown } from "./Markdown";
 import { Filters } from "./Filters";
 import { IssueTree } from "./IssueTree";
 import { Modal } from "./Modal";
@@ -76,7 +77,7 @@ export function IssueList({ me }: { me: Actor | null }) {
               {pager.pageItems.map((i) => (
                 <tr key={i.id} className="issue-row" onClick={() => (window.location.hash = `#/issues/${i.id}`)}>
                   <td className="muted">{i.id}</td>
-                  <td>{i.title} {i.locked && <span title="locked">🔒</span>}</td>
+                  <td><Markdown text={i.title} inline /> {i.locked && <span title="locked">🔒</span>}</td>
                   <td><StateBadge state={i.state} /></td>
                   <td>{i.labels.map((l) => { const lbl = labelOf(l); return lbl ? <LabelChip key={l} label={lbl} /> : null; })}</td>
                   <td className="muted small">{i.dependencies.length > 0 ? `${i.dependencies.length} dep(s)` : "—"}</td>

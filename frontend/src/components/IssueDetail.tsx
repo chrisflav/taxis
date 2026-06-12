@@ -3,6 +3,7 @@ import type { Actor, Group, IssueDetail as Detail, PluginKind, Plugins } from ".
 import { api } from "../api";
 import { Modal, ConfirmModal } from "./Modal";
 import { LabelChip } from "./LabelChip";
+import { Markdown } from "./Markdown";
 
 // Render a Unix (seconds) timestamp in the viewer's locale.
 function fmtTime(ts: number): string {
@@ -36,12 +37,12 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
   return (
     <div>
       <h2 style={{ marginTop: 0 }}>
-        #{issue.id} · {issue.title} <span className={`badge ${issue.state}`}>{issue.state}</span>
+        #{issue.id} · <Markdown text={issue.title} inline /> <span className={`badge ${issue.state}`}>{issue.state}</span>
         {issue.locked && <span title="locked" style={{ marginLeft: 6 }}>🔒</span>}
       </h2>
 
       <div className="panel">
-        <p style={{ whiteSpace: "pre-wrap" }}>{issue.description || <span className="muted">No description</span>}</p>
+        {issue.description ? <Markdown text={issue.description} /> : <p className="muted">No description</p>}
         {detail.issueLabels.length > 0 && (
           <div className="row" style={{ marginBottom: 8 }}>
             {detail.issueLabels.map((l) => <LabelChip key={l.id} label={l} />)}
@@ -293,14 +294,14 @@ function CommentsSection({
               <button className="danger" onClick={() => api.deleteComment(c.id).then(onChange).catch((e2) => setErr(String(e2)))}>Delete</button>
             )}
           </div>
-          <div style={{ whiteSpace: "pre-wrap", marginTop: 4 }}>{c.body}</div>
+          <div style={{ marginTop: 4 }}><Markdown text={c.body} /></div>
         </div>
       ))}
 
       {me ? (
         <form onSubmit={post} style={{ marginTop: 12 }}>
           {err && <div className="error small">{err}</div>}
-          <textarea value={body} onChange={(e) => setBody(e.target.value)} placeholder="Add a comment…" />
+          <textarea value={body} onChange={(e) => setBody(e.target.value)} placeholder="Add a comment… (Markdown & LaTeX supported)" />
           <div className="row" style={{ justifyContent: "flex-end", marginTop: 8 }}>
             <button className="primary" type="submit" disabled={busy || !body.trim()}>Comment</button>
           </div>

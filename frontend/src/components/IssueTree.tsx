@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { Issue, Label } from "../types";
 import { LabelChip } from "./LabelChip";
+import { Markdown } from "./Markdown";
 
 // Hierarchical view over the single `parent` (containment) relation. Top-level nodes are issues
 // with no parent present in the set; unfolding a node reveals its child issues, indented.
@@ -51,7 +52,7 @@ function TreeNode({
         ) : (
           <span className="tree-toggle-spacer" />
         )}
-        <a href={`#/issues/${issue.id}`} className="tree-title">#{issue.id} {issue.title}</a>
+        <a href={`#/issues/${issue.id}`} className="tree-title">#{issue.id} <Markdown text={issue.title} inline /></a>
         {issue.locked && <span title="locked">🔒</span>}
         <span className={`badge ${issue.state}`}>{issue.state}</span>
         {issue.labels.map((l) => { const lbl = labelOf(l); return lbl ? <LabelChip key={l} label={lbl} /> : null; })}

@@ -104,6 +104,7 @@ export function IssueForm({
       <input value={title} onChange={(e) => setTitle(e.target.value)} required autoFocus disabled={locked} />
       <label>Description</label>
       <textarea value={description} onChange={(e) => setDescription(e.target.value)} disabled={locked} />
+      <div className="muted small">Markdown and LaTeX math (KaTeX, e.g. <code>$x^2$</code>) supported.</div>
       <label>Labels</label>
       <MultiSelect options={labelOpts} selected={labels} onChange={setLabels} placeholder="Add labels…" />
       <label>Parent (containing issue)</label>
