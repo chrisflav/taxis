@@ -1,6 +1,6 @@
-# Issue tracker
+# taxis
 
-An extensible issue tracker built in Lean 4, with a REST API backend and a TypeScript
+taxis is an extensible issue tracker built in Lean 4, with a REST API backend and a TypeScript
 (React) frontend. See [`DESIGN.md`](DESIGN.md) for the original design.
 
 ## Architecture
@@ -59,13 +59,13 @@ lake build
 cd frontend && npm install && npm run build && cd ..
 
 # Run (serves API under /api and the built SPA at /)
-lake exe issues
+lake exe taxis
 ```
 
 Then open <http://localhost:8080>.
 
 For frontend development with hot reload, run `npm run dev` in `frontend/` (it proxies `/api`
-to the backend on port 8080) and `lake exe issues` in another terminal.
+to the backend on port 8080) and `lake exe taxis` in another terminal.
 
 ## Configuration
 
@@ -103,7 +103,7 @@ labels (plus running imports) additionally requires an **admin** actor.
    ISSUES_GOOGLE_CLIENT_SECRET=... \
    ISSUES_BASE_URL=https://issues.example.com \
    ISSUES_ADMIN_EMAILS=you@example.com \
-   lake exe issues
+   lake exe taxis
    ```
 
 4. Click **Sign in with Google**. On the first login the server bootstraps admin for any email

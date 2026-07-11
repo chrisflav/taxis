@@ -48,7 +48,7 @@ export function App() {
   return (
     <>
       <header className="topbar">
-        <h1>Issue Tracker</h1>
+        <h1>taxis</h1>
         <nav>
           <a className={navClass("issues")} href="#/issues">Issues</a>
           <a className={navClass("graph")} href="#/graph">Graph</a>

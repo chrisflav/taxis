@@ -1,4 +1,4 @@
-# Issue tracker
+# taxis
 
 This repository should contain an issue tracker built in Lean4.
 

@@ -1,4 +1,4 @@
-import Issues
+import Taxis
 
 /-!
 # Test suite
@@ -8,7 +8,7 @@ temporary SQLite file), the plugin registry, and the visibility filter. Exits no
 check fails, so it works as `lake test` and in CI.
 -/
 
-open Lean Issues Issues.Db Issues.Server
+open Lean Taxis Taxis.Db Taxis.Server
 
 private def roundtrips [ToJson α] [FromJson α] [BEq α] (x : α) : Bool :=
   match (fromJson? (toJson x) : Except String α) with

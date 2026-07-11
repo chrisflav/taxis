@@ -1,6 +1,6 @@
-name = "issues"
+name = "taxis"
 version = "0.1.0"
-defaultTargets = ["issues"]
+defaultTargets = ["taxis"]
 testDriver = "test"
 
 [[require]]
@@ -9,10 +9,10 @@ git = "https://github.com/leanprover/leansqlite"
 rev = "v4.31.0"
 
 [[lean_lib]]
-name = "Issues"
+name = "Taxis"
 
 [[lean_exe]]
-name = "issues"
+name = "taxis"
 root = "Main"
 
 [[lean_exe]]
