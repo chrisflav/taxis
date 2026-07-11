@@ -42,8 +42,6 @@ export function App() {
   else if (top === "tokens") view = <TokensPage me={me} />;
   else if (top === "admin") view = me?.admin ? <Admin /> : <div className="panel muted">Admin access required. Sign in as an administrator.</div>;
   else if (top === "issues" && segments[1] === "new") view = <IssueForm me={me} />;
-  else if (top === "issues" && segments[1] && segments[2] === "edit")
-    view = <IssueForm me={me} issueId={Number(segments[1])} />;
   else if (top === "issues" && segments[1]) view = <IssueDetail id={Number(segments[1])} me={me} />;
   else view = <IssueList me={me} />;
 

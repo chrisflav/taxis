@@ -38,11 +38,13 @@ def issueComments (db : Conn) (issueId : IssueId) : IO (Array Comment) := do
     FROM comments c LEFT JOIN actors a ON a.id = c.author_id WHERE c.issue_id = {issueId} ORDER BY c.id" as CommentRow).toArray
   pure (rows.map CommentRow.toComment)
 
-/-- Post a comment on an issue, attributed to `authorId` (if any). -/
+/-- Post a comment on an issue, attributed to `authorId` (if any). Stamps the issue's `updated_at`
+    so a new comment counts as activity for the "last updated" ordering. -/
 def createComment (db : Conn) (issueId : IssueId) (authorId : Option ActorId)
     (input : CommentInput) : IO Comment := do
   let rows ← (← db query!"INSERT INTO comments (issue_id, author_id, body)
     VALUES ({issueId}, {authorId}, {input.body}) RETURNING id" as CommentId).toArray
+  db exec!"UPDATE issues SET updated_at = unixepoch() WHERE id = {issueId}"
   match ← getComment db rows[0]! with
   | some c => pure c
   | none => throw (IO.userError "comment vanished after insert")

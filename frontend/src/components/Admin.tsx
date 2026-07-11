@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
-import type { Actor, Group } from "../types";
+import type { Actor, ApiToken, Group } from "../types";
 import { api } from "../api";
 import { Modal, ConfirmModal } from "./Modal";
 import { MultiSelect } from "./MultiSelect";
 import { Pagination, usePagination } from "./Pagination";
+import { ActorName } from "./ActorName";
 
 export function Admin() {
   const [groups, setGroups] = useState<Group[]>([]);
@@ -27,6 +28,7 @@ function ActorsPanel({ groups }: { groups: Group[] }) {
   const [query, setQuery] = useState("");
   const [editing, setEditing] = useState<Actor | "new" | null>(null);
   const [deleting, setDeleting] = useState<Actor | null>(null);
+  const [tokensFor, setTokensFor] = useState<Actor | null>(null);
 
   const load = () => api.listActors().then(setActors).catch((e) => setErr(String(e)));
   useEffect(() => { load(); }, []);
@@ -59,7 +61,8 @@ function ActorsPanel({ groups }: { groups: Group[] }) {
             <tr key={a.id}>
               <td className="muted">{a.id}</td>
               <td>
-                {a.displayName} {a.admin && <span className="badge">admin</span>}
+                <ActorName name={a.displayName} bot={a.bot} />{" "}
+                {a.admin && <span className="badge">admin</span>}
                 <div className="muted small">{a.email}</div>
                 {a.groups.length > 0 && (
                   <div>{a.groups.map((g) => <span key={g} className="chip">{groupName(g)}</span>)}</div>
@@ -67,6 +70,7 @@ function ActorsPanel({ groups }: { groups: Group[] }) {
               </td>
               <td className="row">
                 <button onClick={() => setEditing(a)}>Edit</button>
+                <button onClick={() => setTokensFor(a)}>Tokens</button>
                 <button className="danger" onClick={() => setDeleting(a)}>Delete</button>
               </td>
             </tr>
@@ -96,7 +100,77 @@ function ActorsPanel({ groups }: { groups: Group[] }) {
           onCancel={() => setDeleting(null)}
         />
       )}
+      {tokensFor && (
+        <ActorTokensModal actor={tokensFor} onClose={() => setTokensFor(null)} />
+      )}
     </div>
+  );
+}
+
+// Admin: manage the API tokens of another actor (typically a bot). Creates a token whose secret is
+// shown exactly once, and lists the actor's existing tokens.
+function ActorTokensModal({ actor, onClose }: { actor: Actor; onClose: () => void }) {
+  const [tokens, setTokens] = useState<ApiToken[]>([]);
+  const [name, setName] = useState("");
+  const [secret, setSecret] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const load = () => api.listActorTokens(actor.id).then(setTokens).catch((e) => setErr(String(e)));
+  useEffect(() => { load(); }, [actor.id]);
+
+  const create = (e: React.FormEvent) => {
+    e.preventDefault();
+    setErr(null);
+    api.createActorToken(actor.id, name.trim())
+      .then((res) => { setSecret(res.secret); setCopied(false); setName(""); load(); })
+      .catch((e2) => setErr(String(e2)));
+  };
+  const fmt = (ts: number | null) => (ts ? new Date(ts * 1000).toLocaleString() : "never");
+
+  return (
+    <Modal title={`Tokens for ${actor.displayName}`} onClose={onClose}>
+      {err && <div className="error small">{err}</div>}
+      <p className="muted small">
+        A token authenticates as this actor via <code>Authorization: Bearer &lt;token&gt;</code>. Only a hash
+        is stored; the secret is shown once here.
+      </p>
+
+      {secret && (
+        <div className="panel" style={{ borderColor: "var(--accent)" }}>
+          <strong>New token — copy it now, it won't be shown again:</strong>
+          <div className="row" style={{ marginTop: 8 }}>
+            <code className="token-secret">{secret}</code>
+            <button onClick={() => { navigator.clipboard?.writeText(secret); setCopied(true); }}>
+              {copied ? "Copied ✓" : "Copy"}
+            </button>
+            <button onClick={() => setSecret(null)}>Dismiss</button>
+          </div>
+        </div>
+      )}
+
+      <form className="row" onSubmit={create} style={{ marginTop: 8 }}>
+        <input placeholder="Token name (e.g. ci-bot)" value={name} onChange={(e) => setName(e.target.value)} />
+        <button className="primary" type="submit">Create token</button>
+      </form>
+
+      <table style={{ marginTop: 12 }}>
+        <thead><tr><th>Name</th><th>Prefix</th><th>Created</th><th>Last used</th></tr></thead>
+        <tbody>
+          {tokens.map((t) => (
+            <tr key={t.id}>
+              <td>{t.name || <span className="muted">(unnamed)</span>}</td>
+              <td><code className="small">{t.tokenPrefix}…</code></td>
+              <td className="muted small">{fmt(t.createdAt)}</td>
+              <td className="muted small">{fmt(t.lastUsed)}</td>
+            </tr>
+          ))}
+          {tokens.length === 0 && (
+            <tr><td colSpan={4} className="muted small" style={{ padding: 12 }}>No tokens yet</td></tr>
+          )}
+        </tbody>
+      </table>
+    </Modal>
   );
 }
 
@@ -108,11 +182,12 @@ function ActorModal({ actor, groups, onClose, onSaved }: {
   const [displayName, setDisplayName] = useState(actor?.displayName ?? "");
   const [groupIds, setGroupIds] = useState<number[]>(actor?.groups ?? []);
   const [admin, setAdmin] = useState(actor?.admin ?? false);
+  const [bot, setBot] = useState(actor?.bot ?? false);
   const [err, setErr] = useState<string | null>(null);
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
-    const body = { email, displayName: displayName || email, groups: groupIds, admin };
+    const body = { email, displayName: displayName || email, groups: groupIds, admin, bot };
     const p = editing ? api.updateActor(actor!.id, body) : api.createActor(body);
     p.then(onSaved).catch((e2) => setErr(String(e2)));
   };
@@ -134,6 +209,9 @@ function ActorModal({ actor, groups, onClose, onSaved }: {
         />
         <label className="row small" style={{ marginTop: 10 }}>
           <input type="checkbox" style={{ width: "auto" }} checked={admin} onChange={(e) => setAdmin(e.target.checked)} /> Administrator
+        </label>
+        <label className="row small" style={{ marginTop: 6 }}>
+          <input type="checkbox" style={{ width: "auto" }} checked={bot} onChange={(e) => setBot(e.target.checked)} /> Bot (shows a 🤖 marker next to the name)
         </label>
         <div className="row" style={{ justifyContent: "flex-end", marginTop: 16 }}>
           <button type="button" onClick={onClose}>Cancel</button>

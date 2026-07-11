@@ -49,11 +49,14 @@ private def operation (tag summary : String) (params : List Json) (body : Option
 private def schemas : Json := obj [
   ("Error", schemaObj [("error", typ "string")]),
   ("Actor", schemaObj [("id", typ "integer"), ("email", typ "string"), ("displayName", typ "string"),
-    ("groups", arrayOf (typ "integer")), ("googleSub", nullable "string")]),
+    ("groups", arrayOf (typ "integer")), ("googleSub", nullable "string"), ("admin", typ "boolean"),
+    ("bot", typ "boolean")]),
   ("ActorInput", schemaObj [("email", typ "string"), ("displayName", typ "string"),
-    ("groups", arrayOf (typ "integer")), ("googleSub", typ "string")] ["email", "displayName"]),
+    ("groups", arrayOf (typ "integer")), ("googleSub", typ "string"), ("admin", typ "boolean"),
+    ("bot", typ "boolean")] ["email", "displayName"]),
   ("ActorUpdate", schemaObj [("email", typ "string"), ("displayName", typ "string"),
-    ("groups", arrayOf (typ "integer")), ("googleSub", typ "string")]),
+    ("groups", arrayOf (typ "integer")), ("googleSub", typ "string"), ("admin", typ "boolean"),
+    ("bot", typ "boolean")]),
   ("Group", schemaObj [("id", typ "integer"), ("name", typ "string"), ("description", nullable "string")]),
   ("GroupInput", schemaObj [("name", typ "string"), ("description", typ "string")] ["name"]),
   ("Label", schemaObj [("id", typ "integer"), ("name", typ "string"), ("description", nullable "string"),
@@ -85,12 +88,16 @@ private def schemas : Json := obj [
   ("Comment", schemaObj [("id", typ "integer"), ("issueId", typ "integer"), ("authorId", nullable "integer"),
     ("authorName", nullable "string"), ("body", typ "string"), ("createdAt", typ "integer"), ("updatedAt", typ "integer")]),
   ("CommentInput", schemaObj [("body", typ "string")] ["body"]),
+  ("Event", schemaObj [("id", typ "integer"), ("issueId", typ "integer"), ("actorId", nullable "integer"),
+    ("actorName", nullable "string"), ("actorBot", typ "boolean"), ("kind", typ "string"),
+    ("data", typ "object"), ("createdAt", typ "integer")]),
   ("ApiToken", schemaObj [("id", typ "integer"), ("actorId", typ "integer"), ("name", typ "string"),
     ("tokenPrefix", typ "string"), ("createdAt", typ "integer"), ("lastUsed", nullable "integer")]),
   ("ApiTokenCreated", schemaObj [("token", ref "ApiToken"), ("secret", typ "string")]),
   ("IssueDetail", schemaObj [("issue", ref "Issue"), ("assignedActors", arrayOf (ref "Actor")),
     ("issueLabels", arrayOf (ref "Label")), ("attachedArtifacts", arrayOf (ref "Artifact")),
-    ("attachedChecks", arrayOf (ref "Check")), ("comments", arrayOf (ref "Comment"))]),
+    ("attachedChecks", arrayOf (ref "Check")), ("comments", arrayOf (ref "Comment")),
+    ("events", arrayOf (ref "Event"))]),
   ("Plugins", schemaObj [("artifactKinds", arrayOf (typ "string")), ("checkKinds", arrayOf (typ "string"))]),
   ("Graph", schemaObj [("nodes", arrayOf (typ "object")), ("edges", arrayOf (typ "object"))]),
   ("Deleted", schemaObj [("deleted", typ "boolean")])
@@ -156,6 +163,8 @@ private def paths : Json := obj [
     ("patch", operation "Issues" "Update an issue (rejected on locked fields)" [idParam] (some (jsonBody (ref "IssueUpdate")))
       [("200", jsonResp "Issue" (ref "Issue")), ("422", jsonResp "Validation error" (ref "Error"))]),
     ("delete", operation "Issues" "Delete an issue" [idParam] none [("200", jsonResp "Deleted" (ref "Deleted"))])]),
+  ("/issues/{id}/events", obj [("get", operation "Issues" "The recorded history (audit trail) of an issue"
+    [idParam] none [("200", jsonResp "Events" (arrayOf (ref "Event")))])]),
 
   ("/issues/{id}/artifacts", obj [("post", operation "Artifacts" "Attach an artifact to an issue"
     [idParam] (some (jsonBody (ref "ArtifactInput"))) [("201", jsonResp "Created" (ref "Artifact")), ("422", jsonResp "Unknown kind or invalid payload" (ref "Error"))])]),
@@ -170,13 +179,20 @@ private def paths : Json := obj [
   ("/issues/{id}/comments", obj [
     ("get", operation "Comments" "List comments on an issue" [idParam] none [("200", jsonResp "Comments" (arrayOf (ref "Comment")))]),
     ("post", operation "Comments" "Post a comment on an issue" [idParam] (some (jsonBody (ref "CommentInput"))) [("201", jsonResp "Created" (ref "Comment"))])]),
-  ("/comments/{id}", obj [("delete", operation "Comments" "Delete a comment (author or admin only)" [idParam] none [("200", jsonResp "Deleted" (ref "Deleted"))])]),
+  ("/comments/{id}", obj [
+    ("patch", operation "Comments" "Edit a comment (author or admin only)" [idParam] (some (jsonBody (ref "CommentInput"))) [("200", jsonResp "Updated" (ref "Comment"))]),
+    ("delete", operation "Comments" "Delete a comment (author or admin only)" [idParam] none [("200", jsonResp "Deleted" (ref "Deleted"))])]),
 
   ("/me/tokens", obj [
     ("get", operation "Auth" "List your API tokens" [] none [("200", jsonResp "Tokens" (arrayOf (ref "ApiToken")))]),
     ("post", operation "Auth" "Create an API token; the secret is shown only once" []
       (some (jsonBody (schemaObj [("name", typ "string")]))) [("201", jsonResp "Created" (ref "ApiTokenCreated"))])]),
   ("/me/tokens/{id}", obj [("delete", operation "Auth" "Revoke one of your API tokens" [idParam] none [("200", jsonResp "Deleted" (ref "Deleted"))])]),
+
+  ("/actors/{id}/tokens", obj [
+    ("get", operation "Auth" "List another actor's API tokens (admin only)" [idParam] none [("200", jsonResp "Tokens" (arrayOf (ref "ApiToken")))]),
+    ("post", operation "Auth" "Mint an API token for another actor, e.g. a bot (admin only); the secret is shown only once" [idParam]
+      (some (jsonBody (schemaObj [("name", typ "string")]))) [("201", jsonResp "Created" (ref "ApiTokenCreated"))])]),
 
   ("/import/github", obj [("post", operation "Import" "Import issues from a GitHub repository"
     [] (some (jsonBody (schemaObj [("owner", typ "string"), ("repo", typ "string"), ("state", typ "string")] ["owner", "repo"])))

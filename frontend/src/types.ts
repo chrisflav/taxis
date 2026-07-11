@@ -21,6 +21,7 @@ export interface Actor {
   groups: number[];
   googleSub: string | null;
   admin: boolean;
+  bot: boolean;
 }
 
 export interface Artifact {
@@ -66,6 +67,26 @@ export interface Comment {
   updatedAt: number;
 }
 
+// A recorded change to an issue. `data` shape depends on `kind`:
+//   title/description:      { from, to }
+//   state/parent:           { from, to }
+//   locked:                 { to: boolean }
+//   dependencies/assignees/visibility/labels: { added: number[], removed: number[] }
+//   artifact_added/removed: { kind, label? }
+//   check_added/removed:    { kind }
+//   comment_edited:         { commentId, from, to }
+//   comment_deleted:        { commentId }
+export interface Event {
+  id: number;
+  issueId: number;
+  actorId: number | null;
+  actorName: string | null;
+  actorBot: boolean;
+  kind: string;
+  data: Record<string, unknown>;
+  createdAt: number;
+}
+
 export interface ApiToken {
   id: number;
   actorId: number;
@@ -87,6 +108,7 @@ export interface IssueDetail {
   attachedArtifacts: Artifact[];
   attachedChecks: Check[];
   comments: Comment[];
+  events: Event[];
 }
 
 export interface GraphData {

@@ -4,6 +4,7 @@ import Issues.Domain.Actor
 import Issues.Domain.Artifact
 import Issues.Domain.Check
 import Issues.Domain.Comment
+import Issues.Domain.Event
 import Issues.Domain.Label
 
 /-!
@@ -48,6 +49,7 @@ structure IssueDetail where
   attachedArtifacts : Array ArtifactView := #[]
   attachedChecks : Array Check := #[]
   comments : Array Comment := #[]
+  events : Array Event := #[]
 deriving Inhabited, ToJson, FromJson
 
 end Issues

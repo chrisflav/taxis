@@ -7,6 +7,7 @@ import Issues.Db.Artifacts
 import Issues.Db.Checks
 import Issues.Db.Issues
 import Issues.Db.Comments
+import Issues.Db.Events
 import Issues.Db.Sessions
 import Issues.Db.Tokens
 

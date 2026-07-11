@@ -29,6 +29,8 @@ structure Actor where
   googleSub : Option String := none
   /-- Administrators may manage actors, groups, labels, and run imports. -/
   admin : Bool := false
+  /-- Whether this actor is a bot (rendered with a bot marker wherever the name is shown). -/
+  bot : Bool := false
 deriving Repr, BEq, Inhabited, ToJson, FromJson
 
 end Issues

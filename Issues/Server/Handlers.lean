@@ -144,7 +144,8 @@ private def loadDetail (db : Db.Conn) (id : IssueId) : IO (Option IssueDetail) :
     let attachedArtifacts ← (← Db.issueArtifacts db id).mapM toArtifactView
     let attachedChecks ← Db.issueChecks db id
     let comments ← Db.issueComments db id
-    pure (some { issue, assignedActors, issueLabels, attachedArtifacts, attachedChecks, comments })
+    let events ← Db.issueEvents db id
+    pure (some { issue, assignedActors, issueLabels, attachedArtifacts, attachedChecks, comments, events })
 
 def getIssueH (ctx : AppContext) (id : Int64) (actor : Option Actor) : ApiM ApiResponse := do
   match ← ctx.dbM (loadDetail · ⟨id⟩) with
@@ -159,7 +160,7 @@ def updateIssueH (ctx : AppContext) (id : Int64) (req : Req) : ApiM ApiResponse 
   match req.actor, upd.visibility with
   | some actor, some vis => ensureVisibilityAllowed actor vis
   | _, _ => pure ()
-  match ← ctx.dbM (Db.updateIssue · ⟨id⟩ upd) with
+  match ← ctx.dbM (Db.updateIssue · ⟨id⟩ upd (req.actor.map (·.id))) with
   | some i => ok (toJson i)
   | none => fail (.notFound s!"issue {id} not found")
 
@@ -168,26 +169,48 @@ def deleteIssueH (ctx : AppContext) (id : Int64) : ApiM ApiResponse := do
     ok (Json.mkObj [("deleted", true)])
   else fail (.notFound s!"issue {id} not found")
 
+/-- The recorded history (audit trail) of an issue, oldest first. Only returned for a visible
+    issue, so hidden issues do not leak their activity. -/
+def listEventsH (ctx : AppContext) (id : Int64) (actor : Option Actor) : ApiM ApiResponse := do
+  match ← ctx.dbM (fun db => do pure (← Db.getIssue db ⟨id⟩, ← Db.issueEvents db ⟨id⟩)) with
+  | (some issue, events) =>
+    if visibleTo actor issue then ok (toJson events)
+    else fail (.notFound s!"issue {id} not found")
+  | (none, _) => fail (.notFound s!"issue {id} not found")
+
 /-! ## Artifacts -/
 
 def createArtifactH (ctx : AppContext) (issueId : Int64) (req : Req) : ApiM ApiResponse := do
   let input ← parseBody ArtifactInput req.body
-  match ← liftIO (Plugins.artifactHandler? input.kind) with
-  | none => fail (.unprocessable s!"unknown artifact kind '{input.kind}'")
-  | some h => match h.validate input.payload with
-    | .error e => fail (.unprocessable s!"invalid {input.kind} payload: {e}")
-    | .ok _ => pure ()
+  let label ← match ← liftIO (Plugins.artifactHandler? input.kind) with
+    | none => fail (.unprocessable s!"unknown artifact kind '{input.kind}'")
+    | some h => match h.validate input.payload with
+      | .error e => fail (.unprocessable s!"invalid {input.kind} payload: {e}")
+      | .ok _ => pure (h.render input.payload).label
+  let actorId := req.actor.map (·.id)
   match ← ctx.dbM (fun db => do
       match ← Db.getIssue db ⟨issueId⟩ with
       | none => pure none
-      | some _ => some <$> Db.createArtifact db ⟨issueId⟩ input) with
+      | some _ =>
+        let a ← Db.createArtifact db ⟨issueId⟩ input
+        Db.recordEvent db ⟨issueId⟩ actorId "artifact_added"
+          (Json.mkObj [("kind", input.kind), ("label", label)])
+        pure (some a)) with
   | some a => created (toJson (← liftIO (toArtifactView a)))
   | none => fail (.notFound s!"issue {issueId} not found")
 
-def deleteArtifactH (ctx : AppContext) (id : Int64) : ApiM ApiResponse := do
-  if ← ctx.dbM (Db.deleteArtifact · ⟨id⟩) then
-    ok (Json.mkObj [("deleted", true)])
-  else fail (.notFound s!"artifact {id} not found")
+def deleteArtifactH (ctx : AppContext) (id : Int64) (req : Req) : ApiM ApiResponse := do
+  let actorId := req.actor.map (·.id)
+  match ← ctx.dbM (fun db => do
+      match ← Db.getArtifact db ⟨id⟩, ← Db.artifactIssue db ⟨id⟩ with
+      | some art, some issueId =>
+        let removed ← Db.deleteArtifact db ⟨id⟩
+        if removed then
+          Db.recordEvent db issueId actorId "artifact_removed" (Json.mkObj [("kind", art.kind)])
+        pure (some removed)
+      | _, _ => pure none) with
+  | some true => ok (Json.mkObj [("deleted", true)])
+  | _ => fail (.notFound s!"artifact {id} not found")
 
 /-! ## Checks -/
 
@@ -201,17 +224,29 @@ def createCheckH (ctx : AppContext) (issueId : Int64) (req : Req) : ApiM ApiResp
   | some h => match h.validateConfig input.config with
     | .error e => fail (.unprocessable s!"invalid {input.kind} config: {e}")
     | .ok _ => pure ()
+  let actorId := req.actor.map (·.id)
   match ← ctx.dbM (fun db => do
       match ← Db.getIssue db ⟨issueId⟩ with
       | none => pure none
-      | some _ => some <$> Db.createCheck db ⟨issueId⟩ input) with
+      | some _ =>
+        let c ← Db.createCheck db ⟨issueId⟩ input
+        Db.recordEvent db ⟨issueId⟩ actorId "check_added" (Json.mkObj [("kind", input.kind)])
+        pure (some c)) with
   | some c => created (toJson c)
   | none => fail (.notFound s!"issue {issueId} not found")
 
-def deleteCheckH (ctx : AppContext) (id : Int64) : ApiM ApiResponse := do
-  if ← ctx.dbM (Db.deleteCheck · ⟨id⟩) then
-    ok (Json.mkObj [("deleted", true)])
-  else fail (.notFound s!"check {id} not found")
+def deleteCheckH (ctx : AppContext) (id : Int64) (req : Req) : ApiM ApiResponse := do
+  let actorId := req.actor.map (·.id)
+  match ← ctx.dbM (fun db => do
+      match ← Db.getCheck db ⟨id⟩, ← Db.checkIssue db ⟨id⟩ with
+      | some chk, some issueId =>
+        let removed ← Db.deleteCheck db ⟨id⟩
+        if removed then
+          Db.recordEvent db issueId actorId "check_removed" (Json.mkObj [("kind", chk.kind)])
+        pure (some removed)
+      | _, _ => pure none) with
+  | some true => ok (Json.mkObj [("deleted", true)])
+  | _ => fail (.notFound s!"check {id} not found")
 
 /-- Evaluate a check now and return its updated state. -/
 def runCheckH (ctx : AppContext) (id : Int64) : ApiM ApiResponse := do
@@ -311,17 +346,45 @@ def createCommentH (ctx : AppContext) (issueId : Int64) (req : Req) : ApiM ApiRe
   | some c => created (toJson c)
   | none => fail (.notFound s!"issue {issueId} not found")
 
+/-- Whether `actor` may edit or delete comment `c` (its author, or an admin). -/
+private def mayModifyComment (actor : Option Actor) (c : Comment) : Bool :=
+  let isAuthor := actor.isSome && (actor.map (·.id.val)) == (c.authorId.map (·.val))
+  let isAdmin := actor.map (·.admin) |>.getD false
+  isAuthor || isAdmin
+
+def updateCommentH (ctx : AppContext) (id : Int64) (req : Req) : ApiM ApiResponse := do
+  match ← ctx.dbM (Db.getComment · ⟨id⟩) with
+  | none => fail (.notFound s!"comment {id} not found")
+  | some c =>
+    unless mayModifyComment req.actor c do
+      fail (.forbidden "only the comment's author or an admin may edit it")
+    let input ← parseBody CommentInput req.body
+    if input.body.trimAscii.isEmpty then fail (.badRequest "comment body must not be empty")
+    let actorId := req.actor.map (·.id)
+    match ← ctx.dbM (fun db => do
+        let updated ← Db.updateComment db ⟨id⟩ input.body
+        if updated.isSome && input.body != c.body then
+          Db.recordEvent db c.issueId actorId "comment_edited"
+            (Json.mkObj [("commentId", toJson c.id), ("from", c.body), ("to", input.body)])
+        pure updated) with
+    | some updated => ok (toJson updated)
+    | none => fail (.notFound s!"comment {id} not found")
+
 def deleteCommentH (ctx : AppContext) (id : Int64) (req : Req) : ApiM ApiResponse := do
   match ← ctx.dbM (Db.getComment · ⟨id⟩) with
   | none => fail (.notFound s!"comment {id} not found")
   | some c =>
-    let isAuthor := req.actor.isSome && (req.actor.map (·.id.val)) == (c.authorId.map (·.val))
-    let isAdmin := req.actor.map (·.admin) |>.getD false
-    unless isAuthor || isAdmin do
+    unless mayModifyComment req.actor c do
       fail (.forbidden "only the comment's author or an admin may delete it")
-    if ← ctx.dbM (Db.deleteComment · ⟨id⟩) then
-      ok (Json.mkObj [("deleted", true)])
-    else fail (.notFound s!"comment {id} not found")
+    let actorId := req.actor.map (·.id)
+    match ← ctx.dbM (fun db => do
+        let removed ← Db.deleteComment db ⟨id⟩
+        if removed then
+          Db.recordEvent db c.issueId actorId "comment_deleted"
+            (Json.mkObj [("commentId", toJson c.id)])
+        pure removed) with
+    | true => ok (Json.mkObj [("deleted", true)])
+    | false => fail (.notFound s!"comment {id} not found")
 
 /-! ## API tokens -/
 
@@ -350,6 +413,27 @@ def deleteTokenH (ctx : AppContext) (id : Int64) (req : Req) : ApiM ApiResponse 
     if ← ctx.dbM (Db.deleteToken · ⟨id⟩ a.id) then
       ok (Json.mkObj [("deleted", true)])
     else fail (.notFound s!"token {id} not found")
+
+/-- Admin-only: list the API tokens belonging to another actor. -/
+def listActorTokensH (ctx : AppContext) (id : Int64) (req : Req) : ApiM ApiResponse := do
+  unless (req.actor.map (·.admin) |>.getD false) do fail (.forbidden "admin privileges required")
+  match ← ctx.dbM (Db.getActor · ⟨id⟩) with
+  | none => fail (.notFound s!"actor {id} not found")
+  | some a => ok (toJson (← ctx.dbM (Db.listTokens · a.id)))
+
+/-- Admin-only: mint an API token on behalf of another actor (e.g. a bot). The secret is returned
+    exactly once, here. -/
+def createActorTokenH (ctx : AppContext) (id : Int64) (req : Req) : ApiM ApiResponse := do
+  unless (req.actor.map (·.admin) |>.getD false) do fail (.forbidden "admin privileges required")
+  match ← ctx.dbM (Db.getActor · ⟨id⟩) with
+  | none => fail (.notFound s!"actor {id} not found")
+  | some a =>
+    let input ← parseBody TokenInput req.body
+    let secret := "issues_pat_" ++ (← liftIO randomToken)
+    let hash := Crypto.sha256Hex secret
+    let pfx := String.ofList (secret.toList.take 15)
+    let tok ← ctx.dbM (Db.createToken · a.id input.name hash pfx)
+    created (toJson ({ token := tok, secret } : ApiTokenCreated))
 
 /-! ## Plugins -/
 
@@ -417,22 +501,27 @@ def dispatch (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
   | .get, ["issues", id] => getIssueH ctx (← Req.parseId id) req.actor
   | .patch, ["issues", id] => updateIssueH ctx (← Req.parseId id) req
   | .delete, ["issues", id] => deleteIssueH ctx (← Req.parseId id)
+  | .get, ["issues", id, "events"] => listEventsH ctx (← Req.parseId id) req.actor
 
   | .post, ["issues", id, "artifacts"] => createArtifactH ctx (← Req.parseId id) req
-  | .delete, ["artifacts", id] => deleteArtifactH ctx (← Req.parseId id)
+  | .delete, ["artifacts", id] => deleteArtifactH ctx (← Req.parseId id) req
 
   | .get, ["issues", id, "checks"] => listChecksH ctx (← Req.parseId id)
   | .post, ["issues", id, "checks"] => createCheckH ctx (← Req.parseId id) req
   | .post, ["checks", id, "run"] => runCheckH ctx (← Req.parseId id)
-  | .delete, ["checks", id] => deleteCheckH ctx (← Req.parseId id)
+  | .delete, ["checks", id] => deleteCheckH ctx (← Req.parseId id) req
 
   | .get, ["issues", id, "comments"] => listCommentsH ctx (← Req.parseId id)
   | .post, ["issues", id, "comments"] => createCommentH ctx (← Req.parseId id) req
+  | .patch, ["comments", id] => updateCommentH ctx (← Req.parseId id) req
   | .delete, ["comments", id] => deleteCommentH ctx (← Req.parseId id) req
 
   | .get, ["me", "tokens"] => listTokensH ctx req
   | .post, ["me", "tokens"] => createTokenH ctx req
   | .delete, ["me", "tokens", id] => deleteTokenH ctx (← Req.parseId id) req
+
+  | .get, ["actors", id, "tokens"] => listActorTokensH ctx (← Req.parseId id) req
+  | .post, ["actors", id, "tokens"] => createActorTokenH ctx (← Req.parseId id) req
 
   | .post, ["import", "github"] => importGithubH ctx req
   | .post, ["import", "gdoc"] => importGdocH ctx req

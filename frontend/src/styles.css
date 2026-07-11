@@ -103,6 +103,10 @@ table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
 th { color: var(--muted); font-weight: 500; font-size: 12px; }
 tr.issue-row:hover { background: var(--panel-2); cursor: pointer; }
+th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+th.sortable:hover { color: var(--text); }
+th.sortable.active { color: var(--text); }
+.sort-arrow { font-size: 10px; }
 
 .badge {
   display: inline-block;
@@ -180,20 +184,40 @@ tr.issue-row:hover { background: var(--panel-2); cursor: pointer; }
 
 .actions-bar { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; margin-top: 8px; padding-top: 16px; border-top: 1px solid var(--border); }
 
-.graph-canvas { border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); min-width: 100%; min-height: 72vh; }
+.graph-viewport {
+  position: relative; border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--panel);
+  background-image: radial-gradient(color-mix(in srgb, var(--border) 70%, transparent) 1px, transparent 1px);
+  background-size: 22px 22px;
+  height: 76vh; overflow: hidden; touch-action: none; cursor: grab;
+}
+.graph-viewport:active { cursor: grabbing; }
+.graph-world { position: absolute; top: 0; left: 0; transform-origin: 0 0; will-change: transform; }
+
+.graph-controls {
+  position: absolute; z-index: 5; top: 10px; right: 10px; display: flex; align-items: center; gap: 6px;
+  background: color-mix(in srgb, var(--panel) 88%, transparent); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 4px 6px; backdrop-filter: blur(3px);
+}
+.graph-controls button { padding: 2px 9px; line-height: 1.4; }
+.graph-zoom { min-width: 40px; text-align: right; }
+
 .graph-card {
   position: absolute; box-sizing: border-box; border: 1px solid var(--border);
   border-radius: 8px; background: var(--panel); padding: 6px 8px; overflow: hidden;
   cursor: pointer; display: flex; flex-direction: column; gap: 3px;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+  box-shadow: 0 1px 2px rgba(0,0,0,0.06); transition: opacity 0.12s, box-shadow 0.12s, border-color 0.12s;
 }
-.graph-card:hover { border-color: var(--accent); }
+.graph-card:hover, .graph-card.hi { border-color: var(--accent); box-shadow: 0 4px 14px rgba(37,99,235,0.18); z-index: 2; }
+.graph-card.dim { opacity: 0.25; }
 .graph-card.open { border-left: 3px solid var(--accent); }
 .graph-card.completed { border-left: 3px solid var(--green); }
 .graph-card.closed { border-left: 3px solid var(--muted); }
 .graph-card-title { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .graph-card-line { display: flex; gap: 4px; flex-wrap: wrap; overflow: hidden; align-items: center; }
-.graph-edge { stroke: var(--muted); stroke-width: 1.5; fill: none; }
+.graph-edge { stroke: var(--muted); stroke-width: 1.5; fill: none; transition: opacity 0.12s, stroke 0.12s; }
+.graph-edge.hi { stroke: var(--accent); stroke-width: 2.5; }
+.graph-edge.dim { opacity: 0.15; }
 
 .spacer { flex: 1; }
 
@@ -201,9 +225,66 @@ tr.issue-row:hover { background: var(--panel-2); cursor: pointer; }
 .pagination { margin-top: 10px; gap: 10px; }
 .pagination select { padding: 4px 6px; }
 
-/* Comments */
-.comment { padding: 10px 0; border-bottom: 1px solid var(--border); }
-.comment:last-of-type { border-bottom: none; }
+/* Comments render as their own cards inside the merged activity timeline. */
+.comment-card {
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel);
+  padding: 10px 12px; margin: 8px 0; box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+}
+.comment-controls { display: inline-flex; gap: 2px; }
+.edit-pencil-danger:hover { color: var(--red); }
+
+/* Inline editing */
+.field-heading { margin: 0 0 8px; font-size: 13px; color: var(--muted); font-weight: 600; }
+.editable { position: relative; }
+.editable-inline { display: inline; }
+.edit-pencil {
+  border: none; background: none; color: var(--muted); padding: 0 4px; font-size: 12px;
+  opacity: 0; transition: opacity 0.12s; cursor: pointer; line-height: 1;
+}
+.editable:hover .edit-pencil, .meta-value:hover .edit-pencil, h2:hover .edit-pencil,
+.comment-card:hover .edit-pencil { opacity: 1; }
+.edit-pencil:hover { color: var(--accent); border: none; }
+.inline-edit { display: block; margin: 4px 0; }
+.inline-edit-inline { display: inline-block; min-width: 320px; max-width: 100%; vertical-align: top; }
+/* Only the editor's own direct controls stretch — not, e.g., the checkboxes inside a nested
+   MultiSelect popover (which set their own `width: auto`). */
+.inline-edit > input, .inline-edit > textarea, .inline-edit > select { width: 100%; }
+
+.meta-row { display: flex; gap: 8px; align-items: baseline; padding: 5px 0; border-top: 1px solid var(--border); }
+.meta-row:first-of-type { border-top: none; }
+.meta-label { flex: 0 0 90px; }
+.meta-value { flex: 1; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-width: 0; }
+.meta-value .inline-edit { flex: 1; }
+
+/* Bot marker */
+.bot-tag { font-size: 0.9em; filter: grayscale(0.1); }
+
+/* Edit-history dropdown */
+.history { position: relative; display: inline-block; margin-left: 6px; }
+.history-toggle {
+  border: 1px solid var(--border); background: var(--panel-2); color: var(--muted);
+  border-radius: 999px; padding: 0 8px; font-size: 11px; line-height: 18px; cursor: pointer;
+}
+.history-toggle:hover { border-color: var(--accent); color: var(--accent); }
+.history-menu {
+  position: absolute; z-index: 40; top: calc(100% + 4px); left: 0; width: 320px; max-width: 80vw;
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.16); max-height: 320px; overflow: auto; padding: 8px; text-align: left;
+}
+.history-head { margin-bottom: 6px; font-weight: 600; }
+.history-item { padding: 6px 0; border-top: 1px solid var(--border); }
+.history-item:first-of-type { border-top: none; }
+.history-from, .history-to { white-space: pre-wrap; word-break: break-word; padding: 2px 6px; border-radius: 4px; margin-top: 2px; }
+.history-from { background: color-mix(in srgb, var(--red) 12%, transparent); text-decoration: line-through; opacity: 0.8; }
+.history-to { background: color-mix(in srgb, var(--green) 14%, transparent); }
+
+/* Merged activity + comments timeline: comments are boxes (see .comment-card), changes are subtle
+   interleaving one-liners. */
+.timeline-list { display: flex; flex-direction: column; }
+.timeline-item { display: flex; gap: 8px; align-items: baseline; padding: 3px 0 3px 6px; color: var(--muted); font-size: 12px; }
+.timeline-item strong { font-weight: 500; color: var(--muted); }
+.timeline-item a { font-weight: 500; }
+.timeline-dot { flex: 0 0 6px; width: 6px; height: 6px; border-radius: 999px; background: var(--border); transform: translateY(-1px); }
 
 /* Rendered markdown */
 .md > *:first-child { margin-top: 0; }

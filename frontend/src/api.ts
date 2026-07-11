@@ -4,6 +4,7 @@ import type {
   ApiTokenCreated,
   Check,
   Comment,
+  Event,
   GraphData,
   Group,
   Issue,
@@ -84,12 +85,21 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ body }),
     }),
+  updateComment: (id: number, body: string) =>
+    req<Comment>(`/comments/${id}`, { method: "PATCH", body: JSON.stringify({ body }) }),
   deleteComment: (id: number) => req<unknown>(`/comments/${id}`, { method: "DELETE" }),
+
+  listEvents: (issueId: number) => req<Event[]>(`/issues/${issueId}/events`),
 
   listTokens: () => req<ApiToken[]>("/me/tokens"),
   createToken: (name: string) =>
     req<ApiTokenCreated>("/me/tokens", { method: "POST", body: JSON.stringify({ name }) }),
   deleteToken: (id: number) => req<unknown>(`/me/tokens/${id}`, { method: "DELETE" }),
+
+  // Admin: manage another actor's tokens (e.g. mint a token for a bot).
+  listActorTokens: (actorId: number) => req<ApiToken[]>(`/actors/${actorId}/tokens`),
+  createActorToken: (actorId: number, name: string) =>
+    req<ApiTokenCreated>(`/actors/${actorId}/tokens`, { method: "POST", body: JSON.stringify({ name }) }),
 
   listActors: () => req<Actor[]>("/actors"),
   createActor: (body: Record<string, unknown>) =>

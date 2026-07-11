@@ -13,6 +13,9 @@ Config fields:
 * `path` — a dot-path into the response, e.g. `data.status` or `items.0.name` (empty ⇒ the root).
 * `op` — one of `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `contains`, `exists`, `truthy`.
 * `value` — the value to compare against (ignored by `exists`/`truthy`).
+* `authValue` — an optional authentication credential sent as a request header, so the check can
+  reach a protected endpoint (e.g. `Bearer <token>`).
+* `authHeader` — the header name to send `authValue` under (defaults to `Authorization`).
 -/
 
 open Lean
@@ -78,7 +81,17 @@ def jsonEndpointEvaluate (config : Json) (_issue : Issue) (_artifacts : Array Ar
   let path := (get "path").getD ""
   let op := ((get "op").getD "exists").trimAscii.toString
   let expected := (get "value").getD ""
-  match ← Http.requestJson "GET" url #[("Accept", "application/json"), ("User-Agent", "issues-tracker")] with
+  -- Optional authentication: send `authValue` under `authHeader` (default `Authorization`), so the
+  -- check can reach a protected endpoint.
+  let baseHeaders := #[("Accept", "application/json"), ("User-Agent", "issues-tracker")]
+  let headers := match (get "authValue").map (·.trimAscii.toString) with
+    | some v => if v.isEmpty then baseHeaders else
+        let name := match (get "authHeader").map (·.trimAscii.toString) with
+          | some h => if h.isEmpty then "Authorization" else h
+          | none => "Authorization"
+        baseHeaders.push (name, v)
+    | none => baseHeaders
+  match ← Http.requestJson "GET" url headers with
   | .error e => return (.error, some s!"fetch failed: {e}")
   | .ok j =>
     match getPath j path with
@@ -108,7 +121,11 @@ def jsonEndpointHandler : CheckHandler where
     { name := "op", label := "Operator", placeholder := some "eq",
       help := some "eq, ne, lt, le, gt, ge, contains, exists, truthy" },
     { name := "value", label := "Expected value", placeholder := some "ok",
-      help := some "Compared against the value at the path (ignored by exists/truthy)" }]
+      help := some "Compared against the value at the path (ignored by exists/truthy)" },
+    { name := "authValue", label := "Auth credential", placeholder := some "Bearer <token>",
+      help := some "Optional; sent as a request header so the check can reach a protected endpoint" },
+    { name := "authHeader", label := "Auth header name", placeholder := some "Authorization",
+      help := some "Header the credential is sent under (defaults to Authorization)" }]
   validateConfig := validate
   evaluate := jsonEndpointEvaluate
 

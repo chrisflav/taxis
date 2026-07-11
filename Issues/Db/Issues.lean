@@ -1,4 +1,5 @@
 import Issues.Db.Connection
+import Issues.Db.Events
 import Issues.Domain.Input
 import Std.Data.HashSet.Basic
 
@@ -159,8 +160,10 @@ private def sameSet (a b : Array Int64) : Bool :=
   a.size == b.size && a.all (b.contains ·)
 
 /-- Update an issue; absent fields are unchanged. Returns `none` if it does not exist.
-    A locked issue rejects changes to its title, description, parent, or dependencies. -/
-def updateIssue (db : Conn) (id : IssueId) (upd : IssueUpdate) : IO (Option Issue) :=
+    A locked issue rejects changes to its title, description, parent, or dependencies.
+    `actorId` attributes the recorded history events to whoever made the change. -/
+def updateIssue (db : Conn) (id : IssueId) (upd : IssueUpdate)
+    (actorId : Option ActorId := none) : IO (Option Issue) :=
   withTransaction db do
     match ← getIssue db id with
     | none => pure none
@@ -193,7 +196,9 @@ def updateIssue (db : Conn) (id : IssueId) (upd : IssueUpdate) : IO (Option Issu
       if let some ds := upd.dependencies then setDependencies db id ds
       if let some as := upd.assignees then setAssignees db id as
       if let some vs := upd.visibility then setVisibility db id vs
-      getIssue db id
+      let new ← getIssue db id
+      if let some n := new then recordIssueChanges db id actorId cur n
+      pure new
 
 /-- Delete an issue. Returns whether a row was removed. -/
 def deleteIssue (db : Conn) (id : IssueId) : IO Bool := do

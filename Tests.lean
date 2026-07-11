@@ -15,6 +15,7 @@ private def roundtrips [ToJson α] [FromJson α] [BEq α] (x : α) : Bool :=
   | .ok y => x == y
   | .error _ => false
 
+set_option maxRecDepth 4000 in
 def main : IO Unit := do
   let failures ← IO.mkRef 0
   let check (name : String) (cond : Bool) : IO Unit := do
@@ -23,6 +24,7 @@ def main : IO Unit := do
 
   IO.println "JSON round-trips"
   check "actor" (roundtrips ({ id := ⟨1⟩, email := "a@x", displayName := "A", groups := #[⟨2⟩] } : Actor))
+  check "actor bot" (roundtrips ({ id := ⟨1⟩, email := "b@x", displayName := "Bot", bot := true } : Actor))
   check "group" (roundtrips ({ id := ⟨1⟩, name := "g", description := some "d" } : Group))
   check "issue-state open" (roundtrips IssueState.open)
   check "issue-state completed" (roundtrips IssueState.completed)
@@ -45,6 +47,9 @@ def main : IO Unit := do
   check "actor not admin by default" (a.admin == false)
   setActorAdmin db a.id true
   check "actor admin set" (((← getActor db a.id).map (·.admin)) == some true)
+  let botActor ← createActor db { email := "bot@x.io", displayName := "CI Bot", bot := true }
+  check "actor bot flag stored" (botActor.bot == true)
+  check "actor bot default false" (a.bot == false)
 
   let bug ← createLabel db { name := "bug", description := some "a defect", color := some "#e11d48" }
   check "label created" (bug.name == "bug")
@@ -104,8 +109,23 @@ def main : IO Unit := do
   check "comment author name" (cmt.authorName == some "Alice")
   let _ ← createComment db child.id none { body := "system note" }
   check "comments listed oldest-first" ((← issueComments db child.id).size == 2)
+  let _ ← updateComment db cmt.id "first comment (edited)"
+  check "comment edited" (((← getComment db cmt.id).map (·.body)) == some "first comment (edited)")
   check "comment deleted" (← deleteComment db cmt.id)
   check "one comment remains" ((← issueComments db child.id).size == 1)
+
+  -- events / history
+  let _ ← updateIssue db child.id { title := some "Child renamed" } (some a.id)
+  let evs ← issueEvents db child.id
+  check "title change recorded" (evs.any (·.kind == "title"))
+  check "event attributed to actor" (evs.any (fun e => e.kind == "title" && (e.actorId.map (·.val)) == some a.id.val))
+  check "event has actor name" (evs.any (fun e => e.kind == "title" && e.actorName == some "Alice"))
+  let _ ← updateIssue db child.id { state := some .completed } (some a.id)
+  check "state change recorded" ((← issueEvents db child.id).any (·.kind == "state"))
+  let _ ← updateIssue db child.id { assignees := some #[a.id] } (some a.id)
+  check "assignee change recorded" ((← issueEvents db child.id).any (·.kind == "assignees"))
+  recordEvent db child.id (some a.id) "check_added" (Json.mkObj [("kind", "github-ci")])
+  check "manual event recorded" ((← issueEvents db child.id).any (·.kind == "check_added"))
 
   -- api tokens
   let secret := "issues_pat_deadbeef"

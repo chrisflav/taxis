@@ -15,7 +15,7 @@ the FTS5 extension.
 namespace Issues.Db
 
 /-- The schema version this build expects. -/
-def schemaVersion : Int64 := 7
+def schemaVersion : Int64 := 8
 
 /-- The complete DDL, safe to run repeatedly. -/
 def schemaSql : String :=
@@ -27,7 +27,8 @@ def schemaSql : String :=
     email TEXT NOT NULL UNIQUE,
     display_name TEXT NOT NULL,
     google_sub TEXT UNIQUE,
-    admin INTEGER NOT NULL DEFAULT 0
+    admin INTEGER NOT NULL DEFAULT 0,
+    bot INTEGER NOT NULL DEFAULT 0
   );
 
   CREATE TABLE IF NOT EXISTS groups (
@@ -130,6 +131,17 @@ def schemaSql : String :=
   CREATE INDEX IF NOT EXISTS idx_comments_issue ON comments(issue_id);
   CREATE INDEX IF NOT EXISTS idx_comments_author ON comments(author_id);
 
+  CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+    actor_id INTEGER REFERENCES actors(id) ON DELETE SET NULL,
+    kind TEXT NOT NULL,
+    data TEXT NOT NULL DEFAULT '{}',
+    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+  );
+  CREATE INDEX IF NOT EXISTS idx_events_issue ON events(issue_id);
+  CREATE INDEX IF NOT EXISTS idx_events_author ON events(actor_id);
+
   CREATE TABLE IF NOT EXISTS api_tokens (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     actor_id INTEGER NOT NULL REFERENCES actors(id) ON DELETE CASCADE,
@@ -157,6 +169,7 @@ def migrate (db : Conn) : IO Unit := do
   try db.exec "ALTER TABLE labels ADD COLUMN color TEXT NOT NULL DEFAULT '#6b7280'" catch _ => pure ()
   try db.exec "ALTER TABLE issues ADD COLUMN locked INTEGER NOT NULL DEFAULT 0" catch _ => pure ()
   try db.exec "ALTER TABLE actors ADD COLUMN admin INTEGER NOT NULL DEFAULT 0" catch _ => pure ()
+  try db.exec "ALTER TABLE actors ADD COLUMN bot INTEGER NOT NULL DEFAULT 0" catch _ => pure ()
   try db.exec "ALTER TABLE issues ADD COLUMN parent_id INTEGER" catch _ => pure ()
   -- v7 split the old many-to-many `issue_parents` (which modelled dependency edges) into a single
   -- hierarchical `parent_id` plus an `issue_dependencies` table. Migrate the old edges, which were

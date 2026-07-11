@@ -17,7 +17,8 @@ An extensible issue tracker built in Lean 4, with a REST API backend and a TypeS
 
 ## Concepts
 
-- **Actors** — people or bots; only those with a linked Google account can authenticate.
+- **Actors** — people or bots; only those with a linked Google account (or an API token) can
+  authenticate. An actor flagged as a **bot** is shown with a 🤖 marker wherever its name appears.
 - **Groups** — sets of actors used as a visibility filter.
 - **Labels** — reusable named tags (name + description), managed on their own page; an issue
   can carry any number of them.
@@ -25,14 +26,24 @@ An extensible issue tracker built in Lean 4, with a REST API backend and a TypeS
   optional **parent** (a hierarchical/containment relation, cycle-checked up the parent chain),
   a set of **dependencies** (other issues it depends on — the dependency graph), assignees,
   visibility groups, artifacts, checks, and comments. The **Tree** view is built from the parent
-  relation; the **Graph** view's edges are the dependencies.
+  relation; the **Graph** view's edges are the dependencies, rendered as an interactive,
+  pan/zoom canvas (scroll to zoom, drag to pan, hover a node to trace its edges, click to open).
 - **Comments** — a discussion thread on each issue; anyone signed in may comment, and a comment
-  can be removed by its author or an admin.
+  can be edited or removed by its author or an admin. Every issue is edited **inline** — clicking
+  a field's pencil replaces just that block with an editor, leaving the rest of the page in place.
+- **History** — every change to an issue is recorded as an **event**: edits to the title,
+  description, and comments surface as a small edit-history dropdown (🕓) next to the text, while
+  the remaining changes (state, lock, parent, dependencies, assignees, visibility, labels,
+  artifacts, checks) appear as a chronological **Activity** log, each attributed to its actor.
 - **Artifacts / Checks** — extensible, plugin-backed (see above). Built-in check kinds include
   `github-ci` and `json-endpoint` (fetch a JSON URL and assert a condition on a value at a path).
+  The `json-endpoint` check can send an authentication header (`authValue`, optionally under a
+  custom `authHeader`) so it can reach a protected endpoint.
 - **API tokens** — bots authenticate with a personal access token (`Authorization: Bearer …`).
-  Only a SHA-256 hash is stored; the secret is shown once, at creation. Manage them under
-  **Tokens** in the UI or `GET|POST /api/me/tokens`, `DELETE /api/me/tokens/:id`.
+  Only a SHA-256 hash is stored; the secret is shown once, at creation. Manage your own under
+  **Tokens** in the UI (`GET|POST /api/me/tokens`, `DELETE /api/me/tokens/:id`); an **admin** can
+  mint a token for any other actor — e.g. a bot — from the Admin → Actors → *Tokens* dialog
+  (`GET|POST /api/actors/:id/tokens`).
 
 ## Build & run
 
@@ -121,11 +132,11 @@ served at **`/docs`**, backed by the OpenAPI spec at `GET /api/openapi.json`.
 - `GET|POST /groups`, `GET|PATCH|DELETE /groups/:id`
 - `GET|POST /labels`, `GET|PATCH|DELETE /labels/:id`
 - `GET /issues` (filters: `state`, `label` = label id, `q`, `assignee`; paging: `limit`, `offset`),
-  `POST /issues`, `GET|PATCH|DELETE /issues/:id`
+  `POST /issues`, `GET|PATCH|DELETE /issues/:id`, `GET /issues/:id/events`
 - `POST /issues/:id/artifacts`, `DELETE /artifacts/:id`
 - `GET|POST /issues/:id/checks`, `POST /checks/:id/run`, `DELETE /checks/:id`
-- `GET|POST /issues/:id/comments`, `DELETE /comments/:id`
-- `GET|POST /me/tokens`, `DELETE /me/tokens/:id`
+- `GET|POST /issues/:id/comments`, `PATCH|DELETE /comments/:id`
+- `GET|POST /me/tokens`, `DELETE /me/tokens/:id`, `GET|POST /actors/:id/tokens` (admin)
 - `POST /import/github`, `POST /import/gdoc`
 - Auth: `GET /auth/google/login`, `GET /auth/google/callback`, `POST /auth/logout`,
   `POST /auth/dev-login`, `GET /me`

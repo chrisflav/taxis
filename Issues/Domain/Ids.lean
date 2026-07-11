@@ -32,6 +32,7 @@ declare_id LabelId
 declare_id SessionId
 declare_id CommentId
 declare_id TokenId
+declare_id EventId
 
 /-- A wall-clock instant, stored as Unix time in seconds. -/
 structure Timestamp where
