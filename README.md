@@ -1,7 +1,7 @@
 # taxis
 
 taxis is an extensible issue tracker built in Lean 4, with a REST API backend and a TypeScript
-(React) frontend. See [`DESIGN.md`](DESIGN.md) for the original design.
+(React) frontend.
 
 ## Architecture
 
