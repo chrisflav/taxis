@@ -27,6 +27,8 @@ structure Config where
   checkIntervalSeconds : Nat := 0
   /-- Emails that are automatically granted admin on login (bootstrap). -/
   adminEmails : List String := []
+  /-- Whether central password login is enabled. -/
+  centralPasswordEnabled : Bool := false
 deriving Inhabited
 
 /-- Shared, thread-safe application context. -/
@@ -97,6 +99,7 @@ def Config.fromEnv : IO Config := do
     googleClientId := ← getEnv "ISSUES_GOOGLE_CLIENT_ID"
     googleClientSecret := ← getEnv "ISSUES_GOOGLE_CLIENT_SECRET"
     githubToken := ← getEnv "ISSUES_GITHUB_TOKEN"
+    centralPasswordEnabled := (← getEnv "ISSUES_CENTRAL_PASSWORD").isSome
   }
 
 end Taxis
