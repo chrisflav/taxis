@@ -109,7 +109,13 @@ partial def sweeperLoop (ctx : AppContext) : Async Unit := do
 def serve (ctx : AppContext) : Async Server := do
   let ipv4 := IPv4Addr.ofString ctx.config.host |>.getD (IPv4Addr.ofParts 127 0 0 1)
   let addr : SocketAddress := .v4 { addr := ipv4, port := ctx.config.port }
-  let server ← Std.Http.Server.serve addr (AppHandler.mk ctx)
+  -- Raise the per-request header limits well above the library defaults (maxHeaders := 50).
+  -- Behind an HTTP/2-terminating reverse proxy, the browser's single `Cookie` header can be
+  -- split into one `Cookie:` line per cookie when downgraded to HTTP/1.1 for the backend
+  -- (RFC 9113 §8.2.3), so a client holding many cookies can send well over 50 header fields
+  -- and trip `tooManyHeaders`.
+  let httpConfig : Std.Http.Config := { maxHeaders := 256, maxHeaderBytes := 256 * 1024 }
+  let server ← Std.Http.Server.serve addr (AppHandler.mk ctx) httpConfig
   if ctx.config.checkIntervalSeconds > 0 then
     background (sweeperLoop ctx)
   return server
