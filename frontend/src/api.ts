@@ -44,6 +44,7 @@ export interface IssueFilters {
 }
 
 export const api = {
+  health: () => req<{ status: string; version: string; centralPasswordEnabled?: boolean }>("/health"),
   googleLoginUrl: BASE + "/auth/google/login",
 
   me: () => req<Actor>("/me"),
@@ -51,6 +52,11 @@ export const api = {
     req<{ token: string; actor: Actor }>("/auth/dev-login", {
       method: "POST",
       body: JSON.stringify({ email, displayName }),
+    }),
+  passwordLogin: (email: string, password: string) =>
+    req<{ token: string; actor: Actor }>("/auth/password-login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
     }),
   logout: () => req<{ ok: boolean }>("/auth/logout", { method: "POST" }),
 

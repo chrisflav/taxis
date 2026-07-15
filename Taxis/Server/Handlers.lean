@@ -467,7 +467,7 @@ def dispatch (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
   if mutating && isAdminResource req.segments && !(req.actor.map (·.admin) |>.getD false) then
     fail (.forbidden "admin privileges required")
   match req.method, req.segments with
-  | .get, ["health"] => ok (Json.mkObj [("status", "ok"), ("version", Taxis.version)])
+  | .get, ["health"] => ok (Json.mkObj [("status", "ok"), ("version", Taxis.version), ("centralPasswordEnabled", Json.bool ctx.config.centralPasswordEnabled)])
   | .get, ["openapi.json"] => ok OpenApi.spec
   | .get, ["plugins"] => pluginsH
   | .get, ["graph"] => graphH ctx req.actor
@@ -477,6 +477,7 @@ def dispatch (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
   | .get, ["auth", "google", "callback"] => googleCallbackH ctx req
   | .post, ["auth", "logout"] => logoutH ctx req
   | .post, ["auth", "dev-login"] => devLoginH ctx req
+  | .post, ["auth", "password-login"] => passwordLoginH ctx req
 
   | .get, ["actors"] => listActorsH ctx
   | .post, ["actors"] => createActorH ctx req

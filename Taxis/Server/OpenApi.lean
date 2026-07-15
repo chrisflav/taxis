@@ -124,6 +124,9 @@ private def paths : Json := obj [
   ("/auth/dev-login", obj [("post", operation "Auth" "Development-only email login (gated by ISSUES_DEV_LOGIN)"
     [] (some (jsonBody (schemaObj [("email", typ "string"), ("displayName", typ "string")] ["email"])))
     [("200", jsonResp "Session" (schemaObj [("token", typ "string"), ("actor", ref "Actor")]))])]),
+  ("/auth/password-login", obj [("post", operation "Auth" "Central password login (gated by ISSUES_CENTRAL_PASSWORD)"
+    [] (some (jsonBody (schemaObj [("email", typ "string"), ("password", typ "string")] ["email", "password"])))
+    [("200", jsonResp "Session" (schemaObj [("token", typ "string"), ("actor", ref "Actor")]))])]),
 
   ("/actors", obj [
     ("get", operation "Actors" "List actors" [] none [("200", jsonResp "Actors" (arrayOf (ref "Actor")))]),

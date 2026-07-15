@@ -166,6 +166,37 @@ def devLoginH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
   pure { status := .ok, body := Json.mkObj [("token", token), ("actor", toJson actor)],
          headers := #[("Set-Cookie", sessionCookie token secure)] }
 
+/-- Body of a password login request. -/
+private structure PasswordLogin where
+  email : String
+  password : String
+
+private instance : FromJson PasswordLogin where
+  fromJson? j := do pure {
+    email := ← jsonField? j "email"
+    password := ← jsonField? j "password" }
+
+/-- Central password login, gated by `ISSUES_CENTRAL_PASSWORD`. -/
+def passwordLoginH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
+  let some centralPassword ← liftIO (IO.getEnv "ISSUES_CENTRAL_PASSWORD")
+    | fail (.forbidden "password login is disabled")
+  let input ← parseBody PasswordLogin req.body
+  if input.password != centralPassword then
+    fail (.unauthorized "invalid password")
+  let actor ← ctx.dbM (fun db => do
+    let a ← match ← Db.getActorByEmail db input.email with
+      | some a => pure a
+      | none => Db.createActor db { email := input.email, displayName := input.email }
+    if ctx.config.adminEmails.contains a.email && !a.admin then
+      Db.setActorAdmin db a.id true
+      pure { a with admin := true }
+    else pure a)
+  let token ← liftIO randomToken
+  ctx.dbM (fun db => Db.createSession db token actor.id sessionTtl)
+  let secure := ctx.config.publicBaseUrl.startsWith "https"
+  pure { status := .ok, body := Json.mkObj [("token", token), ("actor", toJson actor)],
+         headers := #[("Set-Cookie", sessionCookie token secure)] }
+
 /-- Resolve the actor from a session cookie. -/
 private def resolveBySession (ctx : AppContext) (req : Req) : IO Req := do
   match req.sessionToken with
