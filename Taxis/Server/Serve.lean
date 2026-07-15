@@ -72,6 +72,9 @@ def serveStatic (ctx : AppContext) (segs : List String) : Async (Response Body.F
 instance : Handler AppHandler where
   ResponseBody := Body.Full
   onRequest h req := do
+    if h.ctx.config.verbose then
+      let path := "/" ++ "/".intercalate (req.line.uri.path.toDecodedSegments.filter (· ≠ "")).toList
+      IO.eprintln s!"[taxis] {req.line.method} {path}"
     if req.line.method == .options then
       return ← buildResponse { status := .noContent, body := Json.mkObj [] }
     let segs := (req.line.uri.path.toDecodedSegments.filter (· ≠ "")).toList

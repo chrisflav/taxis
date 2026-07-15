@@ -29,6 +29,8 @@ structure Config where
   adminEmails : List String := []
   /-- Whether central password login is enabled. -/
   centralPasswordEnabled : Bool := false
+  /-- Log every incoming request to stderr (enabled with `--verbose`). -/
+  verbose : Bool := false
 deriving Inhabited
 
 /-- Shared, thread-safe application context. -/
