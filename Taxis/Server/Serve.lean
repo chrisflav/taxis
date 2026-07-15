@@ -107,7 +107,8 @@ partial def sweeperLoop (ctx : AppContext) : Async Unit := do
 /-- Start the HTTP server bound to the configured port on localhost, plus the check sweeper
     if `checkIntervalSeconds > 0`. -/
 def serve (ctx : AppContext) : Async Server := do
-  let addr : SocketAddress := .v4 { addr := IPv4Addr.ofParts 127 0 0 1, port := ctx.config.port }
+  let ipv4 := IPv4Addr.ofString ctx.config.host |>.getD (IPv4Addr.ofParts 127 0 0 1)
+  let addr : SocketAddress := .v4 { addr := ipv4, port := ctx.config.port }
   let server ← Std.Http.Server.serve addr (AppHandler.mk ctx)
   if ctx.config.checkIntervalSeconds > 0 then
     background (sweeperLoop ctx)

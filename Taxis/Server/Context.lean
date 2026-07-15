@@ -15,6 +15,8 @@ namespace Taxis
 /-- Runtime configuration, populated from environment variables at startup. -/
 structure Config where
   port : UInt16 := 8080
+  /-- IPv4 address the server binds to. -/
+  host : String := "127.0.0.1"
   dbPath : System.FilePath := "issues.sqlite"
   frontendDir : System.FilePath := "frontend/dist"
   /-- Public base URL the server is reachable at (used to build the OAuth redirect URI). -/
@@ -90,6 +92,7 @@ def Config.fromEnv : IO Config := do
     | some v => pure (some v)
     | none => pure (dotenv[k]?)
   let port := (← getEnv "ISSUES_PORT").bind (fun s => s.toNat?.map (·.toUInt16)) |>.getD 8080
+  let host := (← getEnv "ISSUES_HOST").getD "127.0.0.1"
   let dbPath := (← getEnv "ISSUES_DB").getD "issues.sqlite"
   let frontendDir := (← getEnv "ISSUES_FRONTEND_DIR").getD "frontend/dist"
   let publicBaseUrl := (← getEnv "ISSUES_BASE_URL").getD s!"http://localhost:{port}"
@@ -97,7 +100,7 @@ def Config.fromEnv : IO Config := do
   let adminEmails := ((← getEnv "ISSUES_ADMIN_EMAILS").getD "").splitOn ","
     |>.map (·.trimAscii.toString) |>.filter (!·.isEmpty)
   pure {
-    port, dbPath := dbPath, frontendDir := frontendDir, publicBaseUrl, checkIntervalSeconds, adminEmails
+    port, host, dbPath := dbPath, frontendDir := frontendDir, publicBaseUrl, checkIntervalSeconds, adminEmails
     googleClientId := ← getEnv "ISSUES_GOOGLE_CLIENT_ID"
     googleClientSecret := ← getEnv "ISSUES_GOOGLE_CLIENT_SECRET"
     githubToken := ← getEnv "ISSUES_GITHUB_TOKEN"

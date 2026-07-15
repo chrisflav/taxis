@@ -5,7 +5,7 @@ def main (args : List String) : IO Unit := do
   let verbose := args.contains "--verbose" || args.contains "-v"
   let config := { ← Config.fromEnv with verbose }
   let ctx ← AppContext.create config
-  IO.println s!"[taxis] listening on http://localhost:{config.port} (db: {config.dbPath})"
+  IO.println s!"[taxis] listening on http://{config.host}:{config.port} (db: {config.dbPath})"
   IO.println s!"[taxis] google oauth: {if config.googleClientId.isSome then "configured" else "NOT configured (set ISSUES_GOOGLE_CLIENT_ID/SECRET)"}"
   IO.println s!"[taxis] base url: {config.publicBaseUrl}  (google redirect: {config.publicBaseUrl}/auth/google/callback)"
   if config.verbose then
