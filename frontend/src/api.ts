@@ -44,7 +44,7 @@ export interface IssueFilters {
 }
 
 export const api = {
-  health: () => req<{ status: string; version: string; centralPasswordEnabled?: boolean }>("/health"),
+  health: () => req<{ status: string; version: string; centralPasswordEnabled?: boolean; googleEnabled?: boolean }>("/health"),
   googleLoginUrl: BASE + "/auth/google/login",
 
   me: () => req<Actor>("/me"),

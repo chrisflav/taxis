@@ -178,7 +178,7 @@ private instance : FromJson PasswordLogin where
 
 /-- Central password login, gated by `ISSUES_CENTRAL_PASSWORD`. -/
 def passwordLoginH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
-  let some centralPassword ← liftIO (IO.getEnv "ISSUES_CENTRAL_PASSWORD")
+  let some centralPassword := ctx.config.centralPassword
     | fail (.forbidden "password login is disabled")
   let input ← parseBody PasswordLogin req.body
   if input.password != centralPassword then

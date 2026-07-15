@@ -467,7 +467,7 @@ def dispatch (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
   if mutating && isAdminResource req.segments && !(req.actor.map (·.admin) |>.getD false) then
     fail (.forbidden "admin privileges required")
   match req.method, req.segments with
-  | .get, ["health"] => ok (Json.mkObj [("status", "ok"), ("version", Taxis.version), ("centralPasswordEnabled", Json.bool ctx.config.centralPasswordEnabled)])
+  | .get, ["health"] => ok (Json.mkObj [("status", "ok"), ("version", Taxis.version), ("centralPasswordEnabled", Json.bool ctx.config.centralPassword.isSome), ("googleEnabled", Json.bool ctx.config.googleClientId.isSome)])
   | .get, ["openapi.json"] => ok OpenApi.spec
   | .get, ["plugins"] => pluginsH
   | .get, ["graph"] => graphH ctx req.actor
