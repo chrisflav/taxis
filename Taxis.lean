@@ -4,3 +4,4 @@ import Taxis.Basic
 import Taxis.Domain
 import Taxis.Db
 import Taxis.Server
+import Taxis.Client
