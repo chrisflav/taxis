@@ -1,11 +1,13 @@
 import Taxis.Db.Connection
+import Taxis.Db.Notifications
 import Taxis.Domain.Input
 
 /-!
 # Event repository
 
-Events form an issue's audit trail. `recordEvent` appends one row; `recordIssueChanges` diffs an
-issue before and after an update and appends one event per changed field. Reads join `actors` to
+Events form an issue's audit trail. `recordEvent` appends one row (and fans out a notification to
+the issue's participants, see `Taxis.Db.fanOutNotification`); `recordIssueChanges` diffs an issue
+before and after an update and appends one event per changed field. Reads join `actors` to
 denormalise the acting actor's display name and bot flag so the detail view renders without a
 second lookup.
 -/
@@ -30,14 +32,22 @@ private def EventRow.toEvent (r : EventRow) : Event :=
     actorBot := r.actorBot.getD false, kind := r.kind,
     data := (Json.parse r.data).toOption.getD (Json.mkObj []), createdAt := r.createdAt }
 
+/-- Event kinds that do not notify participants (title/description edits and label changes are
+    frequent and rarely the activity someone wants to be pinged about; see issue #26). Still
+    recorded as events, just not fanned out as notifications. -/
+private def silentEventKinds : List String := ["title", "description", "labels"]
+
 /-- Append one event to an issue's history. Recording activity also stamps the issue's
     `updated_at`, so "last updated" reflects comments, artifact/check changes, etc. — not just
-    edits to the issue's own fields. -/
+    edits to the issue's own fields. Fans out a notification to the issue's participants (except
+    `actorId`, who triggered it), unless `kind` is a silent one. -/
 def recordEvent (db : Conn) (issueId : IssueId) (actorId : Option ActorId) (kind : String)
     (data : Json := Json.mkObj []) : IO Unit := do
   let dataStr := data.compress
   db exec!"INSERT INTO events (issue_id, actor_id, kind, data) VALUES ({issueId}, {actorId}, {kind}, {dataStr})"
   db exec!"UPDATE issues SET updated_at = unixepoch() WHERE id = {issueId}"
+  unless silentEventKinds.contains kind do
+    fanOutNotification db issueId actorId kind data
 
 /-- All events on an issue, oldest first. -/
 def issueEvents (db : Conn) (issueId : IssueId) : IO (Array Event) := do
@@ -62,6 +72,8 @@ def recordIssueChanges (db : Conn) (issueId : IssueId) (actorId : Option ActorId
     recordEvent db issueId actorId "locked" (Json.mkObj [("to", new.locked)])
   if (old.parent.map (·.val)) != (new.parent.map (·.val)) then
     recordEvent db issueId actorId "parent" (Json.mkObj [("from", toJson old.parent), ("to", toJson new.parent)])
+  if (old.deadline.map (·.epochSeconds)) != (new.deadline.map (·.epochSeconds)) then
+    recordEvent db issueId actorId "deadline" (Json.mkObj [("from", toJson old.deadline), ("to", toJson new.deadline)])
   let rel (kind : String) (o n : Array Int64) : IO Unit := do
     let add := added o n
     let rem := added n o

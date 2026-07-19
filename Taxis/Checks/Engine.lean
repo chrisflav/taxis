@@ -31,7 +31,7 @@ def runCheck (db : Db.Conn) (id : CheckId) : IO (Option Check) := do
         | some issue =>
           let artifacts ← Db.issueArtifacts db issueId
           let (status, detail) ←
-            try handler.evaluate check.config issue artifacts
+            try handler.evaluate db check.config issue artifacts
             catch e => pure (CheckStatus.error, some s!"evaluation raised: {e}")
           Db.recordCheckResult db id status detail
           Db.getCheck db id

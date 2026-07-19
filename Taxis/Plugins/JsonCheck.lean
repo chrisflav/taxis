@@ -74,7 +74,7 @@ private def validate (config : Json) : Except String Unit := do
   pure ()
 
 /-- Evaluate the `json-endpoint` check. -/
-def jsonEndpointEvaluate (config : Json) (_issue : Issue) (_artifacts : Array Artifact) :
+def jsonEndpointEvaluate (_db : Db.Conn) (config : Json) (_issue : Issue) (_artifacts : Array Artifact) :
     IO (CheckStatus × Option String) := do
   let get (f : String) := (config.getObjValAs? String f).toOption
   let some url := get "url" | return (.error, some "config missing 'url'")

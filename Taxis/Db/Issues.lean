@@ -1,5 +1,6 @@
 import Taxis.Db.Connection
 import Taxis.Db.Events
+import Taxis.Db.Notifications
 import Taxis.Domain.Input
 import Std.Data.HashSet.Basic
 
@@ -23,9 +24,21 @@ private structure IssueRow where
   state : IssueState
   locked : Bool
   parent : Option IssueId
+  creatorId : Option ActorId
+  deadline : Option Timestamp
   createdAt : Timestamp
   updatedAt : Timestamp
 deriving SQLite.Row, Inhabited
+
+private structure DisplayNameRow where
+  displayName : String
+deriving SQLite.Row, Inhabited
+
+/-- The display name of an actor, if they still exist. Used to denormalise the issue creator's
+    name without needing a join in every issue query (which `RETURNING` can't express anyway). -/
+private def displayNameOf (db : Conn) (id : ActorId) : IO (Option String) := do
+  let rows ← (← db query!"SELECT display_name FROM actors WHERE id = {id}" as DisplayNameRow).toArray
+  pure (rows[0]?.map (·.displayName))
 
 private def issueDependencies (db : Conn) (id : IssueId) : IO (Array IssueId) := do
   (← db query!"SELECT depends_on_id FROM issue_dependencies WHERE issue_id = {id} ORDER BY depends_on_id" as IssueId).toArray
@@ -55,6 +68,9 @@ private def IssueRow.toIssue (r : IssueRow) (db : Conn) : IO Issue := do
     artifacts := ← issueArtifactIds db r.id,
     visibility := ← issueVisibility db r.id,
     checks := ← issueCheckIds db r.id,
+    creatorId := r.creatorId,
+    creatorName := ← (match r.creatorId with | some cid => displayNameOf db cid | none => pure none),
+    deadline := r.deadline,
     createdAt := r.createdAt, updatedAt := r.updatedAt }
 
 /-- Read the parent id of an issue directly (a single climbing step). -/
@@ -114,7 +130,7 @@ private def setLabels (db : Conn) (issue : IssueId) (labels : Array LabelId) : I
 
 /-- Fetch an issue by id, with all relations loaded. -/
 def getIssue (db : Conn) (id : IssueId) : IO (Option Issue) := do
-  let rows ← (← db query!"SELECT id, title, description, state, locked, parent_id, created_at, updated_at FROM issues WHERE id = {id}" as IssueRow).toArray
+  let rows ← (← db query!"SELECT id, title, description, state, locked, parent_id, creator_id, deadline, created_at, updated_at FROM issues WHERE id = {id}" as IssueRow).toArray
   match rows[0]? with
   | none => pure none
   | some r => some <$> r.toIssue db
@@ -131,7 +147,7 @@ def listIssues (db : Conn) (state : Option IssueState) (labelId : Option LabelId
   let lim : Int64 := match limit with | some n => Int64.ofNat n | none => -1
   let off : Int64 := Int64.ofNat offset
   let rows ← (← db query!"
-    SELECT id, title, description, state, locked, parent_id, created_at, updated_at FROM issues
+    SELECT id, title, description, state, locked, parent_id, creator_id, deadline, created_at, updated_at FROM issues
     WHERE ({stateStr} IS NULL OR state = {stateStr})
       AND ({labelId} IS NULL OR id IN (SELECT issue_id FROM issue_labels WHERE label_id = {labelId}))
       AND ({qlike} IS NULL OR title LIKE {qlike} OR description LIKE {qlike})
@@ -140,18 +156,22 @@ def listIssues (db : Conn) (state : Option IssueState) (labelId : Option LabelId
     LIMIT {lim} OFFSET {off}" as IssueRow).toArray
   rows.mapM (·.toIssue db)
 
-/-- Create an issue with its relations. May raise a validation error on a cyclic parent. -/
-def createIssue (db : Conn) (input : IssueInput) : IO Issue :=
+/-- Create an issue with its relations, attributed to `creatorId`. The creator and every assignee
+    automatically participate (get notified of future activity). May raise a validation error on
+    a cyclic parent. -/
+def createIssue (db : Conn) (input : IssueInput) (creatorId : Option ActorId := none) : IO Issue :=
   withTransaction db do
-    let rows ← (← db query!"INSERT INTO issues (title, description, state, locked)
-      VALUES ({input.title}, {input.description}, {input.state}, {input.locked})
-      RETURNING id, title, description, state, locked, parent_id, created_at, updated_at" as IssueRow).toArray
+    let rows ← (← db query!"INSERT INTO issues (title, description, state, locked, creator_id, deadline)
+      VALUES ({input.title}, {input.description}, {input.state}, {input.locked}, {creatorId}, {input.deadline})
+      RETURNING id, title, description, state, locked, parent_id, creator_id, deadline, created_at, updated_at" as IssueRow).toArray
     let r := rows[0]!
     setLabels db r.id input.labels
     setParent db r.id input.parent
     setDependencies db r.id input.dependencies
     setAssignees db r.id input.assignees
     setVisibility db r.id input.visibility
+    if let some cid := creatorId then addParticipant db r.id cid
+    for a in input.assignees do addParticipant db r.id a
     match ← getIssue db r.id with
     | some i => pure i
     | none => throw (IO.userError "issue vanished after insert")
@@ -189,12 +209,16 @@ def updateIssue (db : Conn) (id : IssueId) (upd : IssueUpdate)
       let description := upd.description.getD cur.description
       let state := upd.state.getD cur.state
       let locked := upd.locked.getD cur.locked
+      let deadline := upd.deadline.getD cur.deadline
       db exec!"UPDATE issues SET title = {title}, description = {description}, state = {state},
-        locked = {locked}, updated_at = unixepoch() WHERE id = {id}"
+        locked = {locked}, deadline = {deadline}, updated_at = unixepoch() WHERE id = {id}"
       if let some ls := upd.labels then setLabels db id ls
       if let some p := upd.parent then setParent db id p
       if let some ds := upd.dependencies then setDependencies db id ds
-      if let some as := upd.assignees then setAssignees db id as
+      if let some as := upd.assignees then
+        setAssignees db id as
+        -- Newly-assigned actors automatically participate; `addParticipant` is idempotent.
+        for a in as do addParticipant db id a
       if let some vs := upd.visibility then setVisibility db id vs
       let new ← getIssue db id
       if let some n := new then recordIssueChanges db id actorId cur n

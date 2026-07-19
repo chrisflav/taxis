@@ -84,13 +84,38 @@ private def parseDotenv (content : String) : Std.HashMap String String := Id.run
 def loadDotenv (path : System.FilePath := ".env") : IO (Std.HashMap String String) := do
   if ← path.pathExists then return parseDotenv (← IO.FS.readFile path) else return {}
 
-/-- Read configuration from the environment (and a `.env` file), falling back to defaults. -/
+/-- Parse the contents of a `config.toml` file into key/value pairs. Keys are the same
+    `ISSUES_...` names used as environment variables (just without needing to `export` them), e.g.
+    `ISSUES_PORT = 8080`. Supports `#` comments and quoted/bare values; `[section]` headers are
+    ignored (the config is flat, so sections aren't needed, but a stray one shouldn't break
+    parsing). -/
+private def parseToml (content : String) : Std.HashMap String String := Id.run do
+  let mut m : Std.HashMap String String := {}
+  for rawLine in content.splitOn "\n" do
+    let line := rawLine.trimAscii.toString
+    if line.isEmpty || line.startsWith "#" || line.startsWith "[" then continue
+    match line.splitOn "=" with
+    | key :: rest@(_ :: _) =>
+      m := m.insert key.trimAscii.toString (stripQuotes ("=".intercalate rest).trimAscii.toString)
+    | _ => pure ()
+  return m
+
+/-- Load `config.toml` from the working directory if present. Lowest-precedence configuration
+    source: real environment variables win, then `.env`, then this file. -/
+def loadConfigToml (path : System.FilePath := "config.toml") : IO (Std.HashMap String String) := do
+  if ← path.pathExists then return parseToml (← IO.FS.readFile path) else return {}
+
+/-- Read configuration from the environment, a `.env` file, and `config.toml` (in that
+    precedence order), falling back to defaults. -/
 def Config.fromEnv : IO Config := do
   let dotenv ← loadDotenv
+  let toml ← loadConfigToml
   let getEnv (k : String) : IO (Option String) := do
     match ← IO.getEnv k with
     | some v => pure (some v)
-    | none => pure (dotenv[k]?)
+    | none => match dotenv[k]? with
+      | some v => pure (some v)
+      | none => pure toml[k]?
   let port := (← getEnv "ISSUES_PORT").bind (fun s => s.toNat?.map (·.toUInt16)) |>.getD 8080
   let host := (← getEnv "ISSUES_HOST").getD "127.0.0.1"
   let dbPath := (← getEnv "ISSUES_DB").getD "issues.sqlite"

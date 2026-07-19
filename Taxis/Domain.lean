@@ -7,6 +7,8 @@ import Taxis.Domain.Check
 import Taxis.Domain.Comment
 import Taxis.Domain.Event
 import Taxis.Domain.Token
+import Taxis.Domain.Notification
+import Taxis.Domain.ReviewRequest
 import Taxis.Domain.Issue
 import Taxis.Domain.Input
 

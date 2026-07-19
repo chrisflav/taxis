@@ -6,6 +6,7 @@ import Taxis.Domain.Check
 import Taxis.Domain.Comment
 import Taxis.Domain.Event
 import Taxis.Domain.Label
+import Taxis.Domain.ReviewRequest
 
 /-!
 # Issues
@@ -37,6 +38,12 @@ structure Issue where
   artifacts : Array ArtifactId := #[]
   visibility : Array GroupId := #[]
   checks : Array CheckId := #[]
+  /-- The actor who created the issue, if still present. Set once at creation, never updated. -/
+  creatorId : Option ActorId := none
+  /-- Denormalised display name of the creator at render time. -/
+  creatorName : Option String := none
+  /-- Optional due date. Purely informational; nothing currently enforces it. -/
+  deadline : Option Timestamp := none
   createdAt : Timestamp
   updatedAt : Timestamp
 deriving Repr, Inhabited, ToJson, FromJson
@@ -50,6 +57,10 @@ structure IssueDetail where
   attachedChecks : Array Check := #[]
   comments : Array Comment := #[]
   events : Array Event := #[]
+  /-- Whether the requesting actor participates in (is subscribed to) this issue's notifications. -/
+  participating : Bool := false
+  /-- Review requests on this issue, most recent first (both pending and resolved). -/
+  reviewRequests : Array ReviewRequest := #[]
 deriving Inhabited, ToJson, FromJson
 
 end Taxis

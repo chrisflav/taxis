@@ -42,6 +42,13 @@ def createArtifact (db : Conn) (issueId : IssueId) (input : ArtifactInput) : IO 
     RETURNING id, kind, payload" as ArtifactRow).toArray
   pure (rows[0]!.toArtifact)
 
+/-- The issue owning a `kind` artifact whose JSON payload contains `needle` as a substring. Used
+    by imports/syncs to recognise an item that was already brought in before. -/
+def findArtifactIssueByPayload (db : Conn) (kind needle : String) : IO (Option IssueId) := do
+  let like := "%" ++ needle ++ "%"
+  let rows ← (← db query!"SELECT issue_id FROM artifacts WHERE kind = {kind} AND payload LIKE {like} LIMIT 1" as IssueId).toArray
+  pure rows[0]?
+
 /-- Delete an artifact. Returns whether a row was removed. -/
 def deleteArtifact (db : Conn) (id : ArtifactId) : IO Bool := do
   let removed ← (← db query!"DELETE FROM artifacts WHERE id = {id} RETURNING id" as ArtifactId).toArray

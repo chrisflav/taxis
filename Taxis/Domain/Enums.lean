@@ -97,4 +97,42 @@ instance : SQLite.ResultColumn CheckStatus where
 
 end CheckStatus
 
+/-- The verdict of a review comment (see `Taxis.Comment.review`). -/
+inductive ReviewState where
+  | approve
+  | requestChanges
+deriving DecidableEq, Repr, BEq, Inhabited
+
+namespace ReviewState
+
+def toString : ReviewState → String
+  | .approve => "approve"
+  | .requestChanges => "request_changes"
+
+def ofString? : String → Option ReviewState
+  | "approve" => some .approve
+  | "request_changes" => some .requestChanges
+  | _ => none
+
+instance : ToString ReviewState := ⟨toString⟩
+
+instance : ToJson ReviewState where toJson s := toJson s.toString
+instance : FromJson ReviewState where
+  fromJson? j := do
+    let s ← fromJson? (α := String) j
+    match ofString? s with
+    | some v => pure v
+    | none => throw s!"invalid review state: {s}"
+
+instance : SQLite.QueryParam ReviewState where
+  bind stmt i s := SQLite.QueryParam.bind stmt i s.toString
+instance : SQLite.ResultColumn ReviewState where
+  get stmt i := do
+    let s ← SQLite.ResultColumn.get (α := String) stmt i
+    match ofString? s with
+    | some v => pure v
+    | none => throw (IO.userError s!"invalid review state in database: {s}")
+
+end ReviewState
+
 end Taxis

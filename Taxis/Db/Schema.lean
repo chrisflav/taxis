@@ -15,7 +15,7 @@ the FTS5 extension.
 namespace Taxis.Db
 
 /-- The schema version this build expects. -/
-def schemaVersion : Int64 := 8
+def schemaVersion : Int64 := 11
 
 /-- The complete DDL, safe to run repeatedly. -/
 def schemaSql : String :=
@@ -152,6 +152,43 @@ def schemaSql : String :=
     last_used INTEGER
   );
   CREATE INDEX IF NOT EXISTS idx_api_tokens_actor ON api_tokens(actor_id);
+
+  -- Participants opt in (explicitly, or automatically as creator/assignee) to notifications
+  -- about an issue's activity.
+  CREATE TABLE IF NOT EXISTS issue_participants (
+    issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+    actor_id INTEGER NOT NULL REFERENCES actors(id) ON DELETE CASCADE,
+    PRIMARY KEY (issue_id, actor_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_issue_participants_actor ON issue_participants(actor_id);
+
+  -- One row per (recipient, activity): fanned out from events/comments to every participant of
+  -- the issue except whoever triggered the activity.
+  CREATE TABLE IF NOT EXISTS notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor_id INTEGER NOT NULL REFERENCES actors(id) ON DELETE CASCADE,
+    issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    data TEXT NOT NULL DEFAULT '{}',
+    read INTEGER NOT NULL DEFAULT 0,
+    done INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+  );
+  CREATE INDEX IF NOT EXISTS idx_notifications_actor ON notifications(actor_id, read);
+  CREATE INDEX IF NOT EXISTS idx_notifications_issue ON notifications(issue_id);
+
+  -- An explicit ask for `actor_id` to review an issue, independent of assignment.
+  -- `resolved_at` is set once that actor posts a review, or the request is withdrawn/fulfilled.
+  CREATE TABLE IF NOT EXISTS review_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+    actor_id INTEGER NOT NULL REFERENCES actors(id) ON DELETE CASCADE,
+    requested_by INTEGER REFERENCES actors(id) ON DELETE SET NULL,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    resolved_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_review_requests_issue ON review_requests(issue_id);
+  CREATE INDEX IF NOT EXISTS idx_review_requests_actor ON review_requests(actor_id);
   "
 
 /-- A single-column row holding the stored schema version. -/
@@ -177,6 +214,12 @@ def migrate (db : Conn) : IO Unit := do
   try db.exec "INSERT OR IGNORE INTO issue_dependencies (issue_id, depends_on_id)
     SELECT child_id, parent_id FROM issue_parents" catch _ => pure ()
   try db.exec "DROP TABLE IF EXISTS issue_parents" catch _ => pure ()
+  -- v9: issue creator/deadline, and review comments.
+  try db.exec "ALTER TABLE issues ADD COLUMN creator_id INTEGER REFERENCES actors(id) ON DELETE SET NULL" catch _ => pure ()
+  try db.exec "ALTER TABLE issues ADD COLUMN deadline INTEGER" catch _ => pure ()
+  try db.exec "ALTER TABLE comments ADD COLUMN review TEXT" catch _ => pure ()
+  -- v11: an independent "done" flag on notifications (separate from "read").
+  try db.exec "ALTER TABLE notifications ADD COLUMN done INTEGER NOT NULL DEFAULT 0" catch _ => pure ()
   let rows ← (← db query!"SELECT version FROM schema_version LIMIT 1" as VersionRow).toArray
   if rows.isEmpty then
     db exec!"INSERT INTO schema_version (version) VALUES ({schemaVersion})"

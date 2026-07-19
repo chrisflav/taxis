@@ -1,4 +1,5 @@
 import Taxis.Domain.Ids
+import Taxis.Domain.Enums
 
 /-!
 # Comments
@@ -7,6 +8,10 @@ A comment is a note left by an actor on an issue. Comments are ordered by creati
 carry a denormalised author display name so the detail view can render them without a second
 lookup. The author is optional: a comment survives (with `authorId = none`) if its author is
 deleted, and imported/system comments may have no author at all.
+
+A comment may optionally carry a **review** verdict (`approve` or `request_changes`), turning it
+into a review (see `Taxis.Plugins`'s `review-approved` check, which looks at the most recent
+review comment on an issue).
 -/
 
 open Lean
@@ -22,6 +27,8 @@ structure Comment where
   /-- Denormalised display name of the author at render time. -/
   authorName : Option String := none
   body : String
+  /-- When set, this comment is a review with this verdict. -/
+  review : Option ReviewState := none
   createdAt : Timestamp
   updatedAt : Timestamp
 deriving Inhabited, ToJson, FromJson

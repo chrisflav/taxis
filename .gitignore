@@ -4,6 +4,7 @@
 /issues.sqlite-shm
 /.env
 .env.local
+.claude/settings.local.json
 
 # Python bytecode
 __pycache__/

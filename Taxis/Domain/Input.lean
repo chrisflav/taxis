@@ -79,6 +79,7 @@ structure IssueInput where
   dependencies : Array IssueId := #[]
   assignees : Array ActorId := #[]
   visibility : Array GroupId := #[]
+  deadline : Option Timestamp := none
 deriving ToJson
 
 instance : FromJson IssueInput where
@@ -91,10 +92,11 @@ instance : FromJson IssueInput where
     parent := ← jsonFieldOpt? j "parent"
     dependencies := ← jsonFieldD? j "dependencies" #[]
     assignees := ← jsonFieldD? j "assignees" #[]
-    visibility := ← jsonFieldD? j "visibility" #[] }
+    visibility := ← jsonFieldD? j "visibility" #[]
+    deadline := ← jsonFieldOpt? j "deadline" }
 
-/-- Body for updating an issue; absent scalar/relation fields are left unchanged. `parent` is
-    three-valued: absent leaves it unchanged, `null` clears it, a value sets it. -/
+/-- Body for updating an issue; absent scalar/relation fields are left unchanged. `parent` and
+    `deadline` are three-valued: absent leaves it unchanged, `null` clears it, a value sets it. -/
 structure IssueUpdate where
   title : Option String := none
   description : Option String := none
@@ -105,6 +107,7 @@ structure IssueUpdate where
   dependencies : Option (Array IssueId) := none
   assignees : Option (Array ActorId) := none
   visibility : Option (Array GroupId) := none
+  deadline : Option (Option Timestamp) := none
 deriving ToJson
 
 instance : FromJson IssueUpdate where
@@ -117,7 +120,8 @@ instance : FromJson IssueUpdate where
     parent := ← jsonFieldTri? j "parent"
     dependencies := ← jsonFieldOpt? j "dependencies"
     assignees := ← jsonFieldOpt? j "assignees"
-    visibility := ← jsonFieldOpt? j "visibility" }
+    visibility := ← jsonFieldOpt? j "visibility"
+    deadline := ← jsonFieldTri? j "deadline" }
 
 /-- Body for attaching an artifact to an issue. -/
 structure ArtifactInput where
@@ -139,12 +143,15 @@ instance : FromJson CheckInput where
     kind := ← jsonField? j "kind"
     config := ← jsonFieldD? j "config" .null }
 
-/-- Body for posting a comment on an issue. -/
+/-- Body for posting a comment on an issue. Setting `review` turns it into a review. -/
 structure CommentInput where
   body : String
+  review : Option ReviewState := none
 
 instance : FromJson CommentInput where
-  fromJson? j := do pure { body := ← jsonField? j "body" }
+  fromJson? j := do pure {
+    body := ← jsonField? j "body"
+    review := ← jsonFieldOpt? j "review" }
 
 /-- Body for creating an API token. -/
 structure TokenInput where

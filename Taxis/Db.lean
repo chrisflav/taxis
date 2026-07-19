@@ -5,6 +5,8 @@ import Taxis.Db.Groups
 import Taxis.Db.Labels
 import Taxis.Db.Artifacts
 import Taxis.Db.Checks
+import Taxis.Db.Notifications
+import Taxis.Db.ReviewRequests
 import Taxis.Db.Issues
 import Taxis.Db.Comments
 import Taxis.Db.Events

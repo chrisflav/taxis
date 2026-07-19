@@ -1,4 +1,5 @@
 import Taxis.Domain
+import Taxis.Db.Connection
 import Std.Data.HashMap
 
 /-!
@@ -43,9 +44,10 @@ structure CheckHandler where
   fields : Array FieldSpec := #[]
   /-- Validate the check configuration. -/
   validateConfig : Json → Except String Unit := fun _ => .ok ()
-  /-- Evaluate the check against its config, the issue, and the issue's artifacts,
-      returning an outcome and an optional human-readable detail. -/
-  evaluate : Json → Issue → Array Artifact → IO (CheckStatus × Option String)
+  /-- Evaluate the check against its config, the issue, and the issue's artifacts (with database
+      access, for checks that need to look up other issues/comments), returning an outcome and an
+      optional human-readable detail. -/
+  evaluate : Db.Conn → Json → Issue → Array Artifact → IO (CheckStatus × Option String)
 
 initialize artifactRegistryRef : IO.Ref (Std.HashMap String ArtifactHandler) ← IO.mkRef {}
 initialize checkRegistryRef : IO.Ref (Std.HashMap String CheckHandler) ← IO.mkRef {}
