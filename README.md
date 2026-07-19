@@ -67,6 +67,18 @@ Then open <http://localhost:8080>.
 For frontend development with hot reload, run `npm run dev` in `frontend/` (it proxies `/api`
 to the backend on port 8080) and `lake exe taxis` in another terminal.
 
+### Run with Docker
+
+```bash
+cd docker
+docker compose up --build
+```
+
+Builds the backend and frontend from source and runs the server at <http://localhost:8080>, with
+the SQLite database persisted in a named volume. Configuration (see below) is passed as
+environment variables in `docker/docker-compose.yaml`, or via a `docker/.env` file — see the
+comments there for what's available.
+
 ## Configuration
 
 All configuration is via environment variables. They may be exported into the shell **or** placed

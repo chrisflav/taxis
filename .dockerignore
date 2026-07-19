@@ -1,0 +1,14 @@
+.git
+.github
+.lake
+frontend/node_modules
+frontend/dist
+issues.sqlite
+issues.sqlite-shm
+issues.sqlite-wal
+.env
+.env.local
+.claude
+.claude-plugin
+taxis-plugin
+docker
