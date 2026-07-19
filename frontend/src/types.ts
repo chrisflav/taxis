@@ -21,6 +21,7 @@ export interface Actor {
   displayName: string;
   groups: number[];
   googleSub: string | null;
+  githubId: string | null;
   admin: boolean;
   bot: boolean;
 }

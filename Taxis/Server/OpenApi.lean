@@ -49,14 +49,14 @@ private def operation (tag summary : String) (params : List Json) (body : Option
 private def schemas : Json := obj [
   ("Error", schemaObj [("error", typ "string")]),
   ("Actor", schemaObj [("id", typ "integer"), ("email", typ "string"), ("displayName", typ "string"),
-    ("groups", arrayOf (typ "integer")), ("googleSub", nullable "string"), ("admin", typ "boolean"),
-    ("bot", typ "boolean")]),
+    ("groups", arrayOf (typ "integer")), ("googleSub", nullable "string"), ("githubId", nullable "string"),
+    ("admin", typ "boolean"), ("bot", typ "boolean")]),
   ("ActorInput", schemaObj [("email", typ "string"), ("displayName", typ "string"),
-    ("groups", arrayOf (typ "integer")), ("googleSub", typ "string"), ("admin", typ "boolean"),
-    ("bot", typ "boolean")] ["email", "displayName"]),
+    ("groups", arrayOf (typ "integer")), ("googleSub", typ "string"), ("githubId", typ "string"),
+    ("admin", typ "boolean"), ("bot", typ "boolean")] ["email", "displayName"]),
   ("ActorUpdate", schemaObj [("email", typ "string"), ("displayName", typ "string"),
-    ("groups", arrayOf (typ "integer")), ("googleSub", typ "string"), ("admin", typ "boolean"),
-    ("bot", typ "boolean")]),
+    ("groups", arrayOf (typ "integer")), ("googleSub", typ "string"), ("githubId", typ "string"),
+    ("admin", typ "boolean"), ("bot", typ "boolean")]),
   ("Group", schemaObj [("id", typ "integer"), ("name", typ "string"), ("description", nullable "string")]),
   ("GroupInput", schemaObj [("name", typ "string"), ("description", typ "string")] ["name"]),
   ("Label", schemaObj [("id", typ "integer"), ("name", typ "string"), ("description", nullable "string"),
@@ -118,6 +118,10 @@ private def paths : Json := obj [
   ("/auth/google/login", obj [("get", operation "Auth" "Redirect to Google consent" [] none
     [("302", emptyResp "Redirect")])]),
   ("/auth/google/callback", obj [("get", operation "Auth" "OAuth callback" [queryParam "code" "Authorization code"] none
+    [("302", emptyResp "Redirect with session cookie")])]),
+  ("/auth/github/login", obj [("get", operation "Auth" "Redirect to GitHub consent" [] none
+    [("302", emptyResp "Redirect")])]),
+  ("/auth/github/callback", obj [("get", operation "Auth" "OAuth callback" [queryParam "code" "Authorization code"] none
     [("302", emptyResp "Redirect with session cookie")])]),
   ("/auth/logout", obj [("post", operation "Auth" "Destroy the current session" [] none
     [("200", emptyResp "Logged out")])]),

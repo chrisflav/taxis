@@ -609,7 +609,7 @@ def dispatch (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
   if mutating && isAdminResource req.segments && !(req.actor.map (·.admin) |>.getD false) then
     fail (.forbidden "admin privileges required")
   match req.method, req.segments with
-  | .get, ["health"] => ok (Json.mkObj [("status", "ok"), ("version", Taxis.version), ("centralPasswordEnabled", Json.bool ctx.config.centralPassword.isSome), ("googleEnabled", Json.bool ctx.config.googleClientId.isSome)])
+  | .get, ["health"] => ok (Json.mkObj [("status", "ok"), ("version", Taxis.version), ("centralPasswordEnabled", Json.bool ctx.config.centralPassword.isSome), ("googleEnabled", Json.bool ctx.config.googleClientId.isSome), ("githubEnabled", Json.bool ctx.config.githubClientId.isSome)])
   | .get, ["openapi.json"] => ok OpenApi.spec
   | .get, ["plugins"] => pluginsH
   | .get, ["graph"] => graphH ctx req.actor
@@ -617,6 +617,8 @@ def dispatch (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
   | .get, ["me"] => meH req
   | .get, ["auth", "google", "login"] => googleLoginH ctx
   | .get, ["auth", "google", "callback"] => googleCallbackH ctx req
+  | .get, ["auth", "github", "login"] => githubLoginH ctx
+  | .get, ["auth", "github", "callback"] => githubCallbackH ctx req
   | .post, ["auth", "logout"] => logoutH ctx req
   | .post, ["auth", "dev-login"] => devLoginH ctx req
   | .post, ["auth", "password-login"] => passwordLoginH ctx req

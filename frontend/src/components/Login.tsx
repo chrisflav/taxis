@@ -7,12 +7,14 @@ import { Modal } from "./Modal";
 export function LoginBar({ me, onChange }: { me: Actor | null; onChange: () => void }) {
   const [centralPasswordEnabled, setCentralPasswordEnabled] = useState(false);
   const [googleEnabled, setGoogleEnabled] = useState(false);
+  const [githubEnabled, setGithubEnabled] = useState(false);
   const [showPasswordForm, setShowPasswordForm] = useState(false);
 
   useEffect(() => {
     api.health().then(h => {
       setCentralPasswordEnabled(!!h.centralPasswordEnabled);
       setGoogleEnabled(!!h.googleEnabled);
+      setGithubEnabled(!!h.githubEnabled);
     }).catch(console.error);
   }, []);
 
@@ -28,6 +30,7 @@ export function LoginBar({ me, onChange }: { me: Actor | null; onChange: () => v
   return (
     <div className="row">
       {googleEnabled && <a href={api.googleLoginUrl}><button>Sign in with Google</button></a>}
+      {githubEnabled && <a href={api.githubLoginUrl}><button>Sign in with GitHub</button></a>}
       {centralPasswordEnabled && <button onClick={() => setShowPasswordForm(true)}>Sign in with Password</button>}
       {showPasswordForm && (
         <Modal title="Sign in with Password" onClose={() => setShowPasswordForm(false)}>

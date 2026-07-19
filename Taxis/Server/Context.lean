@@ -23,6 +23,10 @@ structure Config where
   publicBaseUrl : String := "http://localhost:8080"
   googleClientId : Option String := none
   googleClientSecret : Option String := none
+  /-- GitHub OAuth App credentials, for "Sign in with GitHub". Distinct from `githubToken` below,
+      which is a personal-access token used for GitHub *API calls*, not login. -/
+  githubClientId : Option String := none
+  githubClientSecret : Option String := none
   /-- Personal-access token used for GitHub API calls by import/check plugins. -/
   githubToken : Option String := none
   /-- Interval in seconds for the background check sweeper; `0` disables it. -/
@@ -128,6 +132,8 @@ def Config.fromEnv : IO Config := do
     port, host, dbPath := dbPath, frontendDir := frontendDir, publicBaseUrl, checkIntervalSeconds, adminEmails
     googleClientId := ← getEnv "ISSUES_GOOGLE_CLIENT_ID"
     googleClientSecret := ← getEnv "ISSUES_GOOGLE_CLIENT_SECRET"
+    githubClientId := ← getEnv "ISSUES_GITHUB_CLIENT_ID"
+    githubClientSecret := ← getEnv "ISSUES_GITHUB_CLIENT_SECRET"
     githubToken := ← getEnv "ISSUES_GITHUB_TOKEN"
     centralPassword := ← getEnv "ISSUES_CENTRAL_PASSWORD"
   }

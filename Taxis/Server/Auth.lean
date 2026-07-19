@@ -64,7 +64,7 @@ private def googleAuthEndpoint := "https://accounts.google.com/o/oauth2/v2/auth"
 private def googleTokenEndpoint := "https://oauth2.googleapis.com/token"
 private def googleUserinfoEndpoint := "https://openidconnect.googleapis.com/v1/userinfo"
 
-private def redirectUri (ctx : AppContext) : String :=
+private def googleRedirectUri (ctx : AppContext) : String :=
   s!"{ctx.config.publicBaseUrl}/auth/google/callback"
 
 /-- Redirect the user agent to Google's consent screen. -/
@@ -72,7 +72,7 @@ def googleLoginH (ctx : AppContext) : ApiM ApiResponse := do
   match ctx.config.googleClientId with
   | none => fail (.server "Google OAuth is not configured")
   | some clientId =>
-    let params := s!"client_id={urlEncode clientId}&redirect_uri={urlEncode (redirectUri ctx)}" ++
+    let params := s!"client_id={urlEncode clientId}&redirect_uri={urlEncode (googleRedirectUri ctx)}" ++
       s!"&response_type=code&scope={urlEncode "openid email profile"}&access_type=online&prompt=select_account"
     redirect s!"{googleAuthEndpoint}?{params}"
 
@@ -91,7 +91,7 @@ def googleCallbackH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
   let some clientSecret := ctx.config.googleClientSecret | fail (.server "Google OAuth is not configured")
   let some code := req.query "code" | fail (.badRequest "missing authorization code")
   let form := s!"code={urlEncode code}&client_id={urlEncode clientId}&client_secret={urlEncode clientSecret}" ++
-    s!"&redirect_uri={urlEncode (redirectUri ctx)}&grant_type=authorization_code"
+    s!"&redirect_uri={urlEncode (googleRedirectUri ctx)}&grant_type=authorization_code"
   let tokenJson ← liftIO (Http.requestJson "POST" googleTokenEndpoint
     #[("Content-Type", "application/x-www-form-urlencoded")] (some form))
   let accessToken ← match tokenJson with
@@ -112,6 +112,104 @@ def googleCallbackH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
       | _, _ => fail (.unauthorized "incomplete Google profile")
   let actor ← ctx.dbM (fun db => do
     let a ← upsertGoogleActor db sub email name
+    -- Bootstrap: configured admin emails are granted admin on login.
+    if ctx.config.adminEmails.contains a.email && !a.admin then
+      Db.setActorAdmin db a.id true
+    pure a)
+  let token ← liftIO randomToken
+  ctx.dbM (fun db => Db.createSession db token actor.id sessionTtl)
+  let secure := ctx.config.publicBaseUrl.startsWith "https"
+  pure { status := .found, body := Json.mkObj [],
+         headers := #[("Location", "/"), ("Set-Cookie", sessionCookie token secure)] }
+
+/-! ## GitHub OAuth -/
+
+private def githubAuthEndpoint := "https://github.com/login/oauth/authorize"
+private def githubTokenEndpoint := "https://github.com/login/oauth/access_token"
+private def githubUserEndpoint := "https://api.github.com/user"
+/-- `GET /user`'s own `email` field is `null` unless the user has made their primary email
+    public; this lists every verified address on the account so a private-email account can
+    still sign in (requires the `user:email` scope, requested below). -/
+private def githubEmailsEndpoint := "https://api.github.com/user/emails"
+
+private def githubRedirectUri (ctx : AppContext) : String :=
+  s!"{ctx.config.publicBaseUrl}/auth/github/callback"
+
+/-- Headers for an authenticated `api.github.com` request — `User-Agent` is mandatory, GitHub
+    rejects requests without one. -/
+private def githubApiHeaders (accessToken : String) : Array (String × String) :=
+  #[("Authorization", s!"Bearer {accessToken}"), ("Accept", "application/vnd.github+json"),
+    ("User-Agent", "taxis")]
+
+/-- Redirect the user agent to GitHub's consent screen. -/
+def githubLoginH (ctx : AppContext) : ApiM ApiResponse := do
+  match ctx.config.githubClientId with
+  | none => fail (.server "GitHub OAuth is not configured")
+  | some clientId =>
+    let params := s!"client_id={urlEncode clientId}&redirect_uri={urlEncode (githubRedirectUri ctx)}" ++
+      s!"&scope={urlEncode "read:user user:email"}"
+    redirect s!"{githubAuthEndpoint}?{params}"
+
+/-- Upsert the actor for an authenticated GitHub identity, creating or linking as needed. -/
+private def upsertGithubActor (db : Db.Conn) (githubId email name : String) : IO Actor := do
+  match ← Db.getActorByGithubId db githubId with
+  | some a => pure a
+  | none =>
+    match ← Db.getActorByEmail db email with
+    | some a => Db.linkGithubId db a.id githubId; pure { a with githubId := some githubId }
+    | none => Db.createActor db { email, displayName := name, githubId := some githubId }
+
+/-- Pick a usable address from `GET /user/emails`'s response: the verified primary address, or
+    else the first verified one (`GET /user` should always have exactly one primary, but a
+    malformed/edge-case response shouldn't hard-fail login if any verified address exists). -/
+private def primaryVerifiedEmail (emailsJson : Json) : Option String :=
+  match emailsJson.getArr? with
+  | .error _ => none
+  | .ok entries =>
+    let verified := entries.filterMap fun e =>
+      let email := (e.getObjValAs? String "email").toOption
+      let primary := (e.getObjValAs? Bool "primary").toOption.getD false
+      let isVerified := (e.getObjValAs? Bool "verified").toOption.getD false
+      if isVerified then email.map (·, primary) else none
+    (verified.find? (·.2)).map Prod.fst <|> (verified[0]?.map Prod.fst)
+
+/-- Handle GitHub's redirect back: exchange the code, load the profile (falling back to the
+    verified-emails list if the primary address isn't public), establish a session. -/
+def githubCallbackH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
+  let some clientId := ctx.config.githubClientId | fail (.server "GitHub OAuth is not configured")
+  let some clientSecret := ctx.config.githubClientSecret | fail (.server "GitHub OAuth is not configured")
+  let some code := req.query "code" | fail (.badRequest "missing authorization code")
+  let form := s!"code={urlEncode code}&client_id={urlEncode clientId}&client_secret={urlEncode clientSecret}" ++
+    s!"&redirect_uri={urlEncode (githubRedirectUri ctx)}"
+  let tokenJson ← liftIO (Http.requestJson "POST" githubTokenEndpoint
+    #[("Content-Type", "application/x-www-form-urlencoded"), ("Accept", "application/json"),
+      ("User-Agent", "taxis")] (some form))
+  let accessToken ← match tokenJson with
+    | .error e => fail (.unauthorized s!"token exchange failed: {e}")
+    | .ok j => match j.getObjValAs? String "access_token" with
+      | .ok t => pure t
+      | .error _ => fail (.unauthorized "no access_token in GitHub response")
+  let profile ← liftIO (Http.requestJson "GET" githubUserEndpoint (githubApiHeaders accessToken) none)
+  let (githubId, publicEmail, name) ← match profile with
+    | .error e => fail (.unauthorized s!"user profile fetch failed: {e}")
+    | .ok j =>
+      let id := (j.getObjValAs? Int64 "id").toOption.map toString
+      let email := (j.getObjValAs? String "email").toOption
+      let login := (j.getObjValAs? String "login").toOption.getD ""
+      let name := (j.getObjValAs? String "name").toOption.getD login
+      match id with
+      | some i => pure (i, email, if name.isEmpty then login else name)
+      | none => fail (.unauthorized "incomplete GitHub profile")
+  let email ← match publicEmail with
+    | some e => pure e
+    | none =>
+      match ← liftIO (Http.requestJson "GET" githubEmailsEndpoint (githubApiHeaders accessToken) none) with
+      | .error e => fail (.unauthorized s!"no public email and email list fetch failed: {e}")
+      | .ok j => match primaryVerifiedEmail j with
+        | some e => pure e
+        | none => fail (.unauthorized "GitHub account has no verified email")
+  let actor ← ctx.dbM (fun db => do
+    let a ← upsertGithubActor db githubId email name
     -- Bootstrap: configured admin emails are granted admin on login.
     if ctx.config.adminEmails.contains a.email && !a.admin then
       Db.setActorAdmin db a.id true

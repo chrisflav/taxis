@@ -19,6 +19,7 @@ structure ActorInput where
   displayName : String
   groups : Array GroupId := #[]
   googleSub : Option String := none
+  githubId : Option String := none
   admin : Bool := false
   bot : Bool := false
 deriving ToJson
@@ -29,6 +30,7 @@ instance : FromJson ActorInput where
     displayName := ← jsonField? j "displayName"
     groups := ← jsonFieldD? j "groups" #[]
     googleSub := ← jsonFieldOpt? j "googleSub"
+    githubId := ← jsonFieldOpt? j "githubId"
     admin := ← jsonFieldD? j "admin" false
     bot := ← jsonFieldD? j "bot" false }
 
@@ -38,6 +40,7 @@ structure ActorUpdate where
   displayName : Option String := none
   groups : Option (Array GroupId) := none
   googleSub : Option String := none
+  githubId : Option String := none
   admin : Option Bool := none
   bot : Option Bool := none
 deriving ToJson, FromJson

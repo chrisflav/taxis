@@ -85,23 +85,30 @@ the `${VAR:-default}` placeholders there.
 
 All configuration is via environment variables. They may be exported into the shell **or** placed
 in a `.env` file in the working directory (real environment variables take precedence). On startup
-the server logs whether Google OAuth is configured and the redirect URI it expects.
+the server logs whether Google/GitHub OAuth are configured and the redirect URIs it expects.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `ISSUES_PORT` | `8080` | Port to listen on |
 | `ISSUES_DB` | `issues.sqlite` | SQLite database path |
 | `ISSUES_FRONTEND_DIR` | `frontend/dist` | Directory of built frontend assets |
-| `ISSUES_BASE_URL` | `http://localhost:<port>` | Public URL (used for the OAuth redirect) |
+| `ISSUES_BASE_URL` | `http://localhost:<port>` | Public URL (used for the OAuth redirects) |
 | `ISSUES_GOOGLE_CLIENT_ID` | — | Google OAuth client id; when set, mutations require auth |
 | `ISSUES_GOOGLE_CLIENT_SECRET` | — | Google OAuth client secret |
-| `ISSUES_GITHUB_TOKEN` | — | Token for GitHub API calls (import, CI checks) |
+| `ISSUES_GITHUB_CLIENT_ID` | — | GitHub OAuth App client id; when set, mutations require auth |
+| `ISSUES_GITHUB_CLIENT_SECRET` | — | GitHub OAuth App client secret |
+| `ISSUES_GITHUB_TOKEN` | — | Token for GitHub API calls (import, CI checks) — unrelated to the OAuth App above; see below |
 | `ISSUES_CHECK_INTERVAL` | `0` | Background check-sweep interval in seconds (`0` disables) |
 | `ISSUES_ADMIN_EMAILS` | — | Comma-separated emails granted admin on login (bootstrap) |
 | `ISSUES_DEV_LOGIN` | — | If set, enables `POST /api/auth/dev-login` for local use |
 
-When Google OAuth is **not** configured the API is open (single-user/local mode); when it is
-configured, write operations require an authenticated session, and managing actors, groups, and
+`ISSUES_GITHUB_CLIENT_ID`/`_SECRET` and `ISSUES_GITHUB_TOKEN` are easy to conflate but serve
+different purposes: the former is a GitHub OAuth App used for **signing in**, the latter is a
+personal-access token the server uses to **call the GitHub API** on your behalf (importing issues,
+evaluating `github-ci` checks) — they can be configured independently of each other.
+
+When neither Google nor GitHub OAuth is configured the API is open (single-user/local mode); when
+either is, write operations require an authenticated session, and managing actors, groups, and
 labels (plus running imports) additionally requires an **admin** actor.
 
 ## Sign-in with Google
@@ -135,6 +142,42 @@ On login the server resolves the Google identity to an actor in this order:
 So to connect a Google account to an actor you created in advance, just set that actor's **email**
 to the Google account's email; their first sign-in links the two automatically. Only actors with a
 linked Google account can authenticate.
+
+## Sign-in with GitHub
+
+1. In GitHub, go to **Settings → Developer settings → OAuth Apps → New OAuth App** (a personal
+   account or organization both work).
+2. Set **Authorization callback URL** to `<ISSUES_BASE_URL>/auth/github/callback` (e.g.
+   `http://localhost:8080/auth/github/callback` for local use, or your public URL in production).
+3. Generate a client secret, then run the server with both credentials and your public URL set:
+
+   ```bash
+   ISSUES_GITHUB_CLIENT_ID=... \
+   ISSUES_GITHUB_CLIENT_SECRET=... \
+   ISSUES_BASE_URL=https://issues.example.com \
+   ISSUES_ADMIN_EMAILS=you@example.com \
+   lake exe taxis
+   ```
+
+4. Click **Sign in with GitHub**. On the first login the server bootstraps admin for any email
+   listed in `ISSUES_ADMIN_EMAILS`.
+
+Login requests the `read:user user:email` scopes. If the account's primary email isn't public, the
+server falls back to `GET /user/emails` and uses the verified primary address from there instead —
+either way, sign-in needs *some* verified email on the GitHub account.
+
+### Connecting a GitHub account to an actor
+
+Same resolution order as Google, using the GitHub account's numeric user id instead of a Google
+subject id:
+
+1. by the linked GitHub user id (`github_id`) if this account has logged in before;
+2. otherwise by **email** — a pre-existing actor with the same email is *linked* (its `github_id`
+   is filled in);
+3. otherwise a new actor is created.
+
+Google and GitHub sign-in can be enabled at the same time; an actor may have both a `googleSub` and
+a `githubId` linked (independently, via matching email on each provider's first login).
 
 ## API overview
 
