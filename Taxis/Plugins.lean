@@ -3,6 +3,7 @@ import Taxis.Plugins.Github
 import Taxis.Plugins.Source
 import Taxis.Plugins.JsonCheck
 import Taxis.Plugins.Standard
+import Taxis.Plugins.Session
 
 /-!
 # Plugins
