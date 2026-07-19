@@ -1,5 +1,6 @@
 export type IssueState = "open" | "closed" | "completed";
 export type CheckStatus = "pending" | "passing" | "failing" | "error";
+export type ReviewState = "approve" | "request_changes";
 
 export interface Group {
   id: number;
@@ -53,6 +54,9 @@ export interface Issue {
   artifacts: number[];
   visibility: number[];
   checks: number[];
+  creatorId: number | null;
+  creatorName: string | null;
+  deadline: number | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -63,8 +67,32 @@ export interface Comment {
   authorId: number | null;
   authorName: string | null;
   body: string;
+  review: ReviewState | null;
   createdAt: number;
   updatedAt: number;
+}
+
+export interface ReviewRequest {
+  id: number;
+  issueId: number;
+  actorId: number;
+  actorName: string | null;
+  requestedBy: number | null;
+  requestedByName: string | null;
+  createdAt: number;
+  resolvedAt: number | null;
+}
+
+export interface Notification {
+  id: number;
+  actorId: number;
+  issueId: number;
+  issueTitle: string;
+  kind: string;
+  data: Record<string, unknown>;
+  read: boolean;
+  done: boolean;
+  createdAt: number;
 }
 
 // A recorded change to an issue. `data` shape depends on `kind`:
@@ -109,6 +137,8 @@ export interface IssueDetail {
   attachedChecks: Check[];
   comments: Comment[];
   events: Event[];
+  participating: boolean;
+  reviewRequests: ReviewRequest[];
 }
 
 export interface GraphData {

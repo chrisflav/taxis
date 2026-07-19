@@ -11,7 +11,10 @@ import type {
   IssueDetail,
   IssueState,
   Label,
+  Notification,
   Plugins,
+  ReviewRequest,
+  ReviewState,
 } from "./types";
 
 const BASE = "/api";
@@ -86,16 +89,43 @@ export const api = {
   runCheck: (id: number) => req<Check>(`/checks/${id}/run`, { method: "POST" }),
   deleteCheck: (id: number) => req<unknown>(`/checks/${id}`, { method: "DELETE" }),
 
-  addComment: (issueId: number, body: string) =>
+  addComment: (issueId: number, body: string, review?: ReviewState) =>
     req<Comment>(`/issues/${issueId}/comments`, {
       method: "POST",
-      body: JSON.stringify({ body }),
+      body: JSON.stringify({ body, review }),
     }),
   updateComment: (id: number, body: string) =>
     req<Comment>(`/comments/${id}`, { method: "PATCH", body: JSON.stringify({ body }) }),
   deleteComment: (id: number) => req<unknown>(`/comments/${id}`, { method: "DELETE" }),
 
   listEvents: (issueId: number) => req<Event[]>(`/issues/${issueId}/events`),
+
+  subscribe: (issueId: number) => req<{ participating: boolean }>(`/issues/${issueId}/subscribe`, { method: "POST" }),
+  unsubscribe: (issueId: number) => req<{ participating: boolean }>(`/issues/${issueId}/unsubscribe`, { method: "POST" }),
+
+  requestReview: (issueId: number, actorId: number) =>
+    req<ReviewRequest>(`/issues/${issueId}/review-requests`, { method: "POST", body: JSON.stringify({ actorId }) }),
+  cancelReviewRequest: (id: number) => req<{ deleted: boolean }>(`/review-requests/${id}`, { method: "DELETE" }),
+
+  listNotifications: (opts: {
+    read?: boolean; kind?: string; done?: boolean; parent?: number; label?: number; q?: string;
+    sort?: "created_asc" | "created_desc"; limit?: number; offset?: number;
+  } = {}) =>
+    req<Notification[]>("/me/notifications" + qs({
+      read: opts.read == null ? undefined : opts.read ? "true" : "false",
+      kind: opts.kind,
+      done: opts.done == null ? undefined : opts.done ? "true" : "false",
+      parent: opts.parent?.toString(),
+      label: opts.label?.toString(),
+      q: opts.q,
+      sort: opts.sort,
+      limit: opts.limit?.toString(),
+      offset: opts.offset?.toString(),
+    })),
+  unreadNotificationCount: () => req<{ count: number }>("/me/notifications/unread-count"),
+  markNotificationRead: (id: number) => req<{ read: boolean }>(`/me/notifications/${id}/read`, { method: "POST" }),
+  markNotificationDone: (id: number) => req<{ done: boolean }>(`/me/notifications/${id}/done`, { method: "POST" }),
+  markAllNotificationsRead: () => req<{ ok: boolean }>("/me/notifications/read-all", { method: "POST" }),
 
   listTokens: () => req<ApiToken[]>("/me/tokens"),
   createToken: (name: string) =>
@@ -129,10 +159,10 @@ export const api = {
 
   graph: () => req<GraphData>("/graph"),
 
-  importGithub: (owner: string, repo: string, state: string) =>
-    req<{ imported: number }>("/import/github", {
+  importGithub: (owner: string, repo: string, state: string, parent?: number) =>
+    req<{ imported: number; updated: number }>("/import/github", {
       method: "POST",
-      body: JSON.stringify({ owner, repo, state }),
+      body: JSON.stringify({ owner, repo, state, parent }),
     }),
   importGdoc: (text: string) =>
     req<{ imported: number }>("/import/gdoc", {

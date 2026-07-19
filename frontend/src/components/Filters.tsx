@@ -1,7 +1,8 @@
-import type { Actor, Label } from "../types";
+import type { Actor, Issue, Label } from "../types";
 import type { IssueFilterState } from "../filters";
 import { STATES } from "../api";
 import { MultiSelect } from "./MultiSelect";
+import { breadcrumbLabel } from "../breadcrumbs";
 
 // The shared issue filter bar, used by both the list and the graph.
 export function Filters({
@@ -9,13 +10,16 @@ export function Filters({
   onChange,
   labels,
   actors,
+  issues = [],
 }: {
   value: IssueFilterState;
   onChange: (next: IssueFilterState) => void;
   labels: Label[];
   actors: Actor[];
+  issues?: Issue[];
 }) {
   const set = (patch: Partial<IssueFilterState>) => onChange({ ...value, ...patch });
+  const issueOpts = issues.map((i) => ({ value: i.id, label: breadcrumbLabel(i, issues) }));
 
   return (
     <div className="filters panel">
@@ -46,6 +50,24 @@ export function Filters({
           selected={value.assignees}
           onChange={(assignees) => set({ assignees })}
           placeholder="anyone"
+        />
+      </div>
+      <div>
+        <label>Parent (any)</label>
+        <MultiSelect
+          options={issueOpts}
+          selected={value.parents}
+          onChange={(parents) => set({ parents })}
+          placeholder="any parent"
+        />
+      </div>
+      <div>
+        <label>Depends on (all)</label>
+        <MultiSelect
+          options={issueOpts}
+          selected={value.dependsOn}
+          onChange={(dependsOn) => set({ dependsOn })}
+          placeholder="no requirement"
         />
       </div>
     </div>

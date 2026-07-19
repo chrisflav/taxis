@@ -124,6 +124,8 @@ th.sortable.active { color: var(--text); }
 .badge.pending { color: var(--yellow); border-color: var(--yellow); }
 .badge.error { color: var(--red); border-color: var(--red); }
 .badge.label { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
+.label-chip { margin: 2px 4px 2px 0; }
+.label-chip:last-child { margin-right: 0; }
 
 .filters { display: flex; gap: 12px; flex-wrap: wrap; align-items: end; margin-bottom: 12px; }
 .filters > div { flex: 1; min-width: 160px; }
@@ -153,9 +155,18 @@ th.sortable.active { color: var(--text); }
   background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
   box-shadow: 0 6px 20px rgba(0,0,0,0.12); max-height: 220px; overflow: auto; padding: 4px;
 }
+.ms-search { margin-bottom: 4px; padding: 5px 8px; font-size: 13px; }
 .ms-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; margin: 0; color: var(--text); font-size: 13px; cursor: pointer; }
 .ms-item:hover { background: var(--panel-2); }
 .ms-item input { width: auto; }
+.ms-item-selected { background: color-mix(in srgb, var(--accent) 12%, transparent); font-weight: 500; }
+
+.col-picker { position: relative; }
+.col-picker-menu {
+  position: absolute; z-index: 30; top: calc(100% + 4px); right: 0; min-width: 160px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: 0 6px 20px rgba(0,0,0,0.12); padding: 4px;
+}
 
 /* Tree view */
 .tree-row { display: flex; align-items: center; gap: 8px; padding: 6px 4px; border-bottom: 1px solid var(--border); }
@@ -192,6 +203,7 @@ th.sortable.active { color: var(--text); }
   height: 76vh; overflow: hidden; touch-action: none; cursor: grab;
 }
 .graph-viewport:active { cursor: grabbing; }
+.graph-viewport:fullscreen { height: 100vh; width: 100vw; background: var(--bg); }
 .graph-world { position: absolute; top: 0; left: 0; transform-origin: 0 0; will-change: transform; }
 
 .graph-controls {
@@ -220,6 +232,11 @@ th.sortable.active { color: var(--text); }
 .graph-edge.dim { opacity: 0.15; }
 
 .spacer { flex: 1; }
+
+.breadcrumbs { display: block; margin-bottom: 10px; }
+.breadcrumbs a { color: var(--muted); }
+.breadcrumbs a:hover { color: var(--accent); }
+.breadcrumb-current { color: var(--text); font-weight: 500; }
 
 /* Pagination bar */
 .pagination { margin-top: 10px; gap: 10px; }
@@ -274,9 +291,9 @@ th.sortable.active { color: var(--text); }
 .history-head { margin-bottom: 6px; font-weight: 600; }
 .history-item { padding: 6px 0; border-top: 1px solid var(--border); }
 .history-item:first-of-type { border-top: none; }
-.history-from, .history-to { white-space: pre-wrap; word-break: break-word; padding: 2px 6px; border-radius: 4px; margin-top: 2px; }
-.history-from { background: color-mix(in srgb, var(--red) 12%, transparent); text-decoration: line-through; opacity: 0.8; }
-.history-to { background: color-mix(in srgb, var(--green) 14%, transparent); }
+.history-diff { white-space: pre-wrap; word-break: break-word; margin-top: 2px; }
+.diff-remove { background: color-mix(in srgb, var(--red) 20%, transparent); text-decoration: line-through; opacity: 0.85; }
+.diff-add { background: color-mix(in srgb, var(--green) 24%, transparent); }
 
 /* Merged activity + comments timeline: comments are boxes (see .comment-card), changes are subtle
    interleaving one-liners. */
@@ -307,6 +324,55 @@ th.sortable.active { color: var(--text); }
 .md-inline, .md-inline p { display: inline; margin: 0; }
 .katex { font-size: 1.02em; }
 .katex-display { margin: 8px 0; overflow-x: auto; overflow-y: hidden; }
+
+/* Small screens: wrap the header nav, shrink page padding, let wide tables scroll horizontally
+   inside their own panel instead of the whole page, and stack meta rows / filter fields. */
+@media (max-width: 720px) {
+  header.topbar { flex-wrap: wrap; padding: 10px 12px; row-gap: 6px; }
+  header.topbar nav { flex-wrap: wrap; }
+  header.topbar .spacer { flex-basis: 100%; height: 0; }
+  main { padding: 12px; }
+  .filters { gap: 8px; }
+  .filters > div { flex-basis: 100%; min-width: 0; }
+  .panel:has(> table) { overflow-x: auto; }
+  .meta-row { flex-direction: column; align-items: flex-start; gap: 2px; }
+  .meta-label { flex: none; }
+  .actions-bar { justify-content: stretch; }
+  .actions-bar button { flex: 1; }
+  .graph-viewport { height: 60vh; }
+}
+
+/* Notification bell */
+.notif-bell {
+  position: relative; display: inline-flex; align-items: center; padding: 6px 10px;
+  border-radius: var(--radius); color: var(--muted); text-decoration: none; line-height: 1;
+}
+.notif-bell:hover { background: var(--panel-2); text-decoration: none; }
+.notif-bell.active { background: var(--panel-2); color: var(--text); }
+.notif-count {
+  position: absolute; top: -2px; right: -2px; background: var(--red); color: white;
+  border-radius: 999px; font-size: 10px; line-height: 1; padding: 3px 5px; min-width: 14px; text-align: center;
+}
+
+/* Notifications page */
+tr.notif-unread { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+tr.notif-unread:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.notif-banner {
+  display: flex; align-items: center; gap: 10px; padding: 10px 14px; margin-bottom: 12px;
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel)); border: 1px solid var(--accent);
+  border-radius: var(--radius);
+}
+
+/* Bulk operations toolbar */
+.bulk-bar { margin-bottom: 12px; }
+
+/* Issue-reference ("#123") autocomplete popover — "left"/"top" are set inline, at the caret. */
+.issue-ref-field { position: relative; }
+.issue-ref-menu {
+  position: fixed; z-index: 30; min-width: 240px; max-width: 420px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: 0 6px 20px rgba(0,0,0,0.12); max-height: 220px; overflow: auto; padding: 4px;
+}
 
 /* API token secret */
 code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }

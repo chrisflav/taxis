@@ -15,7 +15,7 @@ export function LabelChip({ label }: { label: Pick<Label, "name" | "color" | "de
   const color = label.color || "#6b7280";
   return (
     <span
-      className="badge"
+      className="badge label-chip"
       style={{ background: color, borderColor: color, color: contrastColor(color) }}
       title={label.description ?? ""}
     >

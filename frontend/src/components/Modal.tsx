@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 // A simple centered modal dialog. Click the backdrop or press Escape to dismiss.
 export function Modal({
@@ -27,6 +27,18 @@ export function Modal({
       </div>
     </div>
   );
+}
+
+// Guards a modal's close (backdrop click, Escape, explicit Cancel) behind a discard confirmation
+// whenever `dirty` is true, instead of silently losing what was entered.
+export function useConfirmClose(dirty: boolean, close: () => void) {
+  const [confirming, setConfirming] = useState(false);
+  return {
+    requestClose: () => (dirty ? setConfirming(true) : close()),
+    confirming,
+    confirmDiscard: () => { setConfirming(false); close(); },
+    cancelDiscard: () => setConfirming(false),
+  };
 }
 
 // A yes/no confirmation dialog.

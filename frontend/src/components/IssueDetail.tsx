@@ -1,13 +1,22 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type {
-  Actor, Artifact, Check, Comment, Event, Group, Issue, IssueDetail as Detail, Label, PluginKind, Plugins,
+  Actor, Artifact, Check, Comment, Event, Group, Issue, IssueDetail as Detail, Label, PluginKind, Plugins, ReviewState,
 } from "../types";
 import { api } from "../api";
-import { Modal, ConfirmModal } from "./Modal";
+import { Modal, ConfirmModal, useConfirmClose } from "./Modal";
 import { LabelChip } from "./LabelChip";
 import { Markdown } from "./Markdown";
 import { MultiSelect } from "./MultiSelect";
+import { SearchableSelect } from "./SearchableSelect";
+import { AutoTextarea } from "./AutoTextarea";
 import { ActorName } from "./ActorName";
+import { IssueBreadcrumbs } from "./Breadcrumbs";
+import { breadcrumbLabel } from "../breadcrumbs";
+import { IssueForm } from "./IssueForm";
+import { diffWords } from "../diff";
+import { localInputToUnix, unixToLocalInput } from "../datetime";
+import { useIssueRefAutocomplete } from "../useIssueRefAutocomplete";
+import { IssueRefMenu } from "./IssueRefMenu";
 
 // Render a Unix (seconds) timestamp in the viewer's locale.
 function fmtTime(ts: number): string {
@@ -30,6 +39,15 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
   const [addCheck, setAddCheck] = useState(false);
   const [delArtifact, setDelArtifact] = useState<Artifact | null>(null);
   const [delCheck, setDelCheck] = useState<Check | null>(null);
+  const [completeConfirm, setCompleteConfirm] = useState(false);
+  const [addingChild, setAddingChild] = useState(false);
+  const [addChildDirty, setAddChildDirty] = useState(false);
+  const addChildClose = useConfirmClose(addChildDirty, () => setAddingChild(false));
+  const [requestingReview, setRequestingReview] = useState(false);
+  // Errors from the actions bar (state/lock changes) show inline next to it instead of replacing
+  // the whole page the way a fatal load error does — e.g. a blocked "close as completed" (checks
+  // not passing) is a normal, recoverable outcome, not a reason to lose the rest of the page.
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const load = () => api.getIssue(id).then(setDetail).catch((e) => setError(String(e)));
 
@@ -48,7 +66,7 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
 
   // Persist a patch to the issue and refresh. Returns the promise so inline editors can await it.
   const patch = (body: Record<string, unknown>) => api.updateIssue(id, body).then(() => load());
-  const setState = (state: string) => patch({ state }).catch((e) => setError(String(e)));
+  const setState = (state: string) => { setActionError(null); patch({ state }).catch((e) => setActionError(String(e))); };
   const del = () => api.deleteIssue(id).then(() => (window.location.hash = "#/issues"));
 
   const groupName = (g: number) => groups.find((x) => x.id === g)?.name ?? `#${g}`;
@@ -59,10 +77,17 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
   // When locked, the title, description, parent and dependencies are frozen (labels, assignees and
   // visibility remain editable), mirroring the backend's locking rules.
   const editableUnlessLocked = canEdit && !issue.locked;
+  const overdue = issue.deadline != null && issue.state === "open" && issue.deadline * 1000 < Date.now();
+  // Marking an issue completed is blocked server-side while any attached check isn't passing —
+  // unless the actor is an admin, who's allowed to bypass it (issue #3). Surfacing that here, and
+  // asking for confirmation before an admin actually does it, makes the bypass visible instead of
+  // marking-as-completed just silently succeeding.
+  const failingChecks = detail.attachedChecks.filter((c) => c.status !== "passing");
+  const completionBlocked = failingChecks.length > 0 && !me?.admin;
 
   const labelOpts = allLabels.map((l) => ({ value: l.id, label: l.name }));
   const actorOpts = allActors.map((a) => ({ value: a.id, label: a.displayName }));
-  const issueOpts = allIssues.filter((i) => i.id !== id).map((i) => ({ value: i.id, label: `#${i.id} ${i.title}` }));
+  const issueOpts = allIssues.filter((i) => i.id !== id).map((i) => ({ value: i.id, label: breadcrumbLabel(i, allIssues) }));
   const visibleGroups = me?.admin ? groups : groups.filter((g) => me?.groups.includes(g.id));
 
   const events = detail.events ?? [];
@@ -70,6 +95,12 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
 
   return (
     <div>
+      <IssueBreadcrumbs issue={issue} allIssues={allIssues} />
+      {issue.creatorName && (
+        <div className="muted small" style={{ marginBottom: 6 }}>
+          Created by <ActorName name={issue.creatorName} /> · {fmtTime(issue.createdAt)}
+        </div>
+      )}
       <h2 style={{ marginTop: 0 }}>
         <span className="muted">#{issue.id}</span>{" · "}
         <InlineText
@@ -81,6 +112,11 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
         <span className={`badge ${issue.state}`}>{issue.state}</span>
         {issue.locked && <span title="locked" style={{ marginLeft: 6 }}>🔒</span>}
         <HistoryDropdown events={historyFor("title")} label="Title history" />
+        {canEdit && (
+          <button className="small" style={{ marginLeft: 10 }} onClick={() => setAddingChild(true)}>
+            + New child issue
+          </button>
+        )}
       </h2>
 
       <div className="panel">
@@ -93,13 +129,8 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
           multiline
           placeholder="No description"
           onSave={(v) => patch({ description: v })}
+          issues={allIssues}
         />
-        {detail.issueLabels.length > 0 && (
-          <div className="row" style={{ margin: "8px 0" }}>
-            {detail.issueLabels.map((l) => <LabelChip key={l.id} label={l} />)}
-          </div>
-        )}
-
         <MetaRow label="Labels" canEdit={canEdit}
           display={detail.issueLabels.length
             ? detail.issueLabels.map((l) => <LabelChip key={l.id} label={l} />)
@@ -135,6 +166,13 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
           editor={(close) => <MultiEditor options={visibleGroups.map((g) => ({ value: g.id, label: g.name }))}
             initial={issue.visibility} placeholder="Everyone (public)"
             onSave={(v) => patch({ visibility: v })} onClose={close} onError={setError} />} />
+
+        <MetaRow label="Deadline" canEdit={canEdit}
+          display={issue.deadline != null
+            ? <span className={`small ${overdue ? "error" : ""}`}>{fmtTime(issue.deadline)}{overdue ? " (overdue)" : ""}</span>
+            : <span className="muted small">none</span>}
+          editor={(close) => <DeadlineEditor initial={issue.deadline}
+            onSave={(v) => patch({ deadline: v })} onClose={close} onError={setError} />} />
       </div>
 
       <div className="panel">
@@ -161,6 +199,11 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
           <h3 style={{ margin: 0 }}>Checks</h3>
           {me && <button onClick={() => setAddCheck(true)}>+ Add check</button>}
         </div>
+        {detail.attachedChecks.length > 0 && (
+          <div className="muted small" style={{ marginTop: 4 }}>
+            A non-passing check here blocks "Close as completed" below — admins can bypass it.
+          </div>
+        )}
         {detail.attachedChecks.map((c) => (
           <div key={c.id} className="row" style={{ justifyContent: "space-between", borderBottom: "1px solid var(--border)", padding: "6px 0" }}>
             <span>
@@ -179,31 +222,71 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
         {detail.attachedChecks.length === 0 && <div className="muted small" style={{ marginTop: 8 }}>None attached</div>}
       </div>
 
+      <div className="panel">
+        <div className="row" style={{ justifyContent: "space-between" }}>
+          <h3 style={{ margin: 0 }}>Reviewers</h3>
+          {me && <button onClick={() => setRequestingReview(true)}>+ Request review</button>}
+        </div>
+        {detail.reviewRequests.map((rr) => (
+          <div key={rr.id} className="row" style={{ justifyContent: "space-between", borderBottom: "1px solid var(--border)", padding: "6px 0" }}>
+            <span className="small">
+              <ActorName name={rr.actorName ?? `#${rr.actorId}`} />{" "}
+              {rr.resolvedAt ? <span className="badge passing">reviewed</span> : <span className="badge pending">pending</span>}
+              <span className="muted"> · requested by <ActorName name={rr.requestedByName ?? "someone"} /> · {fmtTime(rr.createdAt)}</span>
+            </span>
+            {me && !rr.resolvedAt && (
+              <button className="danger" onClick={() => api.cancelReviewRequest(rr.id).then(load).catch((e) => setActionError(String(e)))}>
+                Withdraw
+              </button>
+            )}
+          </div>
+        ))}
+        {detail.reviewRequests.length === 0 && <div className="muted small" style={{ marginTop: 8 }}>No review requests</div>}
+      </div>
+
       <Timeline
         detail={detail}
         me={me}
         actorOf={actorOf}
         labelName={labelName}
         groupName={groupName}
+        allIssues={allIssues}
         onChange={load}
         onError={setError}
       />
 
       {me && (
-        <div className="actions-bar">
-          {issue.state === "open" ? (
-            <>
-              <button onClick={() => setState("closed")}>Close</button>
-              <button onClick={() => setState("completed")}>Close as completed</button>
-            </>
-          ) : (
-            <button onClick={() => setState("open")}>Reopen</button>
-          )}
-          <button onClick={() => patch({ locked: !issue.locked }).catch((e) => setError(String(e)))}>
-            {issue.locked ? "🔓 Unlock" : "🔒 Lock"}
-          </button>
-          <button className="danger" onClick={() => setConfirmDelete(true)}>Delete</button>
-        </div>
+        <>
+          {actionError && <div className="panel error small">{actionError}</div>}
+          <div className="actions-bar">
+            <button
+              onClick={() => (detail.participating ? api.unsubscribe(id) : api.subscribe(id)).then(load).catch((e) => setActionError(String(e)))}
+              title={detail.participating ? "Stop getting notified about this issue" : "Get notified about this issue's activity"}
+            >
+              {detail.participating ? "🔕 Unsubscribe" : "🔔 Subscribe"}
+            </button>
+            {issue.state === "open" ? (
+              <>
+                <button onClick={() => setState("closed")}>Close</button>
+                <button
+                  onClick={() => (failingChecks.length > 0 ? setCompleteConfirm(true) : setState("completed"))}
+                  disabled={completionBlocked}
+                  title={completionBlocked
+                    ? `Blocked: ${failingChecks.length} check(s) not passing (${failingChecks.map((c) => c.kind).join(", ")})`
+                    : undefined}
+                >
+                  Close as completed
+                </button>
+              </>
+            ) : (
+              <button onClick={() => setState("open")}>Reopen</button>
+            )}
+            <button onClick={() => { setActionError(null); patch({ locked: !issue.locked }).catch((e) => setActionError(String(e))); }}>
+              {issue.locked ? "🔓 Unlock" : "🔒 Lock"}
+            </button>
+            <button className="danger" onClick={() => setConfirmDelete(true)}>Delete</button>
+          </div>
+        </>
       )}
 
       {addArtifact && (
@@ -222,6 +305,45 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
           onClose={() => setAddCheck(false)}
           onSubmit={(kind, value) => api.addCheck(issue.id, kind, value)}
           onDone={() => { setAddCheck(false); load(); }}
+        />
+      )}
+      {requestingReview && (
+        <RequestReviewModal
+          issueId={issue.id}
+          actors={allActors}
+          onClose={() => setRequestingReview(false)}
+          onDone={() => { setRequestingReview(false); load(); }}
+        />
+      )}
+      {addingChild && (
+        <Modal title={`New child issue of #${issue.id}`} onClose={addChildClose.requestClose}>
+          <IssueForm
+            me={me}
+            embedded
+            initialParent={issue.id}
+            onCancel={addChildClose.requestClose}
+            onDirtyChange={setAddChildDirty}
+            onDone={(newId) => { setAddingChild(false); window.location.hash = `#/issues/${newId}`; }}
+          />
+        </Modal>
+      )}
+      {addChildClose.confirming && (
+        <ConfirmModal
+          title="Discard new issue?"
+          message="You have unsaved changes. Discard them?"
+          confirmLabel="Discard"
+          danger
+          onConfirm={addChildClose.confirmDiscard}
+          onCancel={addChildClose.cancelDiscard}
+        />
+      )}
+      {completeConfirm && (
+        <ConfirmModal
+          title="Complete with failing checks?"
+          message={`${failingChecks.length} check(s) are not passing (${failingChecks.map((c) => c.kind).join(", ")}). As an admin you can bypass this and complete the issue anyway.`}
+          confirmLabel="Complete anyway"
+          onConfirm={() => { setCompleteConfirm(false); setState("completed"); }}
+          onCancel={() => setCompleteConfirm(false)}
         />
       )}
       {confirmDelete && (
@@ -265,7 +387,7 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
 // An inline-editable text value: renders the value (as markdown), and — for editors — a pencil that
 // swaps the block for an input/textarea with Save/Cancel, leaving the rest of the page in place.
 function InlineText({
-  value, canEdit, onSave, inline = false, multiline = false, placeholder,
+  value, canEdit, onSave, inline = false, multiline = false, placeholder, issues = [],
 }: {
   value: string;
   canEdit: boolean;
@@ -273,6 +395,7 @@ function InlineText({
   inline?: boolean;
   multiline?: boolean;
   placeholder?: string;
+  issues?: Issue[];
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
@@ -290,7 +413,7 @@ function InlineText({
       <span className={inline ? "inline-edit inline-edit-inline" : "inline-edit"}>
         {err && <div className="error small">{err}</div>}
         {multiline
-          ? <textarea autoFocus value={draft} onChange={(e) => setDraft(e.target.value)} />
+          ? <AutoTextarea autoFocus value={draft} onChange={(e) => setDraft(e.target.value)} />
           : <input autoFocus value={draft} onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") save(); if (e.key === "Escape") setEditing(false); }} />}
         <span className="row" style={{ marginTop: 6 }}>
@@ -302,7 +425,7 @@ function InlineText({
   }
 
   const body = value
-    ? <Markdown text={value} inline={inline} />
+    ? <Markdown text={value} inline={inline} issues={issues} />
     : <span className="muted">{placeholder ?? "empty"}</span>;
   return (
     <span className={inline ? "editable editable-inline" : "editable"}>
@@ -383,15 +506,78 @@ function SelectEditor({
   };
   return (
     <span className="inline-edit">
-      <select value={val ?? ""} onChange={(e) => setVal(e.target.value ? Number(e.target.value) : null)}>
-        <option value="">— none —</option>
-        {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-      </select>
+      <SearchableSelect options={options} value={val} onChange={setVal} />
       <span className="row" style={{ marginTop: 6 }}>
         <button className="primary" onClick={save} disabled={busy}>Save</button>
         <button onClick={onClose} disabled={busy}>Cancel</button>
       </span>
     </span>
+  );
+}
+
+// Inline deadline editor: a datetime-local input with Save/Cancel, plus a Clear button.
+function DeadlineEditor({
+  initial, onSave, onClose, onError,
+}: {
+  initial: number | null;
+  onSave: (v: number | null) => Promise<unknown>;
+  onClose: () => void;
+  onError: (e: string) => void;
+}) {
+  const [val, setVal] = useState(unixToLocalInput(initial));
+  const [busy, setBusy] = useState(false);
+  const save = (v: string) => {
+    setBusy(true);
+    onSave(localInputToUnix(v)).then(onClose).catch((e) => onError(String(e))).finally(() => setBusy(false));
+  };
+  return (
+    <span className="inline-edit">
+      <input type="datetime-local" value={val} onChange={(e) => setVal(e.target.value)} />
+      <span className="row" style={{ marginTop: 6 }}>
+        <button className="primary" onClick={() => save(val)} disabled={busy}>Save</button>
+        {initial != null && <button onClick={() => save("")} disabled={busy}>Clear</button>}
+        <button onClick={onClose} disabled={busy}>Cancel</button>
+      </span>
+    </span>
+  );
+}
+
+// Modal to ask a specific actor to review the issue — independent of assignment.
+function RequestReviewModal({
+  issueId, actors, onClose, onDone,
+}: {
+  issueId: number;
+  actors: Actor[];
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [actorId, setActorId] = useState<number | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (actorId == null) { setErr("Choose who should review this."); return; }
+    api.requestReview(issueId, actorId).then(onDone).catch((e2) => setErr(String(e2)));
+  };
+
+  return (
+    <Modal title="Request review" onClose={onClose}>
+      <form onSubmit={submit}>
+        {err && <div className="error small">{err}</div>}
+        <label>Reviewer</label>
+        <SearchableSelect
+          options={actors.map((a) => ({ value: a.id, label: a.displayName }))}
+          value={actorId}
+          onChange={setActorId}
+          allowNone={false}
+          placeholder="Choose an actor…"
+        />
+        <div className="row" style={{ justifyContent: "flex-end", marginTop: 16 }}>
+          <button type="button" onClick={onClose}>Cancel</button>
+          <button className="primary" type="submit" disabled={actorId == null}>Request</button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 
@@ -423,13 +609,28 @@ function HistoryDropdown({ events, label }: { events: Event[]; label: string }) 
               <div className="small muted">
                 <ActorName name={e.actorName ?? "(unknown)"} bot={e.actorBot} /> · {fmtTime(e.createdAt)}
               </div>
-              <div className="history-from small">{String(e.data.from ?? "")}</div>
-              <div className="history-to small">{String(e.data.to ?? "")}</div>
+              <HistoryDiff from={String(e.data.from ?? "")} to={String(e.data.to ?? "")} />
             </div>
           ))}
         </div>
       )}
     </span>
+  );
+}
+
+// An inline word-level diff between two revisions of a title/description/comment: unchanged text
+// plain, removed spans struck through, added spans highlighted — instead of showing the full old
+// and new text as separate blocks.
+function HistoryDiff({ from, to }: { from: string; to: string }) {
+  const parts = diffWords(from, to);
+  return (
+    <div className="history-diff small">
+      {parts.map((p, i) => {
+        if (p.type === "equal") return <span key={i}>{p.text}</span>;
+        if (p.type === "remove") return <span key={i} className="diff-remove">{p.text}</span>;
+        return <span key={i} className="diff-add">{p.text}</span>;
+      })}
+    </div>
   );
 }
 
@@ -460,6 +661,10 @@ function describeEvent(e: Event, ctx: EventCtx): ReactNode {
     case "parent": {
       const to = d.to as number | null;
       return to == null ? "removed the parent" : <>set the parent to {issueLink(to)}</>;
+    }
+    case "deadline": {
+      const to = d.to as number | null;
+      return to == null ? "removed the deadline" : <>set the deadline to {new Date(to * 1000).toLocaleString()}</>;
     }
     case "dependencies":
       return joinChange("dependency", ids(d.added).map(issueLink), ids(d.removed).map(issueLink));
@@ -578,7 +783,7 @@ function AttachModal({
             {f.type === "boolean" ? (
               <input type="checkbox" style={{ width: "auto" }} checked={!!values[f.name]} onChange={(e) => setField(f.name, e.target.checked)} />
             ) : f.type === "text" ? (
-              <textarea value={String(values[f.name] ?? "")} placeholder={f.placeholder ?? ""} onChange={(e) => setField(f.name, e.target.value)} />
+              <AutoTextarea value={String(values[f.name] ?? "")} placeholder={f.placeholder ?? ""} onChange={(e) => setField(f.name, e.target.value)} />
             ) : (
               <input type={f.type === "number" ? "number" : "text"} value={String(values[f.name] ?? "")} placeholder={f.placeholder ?? ""} onChange={(e) => setField(f.name, e.target.value)} />
             )}
@@ -601,13 +806,14 @@ function AttachModal({
 // box to add a comment for signed-in users. Title/description/comment edits stay as edit-history
 // dropdowns next to their text rather than appearing here.
 function Timeline({
-  detail, me, actorOf, labelName, groupName, onChange, onError,
+  detail, me, actorOf, labelName, groupName, allIssues, onChange, onError,
 }: {
   detail: Detail;
   me: Actor | null;
   actorOf: (id: number) => Actor | undefined;
   labelName: (id: number) => string;
   groupName: (id: number) => string;
+  allIssues: Issue[];
   onChange: () => void;
   onError: (e: string) => void;
 }) {
@@ -616,6 +822,7 @@ function Timeline({
   const comments = detail.comments ?? [];
   const events = detail.events ?? [];
   const ctx: EventCtx = { actorOf, labelName, groupName };
+  const bodyAc = useIssueRefAutocomplete<HTMLTextAreaElement>(allIssues, body, setBody);
 
   const canModify = (authorId: number | null) => !!me && (me.admin || me.id === authorId);
 
@@ -631,6 +838,7 @@ function Timeline({
           history={events.filter((e) => e.kind === "comment_edited" && e.data.commentId === c.id)}
           bot={actorOf(c.authorId ?? -1)?.bot}
           canModify={canModify(c.authorId)}
+          issues={allIssues}
           onChange={onChange}
           onError={onError}
         />
@@ -643,12 +851,13 @@ function Timeline({
     })),
   ].sort((a, b) => a.at - b.at);
 
-  const post = (e: React.FormEvent) => {
-    e.preventDefault();
+  const post = (review?: ReviewState) => {
     const text = body.trim();
-    if (!text) return;
+    // An approving review needs no explanation; every other post (a plain comment, or a
+    // request-changes review) must say something.
+    if (!text && review !== "approve") return;
     setBusy(true);
-    api.addComment(detail.issue.id, text)
+    api.addComment(detail.issue.id, text, review)
       .then(() => { setBody(""); onChange(); })
       .catch((e2) => onError(String(e2)))
       .finally(() => setBusy(false));
@@ -663,9 +872,23 @@ function Timeline({
       </div>
 
       {me ? (
-        <form onSubmit={post} style={{ marginTop: 12 }}>
-          <textarea value={body} onChange={(e) => setBody(e.target.value)} placeholder="Add a comment… (Markdown & LaTeX supported)" />
+        <form onSubmit={(e) => { e.preventDefault(); post(); }} style={{ marginTop: 12 }}>
+          <div className="issue-ref-field">
+            <AutoTextarea
+              ref={bodyAc.elRef}
+              value={body}
+              onChange={bodyAc.onChangeWrapped}
+              onKeyDown={bodyAc.onKeyDown}
+              placeholder="Add a comment… (Markdown & LaTeX supported, type # to link an issue)"
+            />
+            <IssueRefMenu options={bodyAc.options} issues={allIssues} onChoose={bodyAc.choose} pos={bodyAc.menuPos} menuRef={bodyAc.menuRef} />
+          </div>
           <div className="row" style={{ justifyContent: "flex-end", marginTop: 8 }}>
+            <span className="muted small" style={{ marginRight: "auto" }}>Optionally post as a review:</span>
+            <button type="button" className="danger" disabled={busy || !body.trim()} onClick={() => post("request_changes")}>
+              ✗ Request changes
+            </button>
+            <button type="button" disabled={busy} onClick={() => post("approve")}>✓ Approve</button>
             <button className="primary" type="submit" disabled={busy || !body.trim()}>Comment</button>
           </div>
         </form>
@@ -677,12 +900,13 @@ function Timeline({
 }
 
 function CommentItem({
-  comment: c, history, bot, canModify, onChange, onError,
+  comment: c, history, bot, canModify, issues, onChange, onError,
 }: {
   comment: Comment;
   history: Event[];
   bot?: boolean;
   canModify: boolean;
+  issues: Issue[];
   onChange: () => void;
   onError: (e: string) => void;
 }) {
@@ -693,7 +917,7 @@ function CommentItem({
 
   const save = () => {
     const text = draft.trim();
-    if (!text) return;
+    if (!text && c.review !== "approve") return;
     setBusy(true);
     api.updateComment(c.id, text)
       .then(() => { setEditing(false); onChange(); })
@@ -717,16 +941,21 @@ function CommentItem({
           </span>
         )}
       </div>
+      {c.review && (
+        <div className={`badge ${c.review === "approve" ? "passing" : "failing"}`} style={{ marginTop: 4 }}>
+          {c.review === "approve" ? "✓ Approved" : "✗ Changes requested"}
+        </div>
+      )}
       {editing ? (
         <div style={{ marginTop: 6 }}>
-          <textarea autoFocus value={draft} onChange={(e) => setDraft(e.target.value)} />
+          <AutoTextarea autoFocus value={draft} onChange={(e) => setDraft(e.target.value)} />
           <div className="row" style={{ justifyContent: "flex-end", marginTop: 6 }}>
             <button onClick={() => setEditing(false)} disabled={busy}>Cancel</button>
-            <button className="primary" onClick={save} disabled={busy || !draft.trim()}>Save</button>
+            <button className="primary" onClick={save} disabled={busy || (!draft.trim() && c.review !== "approve")}>Save</button>
           </div>
         </div>
       ) : (
-        <div style={{ marginTop: 4 }}><Markdown text={c.body} /></div>
+        c.body.trim() && <div style={{ marginTop: 4 }}><Markdown text={c.body} issues={issues} /></div>
       )}
       {confirmDel && (
         <ConfirmModal

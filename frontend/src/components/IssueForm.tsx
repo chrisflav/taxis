@@ -1,32 +1,44 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Actor, Group, Issue, Label } from "../types";
 import { api } from "../api";
 import { MultiSelect } from "./MultiSelect";
+import { SearchableSelect } from "./SearchableSelect";
+import { AutoTextarea } from "./AutoTextarea";
+import { breadcrumbLabel } from "../breadcrumbs";
+import { localInputToUnix, unixToLocalInput } from "../datetime";
+import { useIssueRefAutocomplete } from "../useIssueRefAutocomplete";
+import { IssueRefMenu } from "./IssueRefMenu";
 
 // Shared create/edit form. Pass `issueId` to edit an existing issue. When `embedded` is set the
 // form drops its page chrome (heading + panel) so it can live inside a modal, and uses the
-// `onDone`/`onCancel` callbacks instead of hash navigation.
+// `onDone`/`onCancel` callbacks instead of hash navigation. `initialParent` pre-selects a parent
+// for new child issues; it counts as the baseline, not as user input, for `onDirtyChange`.
 export function IssueForm({
   issueId,
   me,
   embedded = false,
+  initialParent = null,
   onDone,
   onCancel,
+  onDirtyChange,
 }: {
   issueId?: number;
   me: Actor | null;
   embedded?: boolean;
+  initialParent?: number | null;
   onDone?: (issueId: number) => void;
   onCancel?: () => void;
+  onDirtyChange?: (dirty: boolean) => void;
 }) {
   const editing = issueId != null;
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [labels, setLabels] = useState<number[]>([]);
-  const [parent, setParent] = useState<number | null>(null);
+  const [parent, setParent] = useState<number | null>(initialParent);
   const [dependencies, setDependencies] = useState<number[]>([]);
   const [assignees, setAssignees] = useState<number[]>([]);
   const [visibility, setVisibility] = useState<number[]>([]);
+  const [deadline, setDeadline] = useState("");
   const [locked, setLocked] = useState(false);
   const [allLabels, setAllLabels] = useState<Label[]>([]);
   const [allActors, setAllActors] = useState<Actor[]>([]);
@@ -34,6 +46,13 @@ export function IssueForm({
   const [allIssues, setAllIssues] = useState<Issue[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(!editing);
+
+  // What counts as "unmodified" for onDirtyChange: the loaded issue when editing, or blank fields
+  // (with the pre-selected parent) when creating — a pre-filled parent alone isn't user input.
+  const baseline = useRef({
+    title: "", description: "", parent: initialParent, deadline: "",
+    labels: [] as number[], dependencies: [] as number[], assignees: [] as number[], visibility: [] as number[],
+  });
 
   useEffect(() => {
     api.listLabels().then(setAllLabels).catch(() => {});
@@ -51,19 +70,37 @@ export function IssueForm({
           setDependencies(d.issue.dependencies);
           setAssignees(d.issue.assignees);
           setVisibility(d.issue.visibility);
+          setDeadline(unixToLocalInput(d.issue.deadline));
           setLocked(d.issue.locked);
+          baseline.current = {
+            title: d.issue.title, description: d.issue.description, parent: d.issue.parent,
+            deadline: unixToLocalInput(d.issue.deadline),
+            labels: d.issue.labels, dependencies: d.issue.dependencies, assignees: d.issue.assignees, visibility: d.issue.visibility,
+          };
           setLoaded(true);
         })
         .catch((e) => setError(String(e)));
     }
   }, [issueId]);
 
+  useEffect(() => {
+    if (!onDirtyChange) return;
+    const b = baseline.current;
+    const sameSet = (a: number[], c: number[]) =>
+      a.length === c.length && [...a].sort((x, y) => x - y).every((v, i) => v === [...c].sort((x, y) => x - y)[i]);
+    onDirtyChange(
+      title !== b.title || description !== b.description || parent !== b.parent || deadline !== b.deadline
+        || !sameSet(labels, b.labels) || !sameSet(dependencies, b.dependencies)
+        || !sameSet(assignees, b.assignees) || !sameSet(visibility, b.visibility),
+    );
+  }, [title, description, labels, parent, dependencies, assignees, visibility, deadline, loaded]);
+
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     // When locked, don't send frozen fields at all, so the backend never rejects a no-op change.
     const body = locked
       ? { labels, assignees, visibility }
-      : { title, description, labels, parent, dependencies, assignees, visibility };
+      : { title, description, labels, parent, dependencies, assignees, visibility, deadline: localInputToUnix(deadline) };
     const p = editing
       ? api.updateIssue(issueId!, body)
       : api.createIssue(body as Partial<Issue>);
@@ -85,9 +122,13 @@ export function IssueForm({
   const actorOpts = allActors.map((a) => ({ value: a.id, label: a.displayName }));
   const issueOpts = allIssues
     .filter((i) => i.id !== issueId)
-    .map((i) => ({ value: i.id, label: `#${i.id} ${i.title}` }));
+    .map((i) => ({ value: i.id, label: breadcrumbLabel(i, allIssues) }));
   // A user may only restrict visibility to groups they belong to (admins: any group).
   const visibleGroups = me?.admin ? allGroups : allGroups.filter((g) => me?.groups.includes(g.id));
+
+  // "#123" issue-reference autocomplete for the title and description fields.
+  const titleAc = useIssueRefAutocomplete<HTMLInputElement>(allIssues, title, setTitle);
+  const descAc = useIssueRefAutocomplete<HTMLTextAreaElement>(allIssues, description, setDescription);
 
   return (
     <form className={embedded ? "" : "panel"} onSubmit={submit} style={embedded ? undefined : { maxWidth: 680 }}>
@@ -101,20 +142,39 @@ export function IssueForm({
         </div>
       )}
       <label>Title</label>
-      <input value={title} onChange={(e) => setTitle(e.target.value)} required autoFocus disabled={locked} />
+      <div className="issue-ref-field">
+        <input
+          ref={titleAc.elRef}
+          value={title}
+          onChange={titleAc.onChangeWrapped}
+          onKeyDown={titleAc.onKeyDown}
+          required
+          autoFocus
+          disabled={locked}
+        />
+        <IssueRefMenu options={titleAc.options} issues={allIssues} onChoose={titleAc.choose} pos={titleAc.menuPos} menuRef={titleAc.menuRef} />
+      </div>
       <label>Description</label>
-      <textarea value={description} onChange={(e) => setDescription(e.target.value)} disabled={locked} />
-      <div className="muted small">Markdown and LaTeX math (KaTeX, e.g. <code>$x^2$</code>) supported.</div>
+      <div className="issue-ref-field">
+        <AutoTextarea
+          ref={descAc.elRef}
+          value={description}
+          onChange={descAc.onChangeWrapped}
+          onKeyDown={descAc.onKeyDown}
+          disabled={locked}
+        />
+        <IssueRefMenu options={descAc.options} issues={allIssues} onChoose={descAc.choose} pos={descAc.menuPos} menuRef={descAc.menuRef} />
+      </div>
+      <div className="muted small">
+        Markdown and LaTeX math (KaTeX, e.g. <code>$x^2$</code>) supported. Type <code>#</code> to link another issue.
+      </div>
       <label>Labels</label>
       <MultiSelect options={labelOpts} selected={labels} onChange={setLabels} placeholder="Add labels…" />
       <label>Parent (containing issue)</label>
       {locked ? (
         <div className="row field-disabled">{parent != null ? <span className="chip">#{parent}</span> : <span className="muted small">none</span>}</div>
       ) : (
-        <select value={parent ?? ""} onChange={(e) => setParent(e.target.value ? Number(e.target.value) : null)}>
-          <option value="">— none —</option>
-          {issueOpts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-        </select>
+        <SearchableSelect options={issueOpts} value={parent} onChange={setParent} />
       )}
       <label>Depends on (dependencies)</label>
       {locked ? (
@@ -124,6 +184,8 @@ export function IssueForm({
       )}
       <label>Assignees</label>
       <MultiSelect options={actorOpts} selected={assignees} onChange={setAssignees} placeholder="Assign actors…" />
+      <label>Deadline</label>
+      <input type="datetime-local" value={deadline} onChange={(e) => setDeadline(e.target.value)} />
       <label>Visible to groups (empty = public)</label>
       <MultiSelect
         options={visibleGroups.map((g) => ({ value: g.id, label: g.name }))}
