@@ -1,0 +1,17 @@
+{
+  "name": "taxis",
+  "version": "0.2.0",
+  "description": "Tools and skills to interact with issues in a taxis backend, exposed over the model-independent Model Context Protocol.",
+  "author": {
+    "name": "taxis"
+  },
+  "mcpServers": {
+    "taxis": {
+      "type": "http",
+      "url": "${TAXIS_URL:-http://localhost:8080}/mcp",
+      "headers": {
+        "Authorization": "Bearer ${TAXIS_TOKEN:-}"
+      }
+    }
+  }
+}

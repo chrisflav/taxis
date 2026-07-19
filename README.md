@@ -195,8 +195,21 @@ served at **`/docs`**, backed by the OpenAPI spec at `GET /api/openapi.json`.
 - `GET|POST /issues/:id/comments`, `PATCH|DELETE /comments/:id`
 - `GET|POST /me/tokens`, `DELETE /me/tokens/:id`, `GET|POST /actors/:id/tokens` (admin)
 - `POST /import/github`, `POST /import/gdoc`
-- Auth: `GET /auth/google/login`, `GET /auth/google/callback`, `POST /auth/logout`,
-  `POST /auth/dev-login`, `GET /me`
+- Auth: `GET /auth/google/login`, `GET /auth/google/callback`, `GET /auth/github/login`,
+  `GET /auth/github/callback`, `POST /auth/logout`, `POST /auth/dev-login`,
+  `POST /auth/password-login`, `GET /me`
+
+## MCP
+
+`POST /mcp` serves the [Model Context Protocol](https://modelcontextprotocol.io) (Streamable
+HTTP transport, JSON-RPC 2.0) — the same tools available in `taxis-plugin/` (list/create/update/
+delete issues, comments, events, labels, actors), backed by the same handlers as the REST API
+above, not a separate implementation. It's part of this server, not a standalone process: running
+`lake exe taxis` or the Docker image serves it automatically on whatever host/port already serves
+`/api`, so it's reachable remotely wherever the rest of the server is (no extra container, port,
+or startup step needed). Authentication is the same `Authorization: Bearer <token>` as the REST
+API; reads work without one in open mode, writes always need one once any login method is
+configured. See `taxis-plugin/README.md` for the tool list and example client configs.
 
 ## Tests
 

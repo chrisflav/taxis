@@ -2,6 +2,7 @@ import Taxis.Basic
 import Taxis.Server.Router
 import Taxis.Server.Auth
 import Taxis.Server.OpenApi
+import Taxis.Server.Mcp
 import Taxis.Db
 import Taxis.Plugins
 import Taxis.Crypto
@@ -586,11 +587,138 @@ def pluginsH : ApiM ApiResponse := do
   let checkJson := checks.map fun h => Json.mkObj [("kind", h.kind), ("fields", toJson h.fields)]
   ok (Json.mkObj [("artifactKinds", Json.arr artJson), ("checkKinds", Json.arr checkJson)])
 
+/-! ## MCP
+
+Serves the [Model Context Protocol](https://modelcontextprotocol.io) (JSON-RPC 2.0) at
+`POST /mcp` — the tool set that used to be a standalone Python server
+(`taxis-plugin/mcp/taxis_mcp.py`) proxying over HTTP back to this same API, now served in-process
+by calling the resource handlers above directly instead of looping back out over HTTP. Session-
+less: each POST carries one JSON-RPC request/response, authenticated the same way as any other API
+call (`Authorization: Bearer <token>`, resolved by `resolveActor` before `dispatch` ever sees it)
+— no MCP-level session id and no server-to-client SSE stream (no tool here is long-running or
+needs a server-initiated notification), which the Streamable HTTP transport spec allows a
+stateless, `POST`-only server to skip. -/
+
+/-- Build a synthetic `Req` for an internal-only call into one of the handlers above, reusing the
+    MCP request's already-resolved actor. -/
+private def mcpSubReq (req : Req) (query : String → Option String := fun _ => none) (body : String := "") : Req :=
+  { method := .get, segments := [], query, body, actor := req.actor }
+
+/-- Read a tool argument as a query-string-shaped lookup (JSON scalars stringified, `null`/missing/
+    non-scalar values absent) — covers every filter `taxis_list_issues` takes. -/
+private def mcpArgsAsQuery (args : Json) : String → Option String := fun k =>
+  match args.getObjVal? k with
+  | .error _ => none
+  | .ok (.str s) => some s
+  | .ok (.num n) => some (toString n)
+  | .ok (.bool b) => some (toString b)
+  | .ok _ => none
+
+private def mcpArgId (args : Json) : Option Int64 :=
+  (args.getObjValAs? Int64 "id").toOption
+
+/-- Tools that mutate data — gated the same way `dispatch`'s blanket mutating-method check gates
+    REST writes, since `/mcp` is exempt from that check (one `POST` endpoint multiplexes both
+    reads and writes, so "POST ⇒ needs auth" doesn't fit it — see `isAuthRoute`). -/
+private def mcpToolNeedsAuth : String → Bool
+  | "taxis_create_issue" | "taxis_update_issue" | "taxis_delete_issue" | "taxis_add_comment" => true
+  | _ => false
+
+/-- Run a resource handler for a tool call, converting its `ApiM` outcome into MCP's
+    `(text, isError)` shape instead of letting a handler's `fail` abort the whole JSON-RPC
+    response — a tool error is reported *inside* a successful `tools/call` result, not as an
+    HTTP-level failure. -/
+private def mcpRunTool (h : ApiM ApiResponse) : ApiM (String × Bool) := do
+  match ← liftIO h.run with
+  | .ok resp => pure (resp.body.pretty, false)
+  | .error e => pure (e.message, true)
+
+/-- Dispatch one `tools/call` to the same handler the equivalent REST endpoint uses. -/
+def mcpCallTool (ctx : AppContext) (req : Req) (name : String) (args : Json) : ApiM (String × Bool) := do
+  if mcpToolNeedsAuth name && req.actor.isNone then
+    return ("authentication required", true)
+  match name with
+  | "taxis_list_issues" => mcpRunTool (listIssuesH ctx (mcpSubReq req (query := mcpArgsAsQuery args)))
+  | "taxis_get_issue" =>
+    match mcpArgId args with
+    | some id => mcpRunTool (getIssueH ctx id req.actor)
+    | none => pure ("missing or invalid 'id'", true)
+  | "taxis_create_issue" => mcpRunTool (createIssueH ctx (mcpSubReq req (body := args.compress)))
+  | "taxis_update_issue" =>
+    match mcpArgId args with
+    | some id => mcpRunTool (updateIssueH ctx id (mcpSubReq req (body := args.compress)))
+    | none => pure ("missing or invalid 'id'", true)
+  | "taxis_delete_issue" =>
+    match mcpArgId args with
+    | some id => mcpRunTool (deleteIssueH ctx id)
+    | none => pure ("missing or invalid 'id'", true)
+  | "taxis_add_comment" =>
+    match mcpArgId args with
+    | some id => mcpRunTool (createCommentH ctx id (mcpSubReq req (body := args.compress)))
+    | none => pure ("missing or invalid 'id'", true)
+  | "taxis_list_comments" =>
+    match mcpArgId args with
+    | some id => mcpRunTool (listCommentsH ctx id)
+    | none => pure ("missing or invalid 'id'", true)
+  | "taxis_issue_events" =>
+    match mcpArgId args with
+    | some id => mcpRunTool (listEventsH ctx id req.actor)
+    | none => pure ("missing or invalid 'id'", true)
+  | "taxis_list_labels" => mcpRunTool (listLabelsH ctx)
+  | "taxis_list_actors" => mcpRunTool (listActorsH ctx)
+  | "taxis_whoami" => mcpRunTool (meH (mcpSubReq req))
+  | _ => pure (s!"unknown tool: {name}", true)
+
+private def mcpRpcResult (id : Json) (result : Json) : ApiM ApiResponse :=
+  ok (Json.mkObj [("jsonrpc", "2.0"), ("id", id), ("result", result)])
+
+private def mcpRpcError (id : Json) (code : Int) (message : String) : ApiM ApiResponse :=
+  ok (Json.mkObj [("jsonrpc", "2.0"), ("id", id),
+    ("error", Json.mkObj [("code", Json.num code), ("message", Json.str message)])])
+
+/-- `POST /mcp`: one JSON-RPC 2.0 request per call (batching was dropped in MCP's 2025-06-18
+    revision, so this doesn't accept arrays). No `GET /mcp` / SSE stream — every tool here
+    completes within one request/response, so there's nothing to stream. -/
+def mcpHandler (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
+  match Json.parse req.body with
+  | .error e => fail (.badRequest s!"invalid JSON-RPC request: {e}")
+  | .ok msg =>
+    let id : Json := msg.getObjVal? "id" |>.toOption.getD Json.null
+    match (msg.getObjValAs? String "method").toOption with
+    | none => fail (.badRequest "missing 'method'")
+    | some "notifications/initialized" => pure { status := .accepted, body := Json.mkObj [] }
+    | some "initialize" =>
+      mcpRpcResult id (Json.mkObj [
+        ("protocolVersion", Json.str mcpProtocolVersion),
+        ("capabilities", Json.mkObj [("tools", Json.mkObj [])]),
+        ("serverInfo", Json.mkObj [("name", Json.str "taxis"), ("version", Json.str Taxis.version)])])
+    | some "ping" => mcpRpcResult id (Json.mkObj [])
+    | some "tools/list" => mcpRpcResult id (Json.mkObj [("tools", Json.arr mcpTools)])
+    | some "tools/call" =>
+      let params := msg.getObjVal? "params" |>.toOption.getD (Json.mkObj [])
+      let name := (params.getObjValAs? String "name").toOption.getD ""
+      let args := params.getObjVal? "arguments" |>.toOption.getD (Json.mkObj [])
+      let (text, isError) ← mcpCallTool ctx req name args
+      mcpRpcResult id (Json.mkObj (
+        [("content", Json.arr #[Json.mkObj [("type", Json.str "text"), ("text", Json.str text)]])] ++
+        (if isError then [("isError", Json.bool true)] else [])))
+    | some m =>
+      -- An unrecognised *notification* (no id) is silently ignored per JSON-RPC; only a request
+      -- (carries an id) gets a "method not found" error back.
+      if msg.getObjVal? "id" |>.toOption |>.isSome then
+        mcpRpcError id (-32601) s!"method not found: {m}"
+      else
+        pure { status := .accepted, body := Json.mkObj [] }
+
 /-! ## Routing table -/
 
-/-- Whether the request is to an authentication route (never gated). -/
+/-- Whether the request is to an authentication route, or the MCP endpoint — neither is gated by
+    the blanket mutating-method check below: auth routes obviously can't require auth to reach,
+    and `/mcp` multiplexes reads and writes behind a single `POST`, so it enforces authentication
+    itself, per tool (`mcpToolNeedsAuth`), rather than by HTTP method. -/
 private def isAuthRoute : List String → Bool
   | "auth" :: _ => true
+  | ["mcp"] => true
   | _ => false
 
 /-- Whether the route manages admin-only resources (actors, groups, labels, import). -/
@@ -622,6 +750,8 @@ def dispatch (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
   | .post, ["auth", "logout"] => logoutH ctx req
   | .post, ["auth", "dev-login"] => devLoginH ctx req
   | .post, ["auth", "password-login"] => passwordLoginH ctx req
+
+  | .post, ["mcp"] => mcpHandler ctx req
 
   | .get, ["actors"] => listActorsH ctx
   | .post, ["actors"] => createActorH ctx req

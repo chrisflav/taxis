@@ -79,10 +79,12 @@ instance : Handler AppHandler where
       return ← buildResponse { status := .noContent, body := Json.mkObj [] }
     let segs := (req.line.uri.path.toDecodedSegments.filter (· ≠ "")).toList
     -- Dispatch to the API for `/api/*`, and also for the browser-facing OAuth routes at the top
-    -- level (`/auth/...`), which Google redirects to per the registered redirect URI.
+    -- level (`/auth/...`, which Google/GitHub redirect to per the registered redirect URI) and
+    -- the MCP endpoint (`/mcp`, kept top-level so it's a short, memorable URL for MCP clients).
     let apiSegs? : Option (List String) := match segs with
       | "api" :: rest => some rest
       | "auth" :: _ => some segs
+      | "mcp" :: _ => some segs
       | _ => none
     match apiSegs? with
     | some apiSegs =>
