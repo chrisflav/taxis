@@ -71,13 +71,15 @@ to the backend on port 8080) and `lake exe taxis` in another terminal.
 
 ```bash
 cd docker
+cp .env.example .env   # fill in what you need
 docker compose up --build
 ```
 
 Builds the backend and frontend from source and runs the server at <http://localhost:8080>, with
 the SQLite database persisted in a named volume. Configuration (see below) is passed as
-environment variables in `docker/docker-compose.yaml`, or via a `docker/.env` file — see the
-comments there for what's available.
+environment variables in `docker/docker-compose.yaml`; Compose automatically loads `docker/.env`
+(not committed — see `docker/.env.example` for what's available and their defaults) to fill in
+the `${VAR:-default}` placeholders there.
 
 ## Configuration
 

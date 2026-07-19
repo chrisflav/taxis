@@ -4,6 +4,7 @@
 /issues.sqlite-shm
 /.env
 .env.local
+docker/.env
 .claude/settings.local.json
 
 # Python bytecode
