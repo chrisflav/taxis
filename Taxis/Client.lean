@@ -171,9 +171,17 @@ def listComments (cfg : Config) (id : IssueId) : IO (Except String (Array Commen
   | .error e => return .error e
   | .ok j => return decode j
 
-/-- `POST /issues/:id/comments`. -/
-def createComment (cfg : Config) (id : IssueId) (body : String) : IO (Except String Comment) := do
-  match ← send cfg "POST" s!"/issues/{id.val}/comments" (Json.mkObj [("body", Json.str body)]) with
+/-- `POST /issues/:id/comments`.
+
+    Setting `review` makes the comment a review carrying that verdict, the same as the web UI's
+    approve / request-changes. The field is omitted entirely when `none`, so a plain comment
+    posts exactly the body it did before. An approving review may have an empty body — the server
+    takes the approval as the message — but any other comment must say something. -/
+def createComment (cfg : Config) (id : IssueId) (body : String)
+    (review : Option ReviewState := none) : IO (Except String Comment) := do
+  let fields := [("body", Json.str body)]
+    ++ (review.map fun r => [("review", toJson r)] : Option _).getD []
+  match ← send cfg "POST" s!"/issues/{id.val}/comments" (Json.mkObj fields) with
   | .error e => return .error e
   | .ok j => return decode j
 
