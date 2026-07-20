@@ -98,8 +98,16 @@ private def schemas : Json := obj [
     ("issueLabels", arrayOf (ref "Label")), ("attachedArtifacts", arrayOf (ref "Artifact")),
     ("attachedChecks", arrayOf (ref "Check")), ("comments", arrayOf (ref "Comment")),
     ("events", arrayOf (ref "Event"))]),
-  ("Plugins", schemaObj [("artifactKinds", arrayOf (typ "string")), ("checkKinds", arrayOf (typ "string"))]),
+  ("PluginKind", schemaObj [("kind", typ "string"), ("fields", arrayOf (typ "object"))]),
+  ("Plugins", schemaObj [("artifactKinds", arrayOf (ref "PluginKind")), ("checkKinds", arrayOf (ref "PluginKind")),
+    ("repoDepsKinds", arrayOf (typ "string"))]),
   ("Graph", schemaObj [("nodes", arrayOf (typ "object")), ("edges", arrayOf (typ "object"))]),
+  ("RepoNode", schemaObj [("id", typ "string"), ("url", typ "string"), ("name", typ "string"),
+    ("issues", arrayOf (typ "integer")), ("attached", typ "boolean"),
+    ("ecosystem", nullable "string"), ("error", nullable "string")]),
+  ("RepoEdge", schemaObj [("source", typ "string"), ("target", typ "string"),
+    ("via", typ "string"), ("detail", nullable "string")]),
+  ("RepoGraph", schemaObj [("nodes", arrayOf (ref "RepoNode")), ("edges", arrayOf (ref "RepoEdge"))]),
   ("Deleted", schemaObj [("deleted", typ "boolean")])
 ]
 
@@ -112,6 +120,11 @@ private def paths : Json := obj [
     [("200", jsonResp "Plugin kinds" (ref "Plugins"))])]),
   ("/graph", obj [("get", operation "Issues" "Dependency graph of visible issues" [] none
     [("200", jsonResp "Graph" (ref "Graph"))])]),
+  ("/repo-graph", obj [("get", operation "Repositories" "Dependency graph of attached repositories"
+    [queryParam "external" "Include dependencies on repositories that are not attached"] none
+    [("200", jsonResp "Repository graph" (ref "RepoGraph"))])]),
+  ("/repo-graph/refresh", obj [("post", operation "Repositories" "Discard cached dependency resolutions" [] none
+    [("200", jsonResp "Refreshed" (schemaObj [("refreshed", typ "boolean")]))])]),
 
   ("/me", obj [("get", operation "Auth" "The current authenticated actor" [] none
     [("200", jsonResp "Actor" (ref "Actor")), ("401", emptyResp "Not authenticated")])]),

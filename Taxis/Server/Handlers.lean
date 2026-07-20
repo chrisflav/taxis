@@ -4,6 +4,7 @@ import Taxis.Server.Auth
 import Taxis.Server.OpenApi
 import Taxis.Server.Mcp
 import Taxis.Db
+import Taxis.Repo
 import Taxis.Plugins
 import Taxis.Crypto
 import Taxis.Checks.Engine
@@ -289,6 +290,34 @@ def graphH (ctx : AppContext) (actor : Option Actor) : ApiM ApiResponse := do
       visibleIds.contains iss.val && visibleIds.contains dep.val).map fun (iss, dep) =>
     Json.mkObj [("issue", toJson iss), ("dependsOn", toJson dep)]
   ok (Json.mkObj [("nodes", Json.arr nodes), ("edges", Json.arr edgeJson)])
+
+/-! ## Repository graph -/
+
+/-- The dependency graph over attached repositories: nodes are the repositories carried by
+    `repository` artifacts, edges are dependency relations derived from their package manifests
+    (see `Taxis.Repo.build`). `?external=1` additionally shows dependencies on repositories that
+    nobody has attached. -/
+def repoGraphH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
+  let (issues, artifacts) ← ctx.dbM (fun db => do
+    let issues ← Db.listIssues db none none none none
+    let artifacts ← Db.artifactsOfKind db "repository"
+    pure (issues, artifacts))
+  -- A repository enters the graph only through an issue the requester may see, so the graph
+  -- can't disclose which repositories a restricted issue is about.
+  let visible : Std.HashSet Int64 :=
+    (issues.filter (visibleTo req.actor)).foldl (fun s i => s.insert i.id.val) {}
+  let mine := artifacts.filter (fun (issueId, _) => visible.contains issueId.val)
+  let external := match req.query "external" with
+    | some v => v == "1" || v == "true"
+    | none => false
+  let graph ← liftIO (Repo.build ctx.config.repoDepsTtlSeconds external (Repo.collect mine))
+  ok graph.toJson
+
+/-- Drop the cached dependency resolutions, so the next graph build re-reads every manifest.
+    Needed because the graph is derived from files that change outside the tracker. -/
+def repoGraphRefreshH : ApiM ApiResponse := do
+  liftIO Repo.clearCache
+  ok (Json.mkObj [("refreshed", true)])
 
 /-! ## Import -/
 
@@ -585,7 +614,9 @@ def pluginsH : ApiM ApiResponse := do
   let checks ← liftIO Plugins.allCheckHandlers
   let artJson := arts.map fun h => Json.mkObj [("kind", h.kind), ("fields", toJson h.fields)]
   let checkJson := checks.map fun h => Json.mkObj [("kind", h.kind), ("fields", toJson h.fields)]
-  ok (Json.mkObj [("artifactKinds", Json.arr artJson), ("checkKinds", Json.arr checkJson)])
+  let depsKinds ← liftIO Plugins.repoDepsKinds
+  ok (Json.mkObj [("artifactKinds", Json.arr artJson), ("checkKinds", Json.arr checkJson),
+    ("repoDepsKinds", toJson depsKinds)])
 
 /-! ## MCP
 
@@ -741,6 +772,8 @@ def dispatch (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
   | .get, ["openapi.json"] => ok OpenApi.spec
   | .get, ["plugins"] => pluginsH
   | .get, ["graph"] => graphH ctx req.actor
+  | .get, ["repo-graph"] => repoGraphH ctx req
+  | .post, ["repo-graph", "refresh"] => repoGraphRefreshH
 
   | .get, ["me"] => meH req
   | .get, ["auth", "google", "login"] => googleLoginH ctx

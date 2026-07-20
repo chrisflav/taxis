@@ -5,6 +5,7 @@ import { IssueList } from "./components/IssueList";
 import { IssueDetail } from "./components/IssueDetail";
 import { IssueForm } from "./components/IssueForm";
 import { GraphView } from "./components/Graph";
+import { RepoGraphView } from "./components/RepoGraph";
 import { LabelsPage } from "./components/Labels";
 import { Admin } from "./components/Admin";
 import { TokensPage } from "./components/Tokens";
@@ -71,6 +72,7 @@ export function App() {
 
   let view;
   if (top === "graph") view = <GraphView />;
+  else if (top === "repos") view = <RepoGraphView />;
   else if (top === "labels") view = <LabelsPage me={me} />;
   else if (top === "notifications") view = <NotificationsPage me={me} />;
   else if (top === "tokens") view = <TokensPage me={me} />;
@@ -86,6 +88,7 @@ export function App() {
         <nav>
           <a className={navClass("issues")} href="#/issues">Issues</a>
           <a className={navClass("graph")} href="#/graph">Graph</a>
+          <a className={navClass("repos")} href="#/repos">Repos</a>
           <a className={navClass("labels")} href="#/labels">Labels</a>
           {me && <a className={navClass("tokens")} href="#/tokens">Tokens</a>}
           {me?.admin && <a className={navClass("admin")} href="#/admin">Admin</a>}

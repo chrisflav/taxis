@@ -31,6 +31,10 @@ structure Config where
   githubToken : Option String := none
   /-- Interval in seconds for the background check sweeper; `0` disables it. -/
   checkIntervalSeconds : Nat := 0
+  /-- How long a repository's resolved dependencies stay cached, in seconds. Building the
+      repository graph reads package manifests over the network, so it is cached rather than
+      recomputed per request; `0` disables caching. -/
+  repoDepsTtlSeconds : Nat := 3600
   /-- Emails that are automatically granted admin on login (bootstrap). -/
   adminEmails : List String := []
   /-- Central login password; when set, password login is enabled (`ISSUES_CENTRAL_PASSWORD`). -/
@@ -130,10 +134,12 @@ def Config.fromEnv : IO Config := do
   let frontendDir := (← getEnv "ISSUES_FRONTEND_DIR").getD "frontend/dist"
   let publicBaseUrl := (← getEnv "ISSUES_BASE_URL").getD s!"http://localhost:{port}"
   let checkIntervalSeconds := (← getEnv "ISSUES_CHECK_INTERVAL").bind (·.toNat?) |>.getD 0
+  let repoDepsTtlSeconds := (← getEnv "ISSUES_REPO_DEPS_TTL").bind (·.toNat?) |>.getD 3600
   let adminEmails := ((← getEnv "ISSUES_ADMIN_EMAILS").getD "").splitOn ","
     |>.map (·.trimAscii.toString) |>.filter (!·.isEmpty)
   pure {
-    port, host, dbPath := dbPath, frontendDir := frontendDir, publicBaseUrl, checkIntervalSeconds, adminEmails
+    port, host, dbPath := dbPath, frontendDir := frontendDir, publicBaseUrl, checkIntervalSeconds
+    repoDepsTtlSeconds, adminEmails
     googleClientId := ← getEnv "ISSUES_GOOGLE_CLIENT_ID"
     googleClientSecret := ← getEnv "ISSUES_GOOGLE_CLIENT_SECRET"
     githubClientId := ← getEnv "ISSUES_GITHUB_CLIENT_ID"

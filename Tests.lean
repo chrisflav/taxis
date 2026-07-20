@@ -160,6 +160,61 @@ def main : IO Unit := do
     check "invalid payload rejected" (h.validate (Json.mkObj [("owner", "o")]) |>.toOption |>.isNone)
   | none => check "handler present" false
 
+  IO.println "Repository references"
+  let canonical (u : String) := (Repo.RepoRef.parse? u).map (·.canonical)
+  check "repo https url" (canonical "https://github.com/Owner/Repo" == some "github.com/owner/repo")
+  check "repo .git suffix" (canonical "https://github.com/Owner/Repo.git" == some "github.com/owner/repo")
+  check "repo scp form" (canonical "git@github.com:owner/repo.git" == some "github.com/owner/repo")
+  check "repo bare owner/name" (canonical "owner/repo" == some "github.com/owner/repo")
+  check "repo trailing slash" (canonical "https://github.com/owner/repo/" == some "github.com/owner/repo")
+  check "repo non-github host" (canonical "https://gitlab.com/g/p" == some "gitlab.com/g/p")
+  check "repo branch from tree url" ((Repo.RepoRef.parse? "https://github.com/o/r/tree/dev").bind (·.ref) == some "dev")
+  check "repo short name" ((Repo.RepoRef.parse? "https://github.com/O/R").map (·.shortName) == some "O/R")
+  check "repo empty rejected" (canonical "" == none)
+  check "repo owner-only rejected" (canonical "https://github.com/owner" == none)
+
+  IO.println "Lake dependency provider"
+  let ghRef := (Repo.RepoRef.parse? "https://github.com/o/r").get!
+  let reader (files : List (String × String)) : Plugins.RepoFileReader := fun path =>
+    pure (.ok (files.lookup path))
+  let manifest := "{\"packages\": [
+    {\"url\": \"https://github.com/leanprover/leansqlite\", \"inherited\": false, \"inputRev\": \"v4.31.0\"},
+    {\"url\": \"https://github.com/other/transitive\", \"inherited\": true}]}"
+  match ← Plugins.lakeDeps ghRef (reader [("lake-manifest.json", manifest)]) with
+  | .ok (some ds) =>
+    check "manifest keeps direct dep" (ds.size == 1 && ds[0]!.target == "github.com/leanprover/leansqlite")
+    check "manifest keeps pinned rev" (ds[0]!.detail == some "v4.31.0")
+  | _ => check "manifest parsed" false
+  let toml := "name = \"taxis\"\n\n[[require]]\nname = \"leansqlite\"\ngit = \"https://github.com/leanprover/leansqlite\"\nrev = \"v4.31.0\"\n\n[[lean_lib]]\nname = \"Taxis\"\n"
+  match ← Plugins.lakeDeps ghRef (reader [("lakefile.toml", toml)]) with
+  | .ok (some ds) =>
+    check "toml require parsed" (ds.size == 1 && ds[0]!.target == "github.com/leanprover/leansqlite")
+    check "toml rev parsed" (ds[0]!.detail == some "v4.31.0")
+  | _ => check "toml parsed" false
+  let lakefile := "import Lake\nrequire leansqlite from git \"https://github.com/leanprover/leansqlite\" @ \"v4.31.0\"\n"
+  match ← Plugins.lakeDeps ghRef (reader [("lakefile.lean", lakefile)]) with
+  | .ok (some ds) =>
+    check "lakefile.lean require parsed" (ds.size == 1 && ds[0]!.target == "github.com/leanprover/leansqlite")
+    check "lakefile.lean rev parsed" (ds[0]!.detail == some "v4.31.0")
+  | _ => check "lakefile.lean parsed" false
+  -- No manifest of any kind: not a Lake package, so the provider declines rather than claiming
+  -- the repository with an empty dependency set.
+  check "non-lake repo declined" ((← Plugins.lakeDeps ghRef (reader [("README.md", "hi")])) matches .ok none)
+  check "lake provider registered" ((← Plugins.repoDepsProvider? "lake").isSome)
+  check "github forge registered" ((← Plugins.repoForgeFor? "GitHub.com").isSome)
+  check "unknown forge absent" ((← Plugins.repoForgeFor? "example.invalid").isNone)
+
+  IO.println "Repository graph"
+  let repoArtifact (url : String) : Artifact :=
+    { id := ⟨0⟩, kind := "repository", payload := Json.mkObj [("url", url)] }
+  let collected := Repo.collect #[
+    (⟨1⟩, repoArtifact "https://github.com/Owner/Repo.git"),
+    (⟨2⟩, repoArtifact "git@github.com:owner/repo"),
+    (⟨1⟩, repoArtifact "not a url at all")]
+  check "same repo written differently is one node" (collected.size == 1)
+  check "node lists every issue it hangs off" (collected[0]!.issues == #[⟨1⟩, ⟨2⟩])
+  check "unparseable repository artifact dropped" (collected.all (·.ref.canonical != "not a url at all"))
+
   IO.println "Visibility"
   let pub : Issue := { id := ⟨1⟩, title := "p", visibility := #[], createdAt := ⟨0⟩, updatedAt := ⟨0⟩ }
   let priv : Issue := { pub with visibility := #[⟨5⟩] }

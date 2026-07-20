@@ -13,6 +13,7 @@ import type {
   Label,
   Notification,
   Plugins,
+  RepoGraphData,
   ReviewRequest,
   ReviewState,
 } from "./types";
@@ -159,6 +160,8 @@ export const api = {
   deleteLabel: (id: number) => req<unknown>(`/labels/${id}`, { method: "DELETE" }),
 
   graph: () => req<GraphData>("/graph"),
+  repoGraph: (external = false) => req<RepoGraphData>("/repo-graph" + (external ? "?external=1" : "")),
+  refreshRepoGraph: () => req<{ refreshed: boolean }>("/repo-graph/refresh", { method: "POST" }),
 
   importGithub: (owner: string, repo: string, state: string, parent?: number) =>
     req<{ imported: number; updated: number }>("/import/github", {
