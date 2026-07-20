@@ -225,6 +225,9 @@ th.sortable.active { color: var(--text); }
 .graph-card.open { border-left: 3px solid var(--accent); }
 .graph-card.completed { border-left: 3px solid var(--green); }
 .graph-card.closed { border-left: 3px solid var(--muted); }
+/* A repository that is only depended on — nobody has attached it to an issue. */
+.graph-card.external { border-style: dashed; background: transparent; }
+.graph-card.repo-error { border-left: 3px solid var(--red); }
 .graph-card-title { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .graph-card-line { display: flex; gap: 4px; flex-wrap: wrap; overflow: hidden; align-items: center; }
 .graph-edge { stroke: var(--muted); stroke-width: 1.5; fill: none; transition: opacity 0.12s, stroke 0.12s; }

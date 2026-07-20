@@ -10,10 +10,12 @@ taxis is an extensible issue tracker built in Lean 4, with a REST API backend an
   (bundled — no system SQLite needed). JSON (de)serialisation uses `Lean.Data.Json`.
 - **Frontend** — a Vite + React + TypeScript single-page app in [`frontend/`](frontend),
   built to static assets and served by the backend.
-- **Extensibility** — *artifacts* (things attached to an issue: a GitHub PR, a branch) and
-  *checks* (conditions like "CI passes on a branch") are plugins. Each plugin
-  is a module that registers a handler in an `initialize` block, so adding a kind is "add a
-  module + import it" with no change to the core.
+- **Extensibility** — *artifacts* (things attached to an issue: a GitHub PR, a branch),
+  *checks* (conditions like "CI passes on a branch"), and the two halves of the repository
+  dependency graph (*forges*, which read files out of repositories on one host, and *dependency
+  providers*, which read dependencies out of one ecosystem's manifests) are all plugins. Each
+  plugin is a module that registers a handler in an `initialize` block, so adding a kind is "add
+  a module + import it" with no change to the core.
 
 ## Concepts
 
@@ -28,6 +30,15 @@ taxis is an extensible issue tracker built in Lean 4, with a REST API backend an
   visibility groups, artifacts, checks, and comments. The **Tree** view is built from the parent
   relation; the **Graph** view's edges are the dependencies, rendered as an interactive,
   pan/zoom canvas (scroll to zoom, drag to pan, hover a node to trace its edges, click to open).
+- **Repositories** — a `repository` artifact attaches a source repository to an issue, and the
+  **Repos** view draws the dependency graph over them: the nodes are the attached repositories,
+  and an edge from A to B means A's package manifest requires B. Edges are derived per
+  ecosystem — built in is `lake`, which reads a Lean repository's `lake-manifest.json` (skipping
+  transitive `inherited` entries), falling back to its `lakefile.toml` or `lakefile.lean`. The
+  artifact can pin a branch to read (`ref`) and an ecosystem (`ecosystem`); left blank, the
+  default branch is read and the providers detect the ecosystem themselves. Reading manifests
+  costs network requests, so results are cached (`ISSUES_REPO_DEPS_TTL`) and the view has a
+  **Refresh** button. Only repositories on issues you can see enter the graph.
 - **Comments** — a discussion thread on each issue; anyone signed in may comment, and a comment
   can be edited or removed by its author or an admin. Every issue is edited **inline** — clicking
   a field's pencil replaces just that block with an editor, leaving the rest of the page in place.
@@ -99,13 +110,15 @@ the server logs whether Google/GitHub OAuth are configured and the redirect URIs
 | `ISSUES_GITHUB_CLIENT_SECRET` | — | GitHub OAuth App client secret |
 | `ISSUES_GITHUB_TOKEN` | — | Token for GitHub API calls (import, CI checks) — unrelated to the OAuth App above; see below |
 | `ISSUES_CHECK_INTERVAL` | `0` | Background check-sweep interval in seconds (`0` disables) |
+| `ISSUES_REPO_DEPS_TTL` | `3600` | How long resolved repository dependencies stay cached, in seconds (`0` disables caching) |
 | `ISSUES_ADMIN_EMAILS` | — | Comma-separated emails granted admin on login (bootstrap) |
 | `ISSUES_DEV_LOGIN` | — | If set, enables `POST /api/auth/dev-login` for local use |
 
 `ISSUES_GITHUB_CLIENT_ID`/`_SECRET` and `ISSUES_GITHUB_TOKEN` are easy to conflate but serve
 different purposes: the former is a GitHub OAuth App used for **signing in**, the latter is a
 personal-access token the server uses to **call the GitHub API** on your behalf (importing issues,
-evaluating `github-ci` checks) — they can be configured independently of each other.
+evaluating `github-ci` checks, reading package manifests for the repository graph) — they can be
+configured independently of each other.
 
 When neither Google nor GitHub OAuth is configured the API is open (single-user/local mode); when
 either is, write operations require an authenticated session, and managing actors, groups, and

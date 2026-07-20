@@ -42,6 +42,21 @@ def createArtifact (db : Conn) (issueId : IssueId) (input : ArtifactInput) : IO 
     RETURNING id, kind, payload" as ArtifactRow).toArray
   pure (rows[0]!.toArtifact)
 
+private structure IssueArtifactRow where
+  issueId : IssueId
+  id : ArtifactId
+  kind : String
+  payload : String
+deriving SQLite.Row, Inhabited
+
+/-- Every artifact of a kind across the whole tracker, each with the issue it hangs off. Used by
+    views that are organised by artifact rather than by issue, such as the repository graph. -/
+def artifactsOfKind (db : Conn) (kind : String) : IO (Array (IssueId × Artifact)) := do
+  let rows ← (← db query!"SELECT issue_id, id, kind, payload FROM artifacts WHERE kind = {kind}
+    ORDER BY id" as IssueArtifactRow).toArray
+  pure (rows.map fun r =>
+    (r.issueId, { id := r.id, kind := r.kind, payload := (Json.parse r.payload).toOption.getD .null }))
+
 /-- The issue owning a `kind` artifact whose JSON payload contains `needle` as a substring. Used
     by imports/syncs to recognise an item that was already brought in before. -/
 def findArtifactIssueByPayload (db : Conn) (kind needle : String) : IO (Option IssueId) := do

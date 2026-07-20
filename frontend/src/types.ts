@@ -164,4 +164,32 @@ export interface PluginKind {
 export interface Plugins {
   artifactKinds: PluginKind[];
   checkKinds: PluginKind[];
+  // Ecosystems whose dependencies the repository graph can derive, e.g. "lake".
+  repoDepsKinds: string[];
+}
+
+// One repository in the repository dependency graph. `id` is its canonical
+// "host/owner/name", the identity edges refer to.
+export interface RepoNode {
+  id: string;
+  url: string;
+  name: string;
+  issues: number[];
+  // False for a repository that is only depended on, not attached to any issue.
+  attached: boolean;
+  ecosystem: string | null;
+  error: string | null;
+}
+
+// `source` depends on `target`; `via` is the provider that derived it.
+export interface RepoEdge {
+  source: string;
+  target: string;
+  via: string;
+  detail: string | null;
+}
+
+export interface RepoGraphData {
+  nodes: RepoNode[];
+  edges: RepoEdge[];
 }

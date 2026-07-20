@@ -64,13 +64,25 @@ private def repositoryDisplay (j : Json) : ArtifactDisplay :=
     |>.getD "repository"
   { label, url }
 
-/-- Artifact: a link to a source repository (GitHub or otherwise). -/
+/-- Artifact: a link to a source repository (GitHub or otherwise).
+
+    Repositories attached this way are the nodes of the repository dependency graph, so the
+    payload also carries the two hints that graph's edge derivation can use: which revision to
+    read the package manifests at, and which ecosystem's provider to ask. Both are optional —
+    left blank, the default branch is read and every provider gets a turn. -/
 def repositoryHandler : ArtifactHandler where
   kind := "repository"
   fields := #[
     { name := "url", label := "Repository URL", required := true, placeholder := some "https://github.com/owner/repo" },
-    { name := "name", label := "Display name", placeholder := some "owner/repo" }]
-  validate j := do let _ ← j.getObjValAs? String "url"; pure ()
+    { name := "name", label := "Display name", placeholder := some "owner/repo" },
+    { name := "ref", label := "Branch or tag", placeholder := some "main",
+      help := some "Revision the dependency graph reads manifests at. Defaults to the default branch." },
+    { name := "ecosystem", label := "Ecosystem", placeholder := some "lake",
+      help := some "Pin which dependency provider is used. Leave blank to detect automatically." }]
+  validate j := do
+    let url ← j.getObjValAs? String "url"
+    if (Repo.RepoRef.parse? url).isNone then
+      throw s!"could not read an owner/repository out of '{url}'"
   render := repositoryDisplay
 
 initialize registerCheckHandler dependenciesCompleteHandler

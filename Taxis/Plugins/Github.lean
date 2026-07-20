@@ -1,5 +1,4 @@
-import Taxis.Plugins.Registry
-import Taxis.Http.Client
+import Taxis.Plugins.GithubForge
 
 /-!
 # GitHub plugins
@@ -61,9 +60,7 @@ def githubCiEvaluate (_db : Db.Conn) (_config : Json) (_issue : Issue) (artifact
     let get (f : String) := (p.getObjValAs? String f).toOption
     match get "owner", get "repo", get "branch" with
     | some owner, some repo, some branch =>
-      let token ← IO.getEnv "ISSUES_GITHUB_TOKEN"
-      let auth := token.map (fun t => #[("Authorization", s!"Bearer {t}")]) |>.getD #[]
-      let headers := #[("Accept", "application/vnd.github+json"), ("User-Agent", "issues-tracker")] ++ auth
+      let headers ← githubHeaders
       let url := s!"https://api.github.com/repos/{owner}/{repo}/commits/{branch}/status"
       match ← Http.requestJson "GET" url headers with
       | .error e => return (.error, some e)
@@ -108,9 +105,7 @@ def githubPrStatusEvaluate (_db : Db.Conn) (_config : Json) (_issue : Issue) (ar
       match parsePrUrl url with
       | none => return (.error, some s!"could not parse a GitHub PR url from '{url}'")
       | some (owner, repo, number) =>
-        let token ← IO.getEnv "ISSUES_GITHUB_TOKEN"
-        let auth := token.map (fun t => #[("Authorization", s!"Bearer {t}")]) |>.getD #[]
-        let headers := #[("Accept", "application/vnd.github+json"), ("User-Agent", "issues-tracker")] ++ auth
+        let headers ← githubHeaders
         let apiUrl := s!"https://api.github.com/repos/{owner}/{repo}/pulls/{number}"
         match ← Http.requestJson "GET" apiUrl headers with
         | .error e => return (.error, some e)
