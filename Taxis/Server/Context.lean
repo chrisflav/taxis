@@ -114,12 +114,16 @@ def loadConfigToml (path : System.FilePath := "config.toml") : IO (Std.HashMap S
 def Config.fromEnv : IO Config := do
   let dotenv ← loadDotenv
   let toml ← loadConfigToml
+  -- A blank value counts as unset, so `ISSUES_GOOGLE_CLIENT_ID=` disables Google OAuth rather
+  -- than configuring it with an empty id. This also matters under Docker Compose, which always
+  -- sets the variable in the container (to `""` when the host hasn't defined it).
+  let nonEmpty (v : String) : Option String := if v.trimAscii.isEmpty then none else some v
   let getEnv (k : String) : IO (Option String) := do
-    match ← IO.getEnv k with
+    match (← IO.getEnv k).bind nonEmpty with
     | some v => pure (some v)
-    | none => match dotenv[k]? with
+    | none => match dotenv[k]?.bind nonEmpty with
       | some v => pure (some v)
-      | none => pure toml[k]?
+      | none => pure (toml[k]?.bind nonEmpty)
   let port := (← getEnv "ISSUES_PORT").bind (fun s => s.toNat?.map (·.toUInt16)) |>.getD 8080
   let host := (← getEnv "ISSUES_HOST").getD "127.0.0.1"
   let dbPath := (← getEnv "ISSUES_DB").getD "issues.sqlite"
