@@ -33,9 +33,8 @@ services:
       # Set (to any value) to enable POST /api/auth/dev-login. Do not set this in production.
       ISSUES_DEV_LOGIN: ${ISSUES_DEV_LOGIN:-}
     volumes:
-      - taxis-data:/data
+      # Bind mount: the SQLite database lives in a directory on the host (created on first run,
+      # relative to this file) so it can be backed up or inspected without going through Docker.
+      - ${TAXIS_DATA_DIR:-./data}:/data
     # ISSUES_HOST/PORT/DB/FRONTEND_DIR are set in the image itself (see Dockerfile) and don't need
     # overriding here; HOST_PORT above only controls which host port they're published on.
-
-volumes:
-  taxis-data:

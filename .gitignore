@@ -5,6 +5,7 @@
 /.env
 .env.local
 docker/.env
+docker/data/
 .claude/settings.local.json
 
 # Python bytecode
