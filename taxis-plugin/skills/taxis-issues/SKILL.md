@@ -56,9 +56,10 @@ If a name is ambiguous or missing, ask the user rather than guessing an id.
 **Find an issue.** Use `taxis_list_issues` with `q` for text, or `state`/`assignee`/
 `label` filters. Then `taxis_get_issue` for full detail before acting on it.
 
-**Create a well-formed issue.** Give a clear `title` and a Markdown `description`.
+**Create a well-formed issue.** Give a clear `title` and a Markdown `description`, plus a
+`goal` — one short, checkable condition that says when the issue is complete.
 Resolve any labels/assignees to ids first. Example intent → call:
-`taxis_create_issue { title, description, labels: [3], assignees: [7] }`.
+`taxis_create_issue { title, description, goal, labels: [3], assignees: [7] }`.
 
 **Resolve / close.** `taxis_update_issue { id, state: "completed" }` (or `"closed"`).
 `completed` = done successfully; `closed` = closed without completing.

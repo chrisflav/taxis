@@ -41,6 +41,7 @@ private def idProp : String × Json := ("id", intProp "Issue id.")
 private def writeFields : List (String × Json) :=
   [ ("title", stringProp "Issue title.")
   , ("description", stringProp "Markdown body.")
+  , ("goal", stringProp "Short goal condition: what must hold for the issue to be complete.")
   , ("state", stateProp "Lifecycle state.")
   , ("labels", intArray "Label ids (use taxis_list_labels to resolve names).")
   , ("assignees", intArray "Actor ids (use taxis_list_actors to resolve names).")

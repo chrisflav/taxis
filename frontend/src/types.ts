@@ -46,6 +46,8 @@ export interface Issue {
   id: number;
   title: string;
   description: string;
+  // A short description of the goal condition: what must hold for the issue to be complete.
+  goal: string;
   state: IssueState;
   locked: boolean;
   labels: number[];
@@ -97,7 +99,7 @@ export interface Notification {
 }
 
 // A recorded change to an issue. `data` shape depends on `kind`:
-//   title/description:      { from, to }
+//   title/description/goal: { from, to }
 //   state/parent:           { from, to }
 //   locked:                 { to: boolean }
 //   dependencies/assignees/visibility/labels: { added: number[], removed: number[] }

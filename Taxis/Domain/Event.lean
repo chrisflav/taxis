@@ -3,12 +3,12 @@ import Taxis.Domain.Ids
 /-!
 # Events
 
-An event records a single change made to an issue: a field edit (title, description, state,
+An event records a single change made to an issue: a field edit (title, description, goal, state,
 parent, dependencies, assignees, visibility, labels, lock), an artifact/check being attached or
 removed, or a comment being edited or deleted. Events form the issue's audit trail.
 
-Content edits (title, description, comments) carry the previous value in `data` so the frontend
-can offer an edit-history dropdown next to the text; the remaining events are shown as a
+Content edits (title, description, goal, comments) carry the previous value in `data` so the
+frontend can offer an edit-history dropdown next to the text; the remaining events are shown as a
 chronological activity log. The author is optional so an event survives its actor's deletion, and
 system/imported changes may have no actor.
 -/

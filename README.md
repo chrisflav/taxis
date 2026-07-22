@@ -24,7 +24,8 @@ taxis is an extensible issue tracker built in Lean 4, with a REST API backend an
 - **Groups** — sets of actors used as a visibility filter.
 - **Labels** — reusable named tags (name + description), managed on their own page; an issue
   can carry any number of them.
-- **Issues** — title, description, lifecycle state (`open`/`closed`/`completed`), labels, a single
+- **Issues** — title, description, **goal** (a short condition that must be fulfilled to complete
+  the issue), lifecycle state (`open`/`closed`/`completed`), labels, a single
   optional **parent** (a hierarchical/containment relation, cycle-checked up the parent chain),
   a set of **dependencies** (other issues it depends on — the dependency graph), assignees,
   visibility groups, artifacts, checks, and comments. The **Tree** view is built from the parent
@@ -43,8 +44,8 @@ taxis is an extensible issue tracker built in Lean 4, with a REST API backend an
   can be edited or removed by its author or an admin. Every issue is edited **inline** — clicking
   a field's pencil replaces just that block with an editor, leaving the rest of the page in place.
 - **History** — every change to an issue is recorded as an **event**: edits to the title,
-  description, and comments surface as a small edit-history dropdown (🕓) next to the text, while
-  the remaining changes (state, lock, parent, dependencies, assignees, visibility, labels,
+  description, goal, and comments surface as a small edit-history dropdown (🕓) next to the text,
+  while the remaining changes (state, lock, parent, dependencies, assignees, visibility, labels,
   artifacts, checks) appear as a chronological **Activity** log, each attributed to its actor.
 - **Artifacts / Checks** — extensible, plugin-backed (see above). Built-in check kinds include
   `github-ci` and `json-endpoint` (fetch a JSON URL and assert a condition on a value at a path).

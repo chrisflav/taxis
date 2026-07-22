@@ -26,8 +26,10 @@ structure Issue where
   id : IssueId
   title : String
   description : String := ""
+  /-- A short description of the goal condition: what must hold for the issue to be complete. -/
+  goal : String := ""
   state : IssueState := .open
-  /-- When locked, the title, description, parent, and dependency relations are frozen. -/
+  /-- When locked, the title, description, goal, parent, and dependency relations are frozen. -/
   locked : Bool := false
   labels : Array LabelId := #[]
   /-- The single hierarchical parent (containing issue), if any. -/

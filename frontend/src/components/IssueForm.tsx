@@ -33,6 +33,7 @@ export function IssueForm({
   const editing = issueId != null;
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const [goal, setGoal] = useState("");
   const [labels, setLabels] = useState<number[]>([]);
   const [parent, setParent] = useState<number | null>(initialParent);
   const [dependencies, setDependencies] = useState<number[]>([]);
@@ -50,7 +51,7 @@ export function IssueForm({
   // What counts as "unmodified" for onDirtyChange: the loaded issue when editing, or blank fields
   // (with the pre-selected parent) when creating — a pre-filled parent alone isn't user input.
   const baseline = useRef({
-    title: "", description: "", parent: initialParent, deadline: "",
+    title: "", description: "", goal: "", parent: initialParent, deadline: "",
     labels: [] as number[], dependencies: [] as number[], assignees: [] as number[], visibility: [] as number[],
   });
 
@@ -65,6 +66,7 @@ export function IssueForm({
         .then((d) => {
           setTitle(d.issue.title);
           setDescription(d.issue.description);
+          setGoal(d.issue.goal);
           setLabels(d.issue.labels);
           setParent(d.issue.parent);
           setDependencies(d.issue.dependencies);
@@ -73,7 +75,7 @@ export function IssueForm({
           setDeadline(unixToLocalInput(d.issue.deadline));
           setLocked(d.issue.locked);
           baseline.current = {
-            title: d.issue.title, description: d.issue.description, parent: d.issue.parent,
+            title: d.issue.title, description: d.issue.description, goal: d.issue.goal, parent: d.issue.parent,
             deadline: unixToLocalInput(d.issue.deadline),
             labels: d.issue.labels, dependencies: d.issue.dependencies, assignees: d.issue.assignees, visibility: d.issue.visibility,
           };
@@ -89,18 +91,19 @@ export function IssueForm({
     const sameSet = (a: number[], c: number[]) =>
       a.length === c.length && [...a].sort((x, y) => x - y).every((v, i) => v === [...c].sort((x, y) => x - y)[i]);
     onDirtyChange(
-      title !== b.title || description !== b.description || parent !== b.parent || deadline !== b.deadline
+      title !== b.title || description !== b.description || goal !== b.goal || parent !== b.parent
+        || deadline !== b.deadline
         || !sameSet(labels, b.labels) || !sameSet(dependencies, b.dependencies)
         || !sameSet(assignees, b.assignees) || !sameSet(visibility, b.visibility),
     );
-  }, [title, description, labels, parent, dependencies, assignees, visibility, deadline, loaded]);
+  }, [title, description, goal, labels, parent, dependencies, assignees, visibility, deadline, loaded]);
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     // When locked, don't send frozen fields at all, so the backend never rejects a no-op change.
     const body = locked
       ? { labels, assignees, visibility }
-      : { title, description, labels, parent, dependencies, assignees, visibility, deadline: localInputToUnix(deadline) };
+      : { title, description, goal, labels, parent, dependencies, assignees, visibility, deadline: localInputToUnix(deadline) };
     const p = editing
       ? api.updateIssue(issueId!, body)
       : api.createIssue(body as Partial<Issue>);
@@ -126,9 +129,10 @@ export function IssueForm({
   // A user may only restrict visibility to groups they belong to (admins: any group).
   const visibleGroups = me?.admin ? allGroups : allGroups.filter((g) => me?.groups.includes(g.id));
 
-  // "#123" issue-reference autocomplete for the title and description fields.
+  // "#123" issue-reference autocomplete for the title, description and goal fields.
   const titleAc = useIssueRefAutocomplete<HTMLInputElement>(allIssues, title, setTitle);
   const descAc = useIssueRefAutocomplete<HTMLTextAreaElement>(allIssues, description, setDescription);
+  const goalAc = useIssueRefAutocomplete<HTMLTextAreaElement>(allIssues, goal, setGoal);
 
   return (
     <form className={embedded ? "" : "panel"} onSubmit={submit} style={embedded ? undefined : { maxWidth: 680 }}>
@@ -137,8 +141,8 @@ export function IssueForm({
       {!me && <div className="panel error">You must sign in to create or edit issues.</div>}
       {locked && (
         <div className="panel small" style={{ background: "var(--panel-2)" }}>
-          🔒 This issue is locked. Title, description, and dependencies are frozen — unlock it from the
-          issue page to change them. Labels and assignees can still be edited.
+          🔒 This issue is locked. Title, description, goal, and dependencies are frozen — unlock it
+          from the issue page to change them. Labels and assignees can still be edited.
         </div>
       )}
       <label>Title</label>
@@ -167,6 +171,20 @@ export function IssueForm({
       </div>
       <div className="muted small">
         Markdown and LaTeX math (KaTeX, e.g. <code>$x^2$</code>) supported. Type <code>#</code> to link another issue.
+      </div>
+      <label>Goal</label>
+      <div className="issue-ref-field">
+        <AutoTextarea
+          ref={goalAc.elRef}
+          value={goal}
+          onChange={goalAc.onChangeWrapped}
+          onKeyDown={goalAc.onKeyDown}
+          disabled={locked}
+        />
+        <IssueRefMenu options={goalAc.options} issues={allIssues} onChoose={goalAc.choose} pos={goalAc.menuPos} menuRef={goalAc.menuRef} />
+      </div>
+      <div className="muted small">
+        A short condition that must be fulfilled to complete this issue.
       </div>
       <label>Labels</label>
       <MultiSelect options={labelOpts} selected={labels} onChange={setLabels} placeholder="Add labels…" />

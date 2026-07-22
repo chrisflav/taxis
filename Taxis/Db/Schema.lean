@@ -15,7 +15,7 @@ the FTS5 extension.
 namespace Taxis.Db
 
 /-- The schema version this build expects. -/
-def schemaVersion : Int64 := 12
+def schemaVersion : Int64 := 13
 
 /-- The complete DDL, safe to run repeatedly. -/
 def schemaSql : String :=
@@ -49,6 +49,7 @@ def schemaSql : String :=
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     title TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
+    goal TEXT NOT NULL DEFAULT '',
     state TEXT NOT NULL DEFAULT 'open',
     locked INTEGER NOT NULL DEFAULT 0,
     label TEXT,
@@ -223,6 +224,8 @@ def migrate (db : Conn) : IO Unit := do
   try db.exec "ALTER TABLE notifications ADD COLUMN done INTEGER NOT NULL DEFAULT 0" catch _ => pure ()
   -- v12: GitHub OAuth login, alongside Google.
   try db.exec "ALTER TABLE actors ADD COLUMN github_id TEXT" catch _ => pure ()
+  -- v13: an issue's goal condition.
+  try db.exec "ALTER TABLE issues ADD COLUMN goal TEXT NOT NULL DEFAULT ''" catch _ => pure ()
   let rows ← (← db query!"SELECT version FROM schema_version LIMIT 1" as VersionRow).toArray
   if rows.isEmpty then
     db exec!"INSERT INTO schema_version (version) VALUES ({schemaVersion})"

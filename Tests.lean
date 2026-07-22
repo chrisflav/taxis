@@ -57,8 +57,9 @@ def main : IO Unit := do
   check "label default color" ((← createLabel db { name := "chore" }).color == "#6b7280")
   let parent ← createIssue db { title := "Parent" }
   let dep ← createIssue db { title := "Dependency" }
-  let child ← createIssue db { title := "Child", parent := some parent.id, dependencies := #[dep.id], assignees := #[a.id], labels := #[bug.id] }
+  let child ← createIssue db { title := "Child", goal := "the child ships", parent := some parent.id, dependencies := #[dep.id], assignees := #[a.id], labels := #[bug.id] }
   check "child has parent" (child.parent == some parent.id)
+  check "child has goal" (child.goal == "the child ships")
   check "child has dependency" (child.dependencies == #[dep.id])
   check "child has assignee" (child.assignees == #[a.id])
   check "child has label" (child.labels == #[bug.id])
@@ -72,6 +73,10 @@ def main : IO Unit := do
     try let _ ← updateIssue db child.id { title := some "renamed" }; pure false
     catch e => pure ((validationMessage? e).isSome)
   check "locked title change rejected" lockTitle
+  let lockGoal ←
+    try let _ ← updateIssue db child.id { goal := some "something else" }; pure false
+    catch e => pure ((validationMessage? e).isSome)
+  check "locked goal change rejected" lockGoal
   let lockAssignee ←
     try let _ ← updateIssue db child.id { assignees := some #[] }; pure true
     catch _ => pure false
@@ -120,6 +125,8 @@ def main : IO Unit := do
   check "title change recorded" (evs.any (·.kind == "title"))
   check "event attributed to actor" (evs.any (fun e => e.kind == "title" && (e.actorId.map (·.val)) == some a.id.val))
   check "event has actor name" (evs.any (fun e => e.kind == "title" && e.actorName == some "Alice"))
+  let _ ← updateIssue db child.id { goal := some "the child ships on time" } (some a.id)
+  check "goal change recorded" ((← issueEvents db child.id).any (·.kind == "goal"))
   let _ ← updateIssue db child.id { state := some .completed } (some a.id)
   check "state change recorded" ((← issueEvents db child.id).any (·.kind == "state"))
   let _ ← updateIssue db child.id { assignees := some #[a.id] } (some a.id)

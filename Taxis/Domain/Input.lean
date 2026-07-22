@@ -75,6 +75,7 @@ deriving ToJson, FromJson
 structure IssueInput where
   title : String
   description : String := ""
+  goal : String := ""
   state : IssueState := .open
   locked : Bool := false
   labels : Array LabelId := #[]
@@ -89,6 +90,7 @@ instance : FromJson IssueInput where
   fromJson? j := do pure {
     title := ← jsonField? j "title"
     description := ← jsonFieldD? j "description" ""
+    goal := ← jsonFieldD? j "goal" ""
     state := ← jsonFieldD? j "state" .open
     locked := ← jsonFieldD? j "locked" false
     labels := ← jsonFieldD? j "labels" #[]
@@ -103,6 +105,7 @@ instance : FromJson IssueInput where
 structure IssueUpdate where
   title : Option String := none
   description : Option String := none
+  goal : Option String := none
   state : Option IssueState := none
   locked : Option Bool := none
   labels : Option (Array LabelId) := none
@@ -117,6 +120,7 @@ instance : FromJson IssueUpdate where
   fromJson? j := do pure {
     title := ← jsonFieldOpt? j "title"
     description := ← jsonFieldOpt? j "description"
+    goal := ← jsonFieldOpt? j "goal"
     state := ← jsonFieldOpt? j "state"
     locked := ← jsonFieldOpt? j "locked"
     labels := ← jsonFieldOpt? j "labels"

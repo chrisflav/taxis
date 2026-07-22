@@ -24,7 +24,7 @@ function fmtTime(ts: number): string {
 }
 
 // Event kinds shown as an edit-history dropdown next to their text rather than in the timeline.
-const CONTENT_KINDS = new Set(["title", "description", "comment_edited"]);
+const CONTENT_KINDS = new Set(["title", "description", "goal", "comment_edited"]);
 
 export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
   const [detail, setDetail] = useState<Detail | null>(null);
@@ -74,8 +74,8 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
   const labelName = (l: number) => allLabels.find((x) => x.id === l)?.name ?? `#${l}`;
 
   const canEdit = !!me;
-  // When locked, the title, description, parent and dependencies are frozen (labels, assignees and
-  // visibility remain editable), mirroring the backend's locking rules.
+  // When locked, the title, description, goal, parent and dependencies are frozen (labels,
+  // assignees and visibility remain editable), mirroring the backend's locking rules.
   const editableUnlessLocked = canEdit && !issue.locked;
   const overdue = issue.deadline != null && issue.state === "open" && issue.deadline * 1000 < Date.now();
   // Marking an issue completed is blocked server-side while any attached check isn't passing —
@@ -129,6 +129,18 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
           multiline
           placeholder="No description"
           onSave={(v) => patch({ description: v })}
+          issues={allIssues}
+        />
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
+          <h3 className="field-heading">Goal <HistoryDropdown events={historyFor("goal")} label="Goal history" /></h3>
+        </div>
+        <div className="muted small">The condition that must be fulfilled to complete this issue.</div>
+        <InlineText
+          value={issue.goal}
+          canEdit={editableUnlessLocked}
+          multiline
+          placeholder="No goal condition"
+          onSave={(v) => patch({ goal: v })}
           issues={allIssues}
         />
         <MetaRow label="Labels" canEdit={canEdit}

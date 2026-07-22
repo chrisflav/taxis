@@ -126,6 +126,7 @@ private def issueUpdateBody (u : IssueUpdate) : Json :=
   Json.mkObj <|
     opt "title" (u.title.map Json.str) ++
     opt "description" (u.description.map Json.str) ++
+    opt "goal" (u.goal.map Json.str) ++
     opt "state" (u.state.map toJson) ++
     opt "locked" (u.locked.map Json.bool) ++
     opt "labels" (u.labels.map toJson) ++

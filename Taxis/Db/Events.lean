@@ -32,10 +32,10 @@ private def EventRow.toEvent (r : EventRow) : Event :=
     actorBot := r.actorBot.getD false, kind := r.kind,
     data := (Json.parse r.data).toOption.getD (Json.mkObj []), createdAt := r.createdAt }
 
-/-- Event kinds that do not notify participants (title/description edits and label changes are
+/-- Event kinds that do not notify participants (title/description/goal edits and label changes are
     frequent and rarely the activity someone wants to be pinged about; see issue #26). Still
     recorded as events, just not fanned out as notifications. -/
-private def silentEventKinds : List String := ["title", "description", "labels"]
+private def silentEventKinds : List String := ["title", "description", "goal", "labels"]
 
 /-- Append one event to an issue's history. Recording activity also stamps the issue's
     `updated_at`, so "last updated" reflects comments, artifact/check changes, etc. — not just
@@ -59,13 +59,16 @@ def issueEvents (db : Conn) (issueId : IssueId) : IO (Array Event) := do
 private def added [BEq α] (old new : Array α) : Array α := new.filter (!old.contains ·)
 
 /-- Diff two versions of an issue and record one event per changed field. Content edits (title,
-    description) carry the previous and new value; relation changes carry added/removed id sets. -/
+    description, goal) carry the previous and new value; relation changes carry added/removed id
+    sets. -/
 def recordIssueChanges (db : Conn) (issueId : IssueId) (actorId : Option ActorId)
     (old new : Issue) : IO Unit := do
   if old.title != new.title then
     recordEvent db issueId actorId "title" (Json.mkObj [("from", old.title), ("to", new.title)])
   if old.description != new.description then
     recordEvent db issueId actorId "description" (Json.mkObj [("from", old.description), ("to", new.description)])
+  if old.goal != new.goal then
+    recordEvent db issueId actorId "goal" (Json.mkObj [("from", old.goal), ("to", new.goal)])
   if old.state != new.state then
     recordEvent db issueId actorId "state" (Json.mkObj [("from", toJson old.state), ("to", toJson new.state)])
   if old.locked != new.locked then

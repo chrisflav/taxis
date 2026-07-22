@@ -21,6 +21,7 @@ private structure IssueRow where
   id : IssueId
   title : String
   description : String
+  goal : String
   state : IssueState
   locked : Bool
   parent : Option IssueId
@@ -60,7 +61,8 @@ private def issueLabels (db : Conn) (id : IssueId) : IO (Array LabelId) := do
 
 private def IssueRow.toIssue (r : IssueRow) (db : Conn) : IO Issue := do
   pure {
-    id := r.id, title := r.title, description := r.description, state := r.state, locked := r.locked,
+    id := r.id, title := r.title, description := r.description, goal := r.goal, state := r.state,
+    locked := r.locked,
     labels := ← issueLabels db r.id,
     parent := r.parent,
     dependencies := ← issueDependencies db r.id,
@@ -130,7 +132,7 @@ private def setLabels (db : Conn) (issue : IssueId) (labels : Array LabelId) : I
 
 /-- Fetch an issue by id, with all relations loaded. -/
 def getIssue (db : Conn) (id : IssueId) : IO (Option Issue) := do
-  let rows ← (← db query!"SELECT id, title, description, state, locked, parent_id, creator_id, deadline, created_at, updated_at FROM issues WHERE id = {id}" as IssueRow).toArray
+  let rows ← (← db query!"SELECT id, title, description, goal, state, locked, parent_id, creator_id, deadline, created_at, updated_at FROM issues WHERE id = {id}" as IssueRow).toArray
   match rows[0]? with
   | none => pure none
   | some r => some <$> r.toIssue db
@@ -147,7 +149,7 @@ def listIssues (db : Conn) (state : Option IssueState) (labelId : Option LabelId
   let lim : Int64 := match limit with | some n => Int64.ofNat n | none => -1
   let off : Int64 := Int64.ofNat offset
   let rows ← (← db query!"
-    SELECT id, title, description, state, locked, parent_id, creator_id, deadline, created_at, updated_at FROM issues
+    SELECT id, title, description, goal, state, locked, parent_id, creator_id, deadline, created_at, updated_at FROM issues
     WHERE ({stateStr} IS NULL OR state = {stateStr})
       AND ({labelId} IS NULL OR id IN (SELECT issue_id FROM issue_labels WHERE label_id = {labelId}))
       AND ({qlike} IS NULL OR title LIKE {qlike} OR description LIKE {qlike})
@@ -161,9 +163,9 @@ def listIssues (db : Conn) (state : Option IssueState) (labelId : Option LabelId
     a cyclic parent. -/
 def createIssue (db : Conn) (input : IssueInput) (creatorId : Option ActorId := none) : IO Issue :=
   withTransaction db do
-    let rows ← (← db query!"INSERT INTO issues (title, description, state, locked, creator_id, deadline)
-      VALUES ({input.title}, {input.description}, {input.state}, {input.locked}, {creatorId}, {input.deadline})
-      RETURNING id, title, description, state, locked, parent_id, creator_id, deadline, created_at, updated_at" as IssueRow).toArray
+    let rows ← (← db query!"INSERT INTO issues (title, description, goal, state, locked, creator_id, deadline)
+      VALUES ({input.title}, {input.description}, {input.goal}, {input.state}, {input.locked}, {creatorId}, {input.deadline})
+      RETURNING id, title, description, goal, state, locked, parent_id, creator_id, deadline, created_at, updated_at" as IssueRow).toArray
     let r := rows[0]!
     setLabels db r.id input.labels
     setParent db r.id input.parent
@@ -180,7 +182,7 @@ private def sameSet (a b : Array Int64) : Bool :=
   a.size == b.size && a.all (b.contains ·)
 
 /-- Update an issue; absent fields are unchanged. Returns `none` if it does not exist.
-    A locked issue rejects changes to its title, description, parent, or dependencies.
+    A locked issue rejects changes to its title, description, goal, parent, or dependencies.
     `actorId` attributes the recorded history events to whoever made the change. -/
 def updateIssue (db : Conn) (id : IssueId) (upd : IssueUpdate)
     (actorId : Option ActorId := none) : IO (Option Issue) :=
@@ -195,6 +197,9 @@ def updateIssue (db : Conn) (id : IssueId) (upd : IssueUpdate)
         match upd.description with
         | some d => if d != cur.description then validationError "issue is locked: description cannot be changed"
         | none => pure ()
+        match upd.goal with
+        | some g => if g != cur.goal then validationError "issue is locked: goal cannot be changed"
+        | none => pure ()
         match upd.parent with
         | some p =>
           if (p.map (·.val)) != (cur.parent.map (·.val)) then
@@ -207,11 +212,12 @@ def updateIssue (db : Conn) (id : IssueId) (upd : IssueUpdate)
         | none => pure ()
       let title := upd.title.getD cur.title
       let description := upd.description.getD cur.description
+      let goal := upd.goal.getD cur.goal
       let state := upd.state.getD cur.state
       let locked := upd.locked.getD cur.locked
       let deadline := upd.deadline.getD cur.deadline
-      db exec!"UPDATE issues SET title = {title}, description = {description}, state = {state},
-        locked = {locked}, deadline = {deadline}, updated_at = unixepoch() WHERE id = {id}"
+      db exec!"UPDATE issues SET title = {title}, description = {description}, goal = {goal},
+        state = {state}, locked = {locked}, deadline = {deadline}, updated_at = unixepoch() WHERE id = {id}"
       if let some ls := upd.labels then setLabels db id ls
       if let some p := upd.parent then setParent db id p
       if let some ds := upd.dependencies then setDependencies db id ds
