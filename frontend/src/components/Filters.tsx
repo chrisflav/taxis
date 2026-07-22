@@ -1,25 +1,32 @@
-import type { Actor, Issue, Label } from "../types";
+import { memo, useMemo } from "react";
+import type { Actor, IssueIndexEntry, Label } from "../types";
 import type { IssueFilterState } from "../filters";
 import { STATES } from "../api";
 import { MultiSelect } from "./MultiSelect";
-import { breadcrumbLabel } from "../breadcrumbs";
+import { breadcrumbOptions } from "../breadcrumbs";
 
 // The shared issue filter bar, used by both the list and the graph.
-export function Filters({
+//
+// Memoised, and its option lists built once per input array rather than per render: the parent and
+// dependency pickers name every issue by its ancestor chain, which is far too much work to redo on
+// every keystroke in the search box.
+export const Filters = memo(function Filters({
   value,
   onChange,
   labels,
   actors,
-  issues = [],
+  index = [],
 }: {
   value: IssueFilterState;
   onChange: (next: IssueFilterState) => void;
   labels: Label[];
   actors: Actor[];
-  issues?: Issue[];
+  index?: IssueIndexEntry[];
 }) {
   const set = (patch: Partial<IssueFilterState>) => onChange({ ...value, ...patch });
-  const issueOpts = issues.map((i) => ({ value: i.id, label: breadcrumbLabel(i, issues) }));
+  const issueOpts = useMemo(() => breadcrumbOptions(index), [index]);
+  const labelOpts = useMemo(() => labels.map((l) => ({ value: l.id, label: l.name })), [labels]);
+  const actorOpts = useMemo(() => actors.map((a) => ({ value: a.id, label: a.displayName })), [actors]);
 
   return (
     <div className="filters panel">
@@ -37,7 +44,7 @@ export function Filters({
       <div>
         <label>Labels (all)</label>
         <MultiSelect
-          options={labels.map((l) => ({ value: l.id, label: l.name }))}
+          options={labelOpts}
           selected={value.labels}
           onChange={(labels) => set({ labels })}
           placeholder="any label"
@@ -46,7 +53,7 @@ export function Filters({
       <div>
         <label>Assignee (any)</label>
         <MultiSelect
-          options={actors.map((a) => ({ value: a.id, label: a.displayName }))}
+          options={actorOpts}
           selected={value.assignees}
           onChange={(assignees) => set({ assignees })}
           placeholder="anyone"
@@ -72,4 +79,4 @@ export function Filters({
       </div>
     </div>
   );
-}
+});

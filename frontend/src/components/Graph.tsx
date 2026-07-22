@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Actor, Issue, Label } from "../types";
-import { api } from "../api";
+import { api, paths } from "../api";
+import { EMPTY, LIST_MAX_AGE, REFERENCE_MAX_AGE, useResource } from "../cache";
 import { emptyFilters, filtersFromParams, filtersToParams, matchesFilters, type IssueFilterState } from "../filters";
 import { Filters } from "./Filters";
 import { GraphCanvas, type GraphDirection, type GraphNode } from "./GraphCanvas";
@@ -42,25 +43,29 @@ function readGraphFiltersFromHash(): IssueFilterState {
   return filtersFromParams(new URLSearchParams(hash.slice(qIndex + 1)));
 }
 
+// Hoisted so the cache key and the fetch closure are stable across renders.
+const GRAPH_QUERY = { summary: true } as const;
+
 export function GraphView() {
-  const [issues, setIssues] = useState<Issue[]>([]);
-  const [labels, setLabels] = useState<Label[]>([]);
-  const [actors, setActors] = useState<Actor[]>([]);
   const [filters, setFilters] = useState<IssueFilterState>(readGraphFiltersFromHash);
   const [layoutMode, setLayoutMode] = useState<GraphMode>("dependencies");
   const [direction, setDirection] = useState<GraphDirection>("down");
   const [genFilter, setGenFilter] = useState<number[]>([]);
   const [showLabels, setShowLabels] = useState(false);
   const [showAssignees, setShowAssignees] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  // The graph needs every issue, not a filtered slice: an edge may point at something the current
+  // filters hide, and the generation of a node is defined by its full parent chain. It does not
+  // render descriptions though, so it asks for summary rows.
+  const issuesRes = useResource<Issue[]>(
+    paths.issues(GRAPH_QUERY), () => api.listIssues(GRAPH_QUERY), LIST_MAX_AGE);
+  const labelsRes = useResource<Label[]>(paths.labels, api.listLabels, REFERENCE_MAX_AGE);
+  const actorsRes = useResource<Actor[]>(paths.actors, api.listActors, REFERENCE_MAX_AGE);
 
-  useEffect(() => {
-    Promise.all([api.listIssues(), api.listLabels(), api.listActors()])
-      .then(([is, ls, as]) => { setIssues(is); setLabels(ls); setActors(as); setError(null); })
-      .catch((e) => setError(String(e)))
-      .finally(() => setLoading(false));
-  }, []);
+  const issues = issuesRes.data ?? EMPTY;
+  const labels = labelsRes.data ?? EMPTY;
+  const actors = actorsRes.data ?? EMPTY;
+  const loading = issuesRes.loading;
+  const error = issuesRes.error ?? labelsRes.error ?? actorsRes.error;
 
   useEffect(() => {
     const params = filtersToParams(filters);
@@ -122,7 +127,8 @@ export function GraphView() {
   return (
     <div>
       <h2>Graph</h2>
-      <Filters value={filters} onChange={setFilters} labels={labels} actors={actors} issues={issues} />
+      {/* The rows already carry id/title/parent, so the pickers need no extra request. */}
+      <Filters value={filters} onChange={setFilters} labels={labels} actors={actors} index={issues} />
       <div className="row" style={{ marginBottom: 12, justifyContent: "space-between" }}>
         <div className="row">
           <div className="segmented">

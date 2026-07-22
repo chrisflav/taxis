@@ -25,7 +25,9 @@ export function matchesFilters(i: Issue, f: IssueFilterState): boolean {
     (f.assignees.length === 0 || f.assignees.some((a) => i.assignees.includes(a))) &&
     (f.parents.length === 0 || (i.parent != null && f.parents.includes(i.parent))) &&
     f.dependsOn.every((d) => i.dependencies.includes(d)) &&
-    fuzzyMatch(f.q, `${i.title} ${i.description}`)
+    // List rows arrive without a description (see `Issue` in types.ts), so there the query matches
+    // titles; where a full issue is on hand the description is searched too, as before.
+    fuzzyMatch(f.q, `${i.title} ${i.description ?? ""}`)
   );
 }
 

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { Issue } from "./types";
+import type { IssueIndexEntry } from "./types";
 import { fuzzyMatch } from "./fuzzy";
 import { caretClientCoords } from "./caretCoords";
 
@@ -8,7 +8,7 @@ import { caretClientCoords } from "./caretCoords";
 // token with `#<id> ` at the caret. `T` pins the hook to the concrete element type so its `elRef`
 // can be attached directly (input vs textarea aren't assignable to one shared ref type).
 export function useIssueRefAutocomplete<T extends HTMLInputElement | HTMLTextAreaElement>(
-  issues: Issue[],
+  issues: IssueIndexEntry[],
   value: string,
   onChange: (v: string) => void,
 ) {
@@ -51,7 +51,7 @@ export function useIssueRefAutocomplete<T extends HTMLInputElement | HTMLTextAre
 
   const options = query == null ? [] : issues.filter((i) => fuzzyMatch(query, `${i.id} ${i.title}`)).slice(0, 8);
 
-  const choose = (issue: Issue) => {
+  const choose = (issue: IssueIndexEntry) => {
     const el = elRef.current;
     if (!el) return;
     const caret = el.selectionStart ?? value.length;

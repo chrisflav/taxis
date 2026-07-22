@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import type { Actor, Issue, Label, Notification } from "../types";
-import { api } from "../api";
+import type { Actor, IssueIndexEntry, Label, Notification } from "../types";
+import { api, paths } from "../api";
+import { EMPTY, REFERENCE_MAX_AGE, useResource } from "../cache";
 import { Pagination, usePagination } from "./Pagination";
 import { SearchableSelect } from "./SearchableSelect";
 import { SortHeader, type SortState } from "./SortHeader";
-import { breadcrumbLabel } from "../breadcrumbs";
+import { breadcrumbOptions } from "../breadcrumbs";
 
 // A short, kind-specific summary of a notification's activity — mirrors the issue timeline's
 // event descriptions, but text-only (the row itself links through to the issue).
@@ -135,8 +136,10 @@ function NotifBulkBar({
 
 export function NotificationsPage({ me }: { me: Actor | null }) {
   const [items, setItems] = useState<Notification[]>([]);
-  const [issues, setIssues] = useState<Issue[]>([]);
-  const [labels, setLabels] = useState<Label[]>([]);
+  // Only used to name issues and labels in the filter pickers, so the naming index is enough —
+  // and both come from the shared cache, already warm from wherever the user arrived here.
+  const issues = useResource<IssueIndexEntry[]>(paths.issueIndex, api.issueIndex, REFERENCE_MAX_AGE).data ?? EMPTY;
+  const labels = useResource<Label[]>(paths.labels, api.listLabels, REFERENCE_MAX_AGE).data ?? EMPTY;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -162,11 +165,6 @@ export function NotificationsPage({ me }: { me: Actor | null }) {
     if (window.location.hash !== next) history.replaceState(null, "", next);
     try { localStorage.setItem(NOTIF_FILTERS_STORAGE_KEY, JSON.stringify(state)); } catch {}
   }, [q, kind, done, read, parent, label]);
-
-  useEffect(() => {
-    api.listIssues().then(setIssues).catch(() => {});
-    api.listLabels().then(setLabels).catch(() => {});
-  }, []);
 
   const load = () => {
     setLoading(true);
@@ -217,7 +215,7 @@ export function NotificationsPage({ me }: { me: Actor | null }) {
     window.location.hash = `#/issues/${n.issueId}?notif=${n.id}`;
   };
 
-  const issueOpts = issues.map((i) => ({ value: i.id, label: breadcrumbLabel(i, issues) }));
+  const issueOpts = breadcrumbOptions(issues);
   const labelOpts = labels.map((l) => ({ value: l.id, label: l.name }));
 
   if (!me) return <div className="panel muted">Sign in to see your notifications.</div>;

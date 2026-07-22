@@ -1,4 +1,4 @@
-import type { Issue } from "./types";
+import type { IssueIndexEntry } from "./types";
 
 // Turn bare `#123` issue references into markdown links (`[#123 Some title](#/issues/123)` when
 // the referenced issue is known, else plain `[#123](#/issues/123)`), skipping fenced code blocks
@@ -6,7 +6,7 @@ import type { Issue } from "./types";
 // preceded by a non-word character (or the start of the string) and followed immediately by
 // digits — this is what tells it apart from markdown heading syntax (`# Heading` always has a
 // space after the `#`).
-export function linkifyIssueRefs(text: string, issues: Issue[] = []): string {
+export function linkifyIssueRefs(text: string, issues: IssueIndexEntry[] = []): string {
   const byId = new Map(issues.map((i) => [i.id, i]));
   const linkText = (num: string) => {
     const title = byId.get(Number(num))?.title;

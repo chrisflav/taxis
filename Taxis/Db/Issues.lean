@@ -2,6 +2,7 @@ import Taxis.Db.Connection
 import Taxis.Db.Events
 import Taxis.Db.Notifications
 import Taxis.Domain.Input
+import Std.Data.HashMap.Basic
 import Std.Data.HashSet.Basic
 
 /-!
@@ -75,6 +76,74 @@ private def IssueRow.toIssue (r : IssueRow) (db : Conn) : IO Issue := do
     deadline := r.deadline,
     createdAt := r.createdAt, updatedAt := r.updatedAt }
 
+/-! ### Batched relation loading
+
+`IssueRow.toIssue` issues one query per relation per issue, which is the right shape for reading a
+single issue but costs `O(N)` queries when listing. `listIssues` instead loads each relation table
+once and groups it by issue id, so a list costs a fixed number of queries no matter how many rows
+it returns. The relation tables hold one narrow row per relation, so scanning one beats `N` point
+lookups for the whole-list reads the UI actually makes. -/
+
+/-- A row of a two-column `(issue_id, value)` relation table. -/
+private structure RelRow where
+  issueId : IssueId
+  value : Int64
+deriving SQLite.Row, Inhabited
+
+private structure ActorNameRow where
+  id : ActorId
+  displayName : String
+deriving SQLite.Row, Inhabited
+
+/-- Group `(issue_id, value)` rows by issue, keeping each query's ordering within an issue. -/
+private def groupRel (rows : Array RelRow) : Std.HashMap Int64 (Array Int64) :=
+  rows.foldl (fun m r => m.insert r.issueId.val ((m.getD r.issueId.val #[]).push r.value)) {}
+
+/-- Every issue relation, loaded whole and grouped by issue id. -/
+private structure RelationIndex where
+  labels : Std.HashMap Int64 (Array Int64)
+  dependencies : Std.HashMap Int64 (Array Int64)
+  assignees : Std.HashMap Int64 (Array Int64)
+  visibility : Std.HashMap Int64 (Array Int64)
+  artifacts : Std.HashMap Int64 (Array Int64)
+  checks : Std.HashMap Int64 (Array Int64)
+  /-- Creator display names, denormalised onto every issue at render time. -/
+  actorNames : Std.HashMap Int64 String
+
+private def loadRelationIndex (db : Conn) : IO RelationIndex := do
+  let labels ← (← db query!"SELECT issue_id, label_id FROM issue_labels ORDER BY issue_id, label_id" as RelRow).toArray
+  let deps ← (← db query!"SELECT issue_id, depends_on_id FROM issue_dependencies ORDER BY issue_id, depends_on_id" as RelRow).toArray
+  let assignees ← (← db query!"SELECT issue_id, actor_id FROM issue_assignees ORDER BY issue_id, actor_id" as RelRow).toArray
+  let visibility ← (← db query!"SELECT issue_id, group_id FROM issue_visibility ORDER BY issue_id, group_id" as RelRow).toArray
+  let artifacts ← (← db query!"SELECT issue_id, id FROM artifacts ORDER BY issue_id, id" as RelRow).toArray
+  let checks ← (← db query!"SELECT issue_id, id FROM checks ORDER BY issue_id, id" as RelRow).toArray
+  let actors ← (← db query!"SELECT id, display_name FROM actors" as ActorNameRow).toArray
+  pure {
+    labels := groupRel labels
+    dependencies := groupRel deps
+    assignees := groupRel assignees
+    visibility := groupRel visibility
+    artifacts := groupRel artifacts
+    checks := groupRel checks
+    actorNames := actors.foldl (fun m a => m.insert a.id.val a.displayName) {} }
+
+/-- Assemble an issue from an already-loaded relation index, without touching the database. -/
+private def IssueRow.toIssueWith (r : IssueRow) (idx : RelationIndex) : Issue :=
+  let rel (m : Std.HashMap Int64 (Array Int64)) : Array Int64 := m.getD r.id.val #[]
+  { id := r.id, title := r.title, description := r.description, goal := r.goal, state := r.state,
+    locked := r.locked,
+    labels := (rel idx.labels).map (⟨·⟩),
+    parent := r.parent,
+    dependencies := (rel idx.dependencies).map (⟨·⟩),
+    assignees := (rel idx.assignees).map (⟨·⟩),
+    artifacts := (rel idx.artifacts).map (⟨·⟩),
+    visibility := (rel idx.visibility).map (⟨·⟩),
+    checks := (rel idx.checks).map (⟨·⟩),
+    creatorId := r.creatorId,
+    creatorName := r.creatorId.bind (idx.actorNames[·.val]?),
+    deadline := r.deadline,
+    createdAt := r.createdAt, updatedAt := r.updatedAt }
+
 /-- Read the parent id of an issue directly (a single climbing step). -/
 private structure ParentRow where
   parent : Option IssueId
@@ -139,9 +208,13 @@ def getIssue (db : Conn) (id : IssueId) : IO (Option Issue) := do
 
 /-- List issues matching optional filters, most-recently-updated first.
     Text search (`q`) matches title or description via `LIKE`; `labelId` filters to issues
-    carrying that label. `limit`/`offset` page the result (a `none` limit returns everything). -/
+    carrying that label; `parent` filters to the direct children of one issue. `limit`/`offset`
+    page the result (a `none` limit returns everything).
+
+    Relations are loaded in bulk (see `loadRelationIndex`), so the cost is a fixed number of
+    queries rather than one per returned issue per relation. -/
 def listIssues (db : Conn) (state : Option IssueState) (labelId : Option LabelId)
-    (q : Option String) (assignee : Option ActorId)
+    (q : Option String) (assignee : Option ActorId) (parent : Option IssueId := none)
     (limit : Option Nat := none) (offset : Nat := 0) : IO (Array Issue) := do
   let stateStr := state.map (·.toString)
   let qlike := q.map (fun s => "%" ++ s ++ "%")
@@ -154,9 +227,11 @@ def listIssues (db : Conn) (state : Option IssueState) (labelId : Option LabelId
       AND ({labelId} IS NULL OR id IN (SELECT issue_id FROM issue_labels WHERE label_id = {labelId}))
       AND ({qlike} IS NULL OR title LIKE {qlike} OR description LIKE {qlike})
       AND ({assignee} IS NULL OR id IN (SELECT issue_id FROM issue_assignees WHERE actor_id = {assignee}))
+      AND ({parent} IS NULL OR parent_id = {parent})
     ORDER BY updated_at DESC, id DESC
     LIMIT {lim} OFFSET {off}" as IssueRow).toArray
-  rows.mapM (·.toIssue db)
+  let idx ← loadRelationIndex db
+  pure (rows.map (·.toIssueWith idx))
 
 /-- Create an issue with its relations, attributed to `creatorId`. The creator and every assignee
     automatically participate (get notified of future activity). May raise a validation error on

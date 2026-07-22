@@ -1,19 +1,22 @@
-import { useState } from "react";
-import type { Actor, Issue, Label } from "../types";
+import { useMemo, useState } from "react";
+import type { Actor, Issue, IssueIndexEntry, Label } from "../types";
 import { api } from "../api";
 import { MultiSelect } from "./MultiSelect";
 import { SearchableSelect } from "./SearchableSelect";
-import { breadcrumbLabel } from "../breadcrumbs";
+import { breadcrumbOptions } from "../breadcrumbs";
 
 type BulkAction = "add-labels" | "remove-labels" | "set-parent" | "assign";
 
 // A toolbar that appears once at least one issue is checked in the list, applying one bulk
 // change (labels, parent, or assignees) to every selected issue at once.
 export function BulkBar({
-  selectedIds, issues, labels, actors, onClear, onApplied,
+  selectedIds, issues, index, labels, actors, onClear, onApplied,
 }: {
   selectedIds: Set<number>;
+  /** The rows currently listed — the source of each selected issue's existing labels/assignees. */
   issues: Issue[];
+  /** Every issue, for the parent picker: a parent may well be outside the current filter. */
+  index: IssueIndexEntry[];
   labels: Label[];
   actors: Actor[];
   onClear: () => void;
@@ -27,7 +30,10 @@ export function BulkBar({
   const [error, setError] = useState<string | null>(null);
 
   const selectedIssues = issues.filter((i) => selectedIds.has(i.id));
-  const issueOpts = issues.filter((i) => !selectedIds.has(i.id)).map((i) => ({ value: i.id, label: breadcrumbLabel(i, issues) }));
+  const issueOpts = useMemo(
+    () => breadcrumbOptions(index).filter((o) => !selectedIds.has(o.value)),
+    [index, selectedIds],
+  );
 
   const apply = () => {
     setBusy(true);

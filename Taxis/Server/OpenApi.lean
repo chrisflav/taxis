@@ -177,9 +177,14 @@ private def paths : Json := obj [
     ("get", operation "Issues" "List issues"
       [queryParam "state" "Filter by state (open/closed/completed)", queryParam "label" "Filter by label id",
        queryParam "q" "LIKE text search on title/description", queryParam "assignee" "Filter by assignee id",
+       queryParam "parent" "Filter to the direct children of this issue id",
+       queryParam "summary" "Set to 1 to omit the description and goal fields from each row",
        queryParam "limit" "Maximum number of issues to return", queryParam "offset" "Number of issues to skip"]
       none [("200", jsonResp "Issues" (arrayOf (ref "Issue")))]),
     ("post", operation "Issues" "Create an issue" [] (some (jsonBody (ref "IssueInput"))) [("201", jsonResp "Created" (ref "Issue"))])]),
+  ("/issues/index", obj [
+    ("get", operation "Issues" "Every visible issue as {id, title, parent} — enough to name an issue in a breadcrumb trail or a picker"
+      [] none [("200", jsonResp "Issue index" (arrayOf (typ "object")))])]),
   ("/issues/{id}", obj [
     ("get", operation "Issues" "Fetch an issue with related entities" [idParam] none
       [("200", jsonResp "Issue detail" (ref "IssueDetail")), ("404", emptyResp "Not found")]),

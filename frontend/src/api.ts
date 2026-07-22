@@ -9,6 +9,7 @@ import type {
   Group,
   Issue,
   IssueDetail,
+  IssueIndexEntry,
   IssueState,
   Label,
   Notification,
@@ -17,6 +18,7 @@ import type {
   ReviewRequest,
   ReviewState,
 } from "./types";
+import { invalidateCache } from "./cache";
 
 const BASE = "/api";
 
@@ -34,18 +36,56 @@ async function req<T>(path: string, opts: RequestInit = {}): Promise<T> {
   return data as T;
 }
 
-function qs(params: Record<string, string | undefined>): string {
+function qs(params: Record<string, string | number | boolean | undefined>): string {
   const entries = Object.entries(params).filter(([, v]) => v != null && v !== "");
   if (entries.length === 0) return "";
-  return "?" + entries.map(([k, v]) => `${k}=${encodeURIComponent(v!)}`).join("&");
+  return "?" + entries.map(([k, v]) => `${k}=${encodeURIComponent(String(v))}`).join("&");
 }
 
+/** Server-side issue filters. Every one of these narrows the result set in SQL, so a view that
+    can express its filter here transfers only the rows it will actually show. */
 export interface IssueFilters {
   state?: string;
-  label?: string;
+  label?: number;
   q?: string;
-  assignee?: string;
+  assignee?: number;
+  /** Direct children of this issue — what the detail view's "Children" link asks for. */
+  parent?: number;
+  limit?: number;
+  offset?: number;
+  /** Drop `description`/`goal` from the rows; see the note on `Issue` in types.ts. */
+  summary?: boolean;
 }
+
+function issuesPath(f: IssueFilters): string {
+  return "/issues" + qs({ ...f, summary: f.summary ? "1" : undefined });
+}
+
+/** Request paths, doubling as cache keys for `useResource`. */
+export const paths = {
+  issues: issuesPath,
+  issueIndex: "/issues/index",
+  issue: (id: number) => `/issues/${id}`,
+  labels: "/labels",
+  actors: "/actors",
+  groups: "/groups",
+  plugins: "/plugins",
+  graph: "/graph",
+};
+
+/** Anything that changes an issue invalidates every cached issue read: list variants are keyed by
+    their filters, and a detail response embeds labels, actors and events. */
+function issuesChanged<T>(result: T): T {
+  invalidateCache("/issues");
+  invalidateCache("/graph");
+  return result;
+}
+
+/** Drop one cached path after a write to it, so the next read goes back to the server. */
+const refreshed = (prefix: string) => <T,>(result: T): T => {
+  invalidateCache(prefix);
+  return result;
+};
 
 export const api = {
   health: () => req<{ status: string; version: string; centralPasswordEnabled?: boolean; googleEnabled?: boolean; githubEnabled?: boolean }>("/health"),
@@ -67,38 +107,42 @@ export const api = {
 
   plugins: () => req<Plugins>("/plugins"),
 
-  listIssues: (filters: IssueFilters = {}) =>
-    req<Issue[]>("/issues" + qs(filters as Record<string, string | undefined>)),
+  listIssues: (filters: IssueFilters = {}) => req<Issue[]>(issuesPath(filters)),
+  /** Every visible issue reduced to `{id, title, parent}` — enough to render an ancestor chain or
+      populate an issue picker, without pulling rows the view will never show. */
+  issueIndex: () => req<IssueIndexEntry[]>(paths.issueIndex),
   getIssue: (id: number) => req<IssueDetail>(`/issues/${id}`),
   createIssue: (body: Partial<Issue>) =>
-    req<Issue>("/issues", { method: "POST", body: JSON.stringify(body) }),
+    req<Issue>("/issues", { method: "POST", body: JSON.stringify(body) }).then(issuesChanged),
   updateIssue: (id: number, body: Record<string, unknown>) =>
-    req<Issue>(`/issues/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
-  deleteIssue: (id: number) => req<unknown>(`/issues/${id}`, { method: "DELETE" }),
+    req<Issue>(`/issues/${id}`, { method: "PATCH", body: JSON.stringify(body) }).then(issuesChanged),
+  deleteIssue: (id: number) => req<unknown>(`/issues/${id}`, { method: "DELETE" }).then(issuesChanged),
 
   addArtifact: (issueId: number, kind: string, payload: unknown) =>
     req<unknown>(`/issues/${issueId}/artifacts`, {
       method: "POST",
       body: JSON.stringify({ kind, payload }),
-    }),
-  deleteArtifact: (id: number) => req<unknown>(`/artifacts/${id}`, { method: "DELETE" }),
+    }).then(issuesChanged),
+  deleteArtifact: (id: number) =>
+    req<unknown>(`/artifacts/${id}`, { method: "DELETE" }).then(issuesChanged),
 
   addCheck: (issueId: number, kind: string, config: unknown) =>
     req<Check>(`/issues/${issueId}/checks`, {
       method: "POST",
       body: JSON.stringify({ kind, config }),
-    }),
-  runCheck: (id: number) => req<Check>(`/checks/${id}/run`, { method: "POST" }),
-  deleteCheck: (id: number) => req<unknown>(`/checks/${id}`, { method: "DELETE" }),
+    }).then(issuesChanged),
+  runCheck: (id: number) => req<Check>(`/checks/${id}/run`, { method: "POST" }).then(issuesChanged),
+  deleteCheck: (id: number) => req<unknown>(`/checks/${id}`, { method: "DELETE" }).then(issuesChanged),
 
   addComment: (issueId: number, body: string, review?: ReviewState) =>
     req<Comment>(`/issues/${issueId}/comments`, {
       method: "POST",
       body: JSON.stringify({ body, review }),
-    }),
+    }).then(issuesChanged),
   updateComment: (id: number, body: string) =>
-    req<Comment>(`/comments/${id}`, { method: "PATCH", body: JSON.stringify({ body }) }),
-  deleteComment: (id: number) => req<unknown>(`/comments/${id}`, { method: "DELETE" }),
+    req<Comment>(`/comments/${id}`, { method: "PATCH", body: JSON.stringify({ body }) }).then(issuesChanged),
+  deleteComment: (id: number) =>
+    req<unknown>(`/comments/${id}`, { method: "DELETE" }).then(issuesChanged),
 
   listEvents: (issueId: number) => req<Event[]>(`/issues/${issueId}/events`),
 
@@ -139,29 +183,33 @@ export const api = {
   createActorToken: (actorId: number, name: string) =>
     req<ApiTokenCreated>(`/actors/${actorId}/tokens`, { method: "POST", body: JSON.stringify({ name }) }),
 
-  listActors: () => req<Actor[]>("/actors"),
+  listActors: () => req<Actor[]>(paths.actors),
   createActor: (body: Record<string, unknown>) =>
-    req<Actor>("/actors", { method: "POST", body: JSON.stringify(body) }),
+    req<Actor>("/actors", { method: "POST", body: JSON.stringify(body) }).then(refreshed("/actors")),
   updateActor: (id: number, body: Record<string, unknown>) =>
-    req<Actor>(`/actors/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
-  deleteActor: (id: number) => req<unknown>(`/actors/${id}`, { method: "DELETE" }),
-  listGroups: () => req<Group[]>("/groups"),
+    req<Actor>(`/actors/${id}`, { method: "PATCH", body: JSON.stringify(body) }).then(refreshed("/actors")),
+  deleteActor: (id: number) =>
+    req<unknown>(`/actors/${id}`, { method: "DELETE" }).then(refreshed("/actors")),
+  listGroups: () => req<Group[]>(paths.groups),
   createGroup: (body: Record<string, unknown>) =>
-    req<Group>("/groups", { method: "POST", body: JSON.stringify(body) }),
+    req<Group>("/groups", { method: "POST", body: JSON.stringify(body) }).then(refreshed("/groups")),
   updateGroup: (id: number, body: Record<string, unknown>) =>
-    req<Group>(`/groups/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
-  deleteGroup: (id: number) => req<unknown>(`/groups/${id}`, { method: "DELETE" }),
+    req<Group>(`/groups/${id}`, { method: "PATCH", body: JSON.stringify(body) }).then(refreshed("/groups")),
+  deleteGroup: (id: number) =>
+    req<unknown>(`/groups/${id}`, { method: "DELETE" }).then(refreshed("/groups")),
 
-  listLabels: () => req<Label[]>("/labels"),
+  listLabels: () => req<Label[]>(paths.labels),
   createLabel: (body: Record<string, unknown>) =>
-    req<Label>("/labels", { method: "POST", body: JSON.stringify(body) }),
+    req<Label>("/labels", { method: "POST", body: JSON.stringify(body) }).then(refreshed("/labels")),
   updateLabel: (id: number, body: Record<string, unknown>) =>
-    req<Label>(`/labels/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
-  deleteLabel: (id: number) => req<unknown>(`/labels/${id}`, { method: "DELETE" }),
+    req<Label>(`/labels/${id}`, { method: "PATCH", body: JSON.stringify(body) }).then(refreshed("/labels")),
+  deleteLabel: (id: number) =>
+    req<unknown>(`/labels/${id}`, { method: "DELETE" }).then(refreshed("/labels")),
 
-  graph: () => req<GraphData>("/graph"),
+  graph: () => req<GraphData>(paths.graph),
   repoGraph: (external = false) => req<RepoGraphData>("/repo-graph" + (external ? "?external=1" : "")),
-  refreshRepoGraph: () => req<{ refreshed: boolean }>("/repo-graph/refresh", { method: "POST" }),
+  refreshRepoGraph: () =>
+    req<{ refreshed: boolean }>("/repo-graph/refresh", { method: "POST" }).then(refreshed("/repo-graph")),
 
   importGithub: (owner: string, repo: string, state: string, parent?: number) =>
     req<{ imported: number; updated: number }>("/import/github", {

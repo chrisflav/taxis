@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { Actor, Issue, Label } from "../types";
-import { api } from "../api";
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import type { Actor, Issue, IssueIndexEntry, Label } from "../types";
+import { api, paths, type IssueFilters } from "../api";
+import { EMPTY, LIST_MAX_AGE, REFERENCE_MAX_AGE, useResource } from "../cache";
 import {
   emptyFilters, filtersFromParams, filtersToParams, matchesFilters, loadStoredViewState,
   VIEW_STATE_STORAGE_KEY, type IssueFilterState,
@@ -98,6 +99,77 @@ function timeAgo(ts: number): string {
 
 type SortKey = "id" | "title" | "updated" | "deps" | "deadline";
 
+// The filters the server can apply, so a filtered view transfers only the rows it will show —
+// clicking "Children" on an issue with three children fetches three rows, not the whole tracker.
+// Single-valued selections push down; multi-valued ones (and the fuzzy query) stay client-side,
+// which stays correct because those only narrow the set further.
+function serverFilters(f: IssueFilterState): IssueFilters {
+  return {
+    summary: true,
+    state: f.state || undefined,
+    parent: f.parents.length === 1 ? f.parents[0] : undefined,
+    label: f.labels.length === 1 ? f.labels[0] : undefined,
+    assignee: f.assignees.length === 1 ? f.assignees[0] : undefined,
+  };
+}
+
+// One table row, memoised: the filter box re-renders the list on every keystroke, and each row
+// runs a markdown parse for its title. Handed lookup maps rather than closures so the props
+// actually compare equal between renders.
+const IssueRowView = memo(function IssueRowView({
+  issue, cols, selectable, selected, onToggleSelected, labelById, actorById, overdue,
+}: {
+  issue: Issue;
+  cols: Columns;
+  selectable: boolean;
+  selected: boolean;
+  onToggleSelected: (id: number) => void;
+  labelById: Map<number, Label>;
+  actorById: Map<number, Actor>;
+  overdue: boolean;
+}) {
+  return (
+    <tr className="issue-row" onClick={() => (window.location.hash = `#/issues/${issue.id}`)}>
+      {selectable && (
+        <td onClick={(e) => e.stopPropagation()}>
+          <input type="checkbox" checked={selected} onChange={() => onToggleSelected(issue.id)} />
+        </td>
+      )}
+      {cols.id && <td className="muted">{issue.id}</td>}
+      {cols.title && <td><Markdown text={issue.title} inline /> {issue.locked && <span title="locked">🔒</span>}</td>}
+      {cols.state && <td><StateBadge state={issue.state} /></td>}
+      {cols.labels && (
+        <td>{issue.labels.map((l) => { const lbl = labelById.get(l); return lbl ? <LabelChip key={l} label={lbl} /> : null; })}</td>
+      )}
+      {cols.parent && (
+        <td className="muted small">
+          {issue.parent != null
+            ? <a href={`#/issues/${issue.parent}`} onClick={(e) => e.stopPropagation()}>#{issue.parent}</a>
+            : "—"}
+        </td>
+      )}
+      {cols.assignees && (
+        <td className="muted small">
+          {issue.assignees.length
+            ? issue.assignees.map((aid) => actorById.get(aid)?.displayName ?? `#${aid}`).join(", ")
+            : "—"}
+        </td>
+      )}
+      {cols.deps && <td className="muted small">{issue.dependencies.length > 0 ? `${issue.dependencies.length} dep(s)` : "—"}</td>}
+      {cols.artifacts && <td className="muted small">{issue.artifacts.length || "—"}</td>}
+      {cols.checks && <td className="muted small">{issue.checks.length || "—"}</td>}
+      {cols.deadline && (
+        <td className={`small ${overdue ? "error" : "muted"}`}>
+          {issue.deadline != null ? new Date(issue.deadline * 1000).toLocaleDateString() : "—"}
+        </td>
+      )}
+      {cols.updated && (
+        <td className="muted small" title={new Date(issue.updatedAt * 1000).toLocaleString()}>{timeAgo(issue.updatedAt)}</td>
+      )}
+    </tr>
+  );
+});
+
 // The view options this page persists into the URL query string (e.g. "#/issues?state=open&view=tree"),
 // so browser back-navigation and links (like an issue's "Children" breadcrumb) restore them. "open"
 // is only the fallback default for a genuinely first-ever visit (no stored state either). The
@@ -116,9 +188,6 @@ function readViewStateFromHash(): { filters: IssueFilterState; view: "list" | "t
 }
 
 export function IssueList({ me }: { me: Actor | null }) {
-  const [issues, setIssues] = useState<Issue[]>([]);
-  const [labels, setLabels] = useState<Label[]>([]);
-  const [actors, setActors] = useState<Actor[]>([]);
   const [initialState] = useState(readViewStateFromHash);
   const [filters, setFilters] = useState<IssueFilterState>(initialState.filters);
   const [view, setView] = useState<"list" | "tree">(initialState.view);
@@ -127,23 +196,25 @@ export function IssueList({ me }: { me: Actor | null }) {
   const [cols, setCols] = useState<Columns>(loadColumns);
   useEffect(() => { localStorage.setItem(COLUMNS_STORAGE_KEY, JSON.stringify(cols)); }, [cols]);
   const createClose = useConfirmClose(createDirty, () => setCreating(false));
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
   // Default sort is descending issue number (newest issues first).
   const [sort, setSort] = useState<SortState<SortKey>>({ key: "id", dir: "desc" });
 
-  const load = () =>
-    Promise.all([api.listIssues(), api.listLabels(), api.listActors()])
-      .then(([is, ls, as]) => {
-        setIssues(is);
-        setLabels(ls);
-        setActors(as);
-        setError(null);
-      })
-      .catch((e) => setError(String(e)))
-      .finally(() => setLoading(false));
+  // The rows themselves, narrowed server-side. Reference data and the naming index are read
+  // through the same cache, so arriving here from the detail view (which already read them)
+  // paints without waiting on the network.
+  const query = useMemo(() => serverFilters(filters), [filters]);
+  const issuesRes = useResource<Issue[]>(paths.issues(query), () => api.listIssues(query), LIST_MAX_AGE);
+  const labelsRes = useResource<Label[]>(paths.labels, api.listLabels, REFERENCE_MAX_AGE);
+  const actorsRes = useResource<Actor[]>(paths.actors, api.listActors, REFERENCE_MAX_AGE);
+  const indexRes = useResource<IssueIndexEntry[]>(paths.issueIndex, api.issueIndex, REFERENCE_MAX_AGE);
 
-  useEffect(() => { load(); }, []);
+  const issues = issuesRes.data ?? EMPTY;
+  const labels = labelsRes.data ?? EMPTY;
+  const actors = actorsRes.data ?? EMPTY;
+  const issueIndex = indexRes.data ?? EMPTY;
+  const loading = issuesRes.loading;
+  const error = issuesRes.error ?? labelsRes.error ?? actorsRes.error;
+  const load = issuesRes.reload;
 
   // The breadcrumbs' "Issues" root link uses "?reset=1" to explicitly clear every filter — but
   // when it's clicked while already on this page (e.g. from the "Children" filtered view), the
@@ -164,16 +235,27 @@ export function IssueList({ me }: { me: Actor | null }) {
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
 
-  const labelOf = (id: number) => labels.find((l) => l.id === id);
-  const actorOf = (id: number) => actors.find((a) => a.id === id);
+  const labelById = useMemo(() => new Map(labels.map((l) => [l.id, l])), [labels]);
+  const actorById = useMemo(() => new Map(actors.map((a) => [a.id, a])), [actors]);
   const [overdueOnly, setOverdueOnly] = useState(false);
   const now = Date.now();
   const isOverdue = (i: Issue) => i.deadline != null && i.state === "open" && i.deadline * 1000 < now;
-  const filtered = issues.filter((i) => matchesFilters(i, filters) && (!overdueOnly || isOverdue(i)));
+  // Typing narrows the list at a lower priority than the keystroke itself, so the input keeps up
+  // even when the re-render has to re-lay-out every visible row.
+  const deferredQ = useDeferredValue(filters.q);
+  const filtered = useMemo(
+    () => issues.filter((i) => matchesFilters(i, { ...filters, q: deferredQ }) && (!overdueOnly || isOverdue(i))),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [issues, filters, deferredQ, overdueOnly],
+  );
   const colCount = Math.max(1, ALL_COLUMNS.filter((c) => cols[c.key]).length + (me ? 1 : 0));
   const [selected, setSelected] = useState<Set<number>>(new Set());
-  const toggleSelected = (id: number) =>
-    setSelected((s) => { const next = new Set(s); if (next.has(id)) next.delete(id); else next.add(id); return next; });
+  // A selection belongs to the rows it was made on. Now that changing a filter fetches a different
+  // set of rows, keeping it would leave the bulk bar counting issues that are no longer loaded.
+  const issuesKey = paths.issues(query);
+  useEffect(() => { setSelected(new Set()); }, [issuesKey]);
+  const toggleSelected = useCallback((id: number) =>
+    setSelected((s) => { const next = new Set(s); if (next.has(id)) next.delete(id); else next.add(id); return next; }), []);
 
   // Clicking a column sorts by it; clicking the active column flips direction. New columns start
   // in the most useful direction (recent-first for dates, most-first for dependency counts).
@@ -218,7 +300,7 @@ export function IssueList({ me }: { me: Actor | null }) {
 
   return (
     <div>
-      <ListBreadcrumbs parentId={filters.parents.length === 1 ? filters.parents[0] : null} allIssues={issues} />
+      <ListBreadcrumbs parentId={filters.parents.length === 1 ? filters.parents[0] : null} index={issueIndex} />
       <div className="row" style={{ justifyContent: "space-between", marginBottom: 12 }}>
         <h2>Issues</h2>
         <div className="row">
@@ -231,7 +313,7 @@ export function IssueList({ me }: { me: Actor | null }) {
         </div>
       </div>
 
-      <Filters value={filters} onChange={setFilters} labels={labels} actors={actors} issues={issues} />
+      <Filters value={filters} onChange={setFilters} labels={labels} actors={actors} index={issueIndex} />
 
       <label className="row small" style={{ margin: "0 0 12px" }}>
         <input type="checkbox" style={{ width: "auto" }} checked={overdueOnly} onChange={(e) => setOverdueOnly(e.target.checked)} />
@@ -242,6 +324,7 @@ export function IssueList({ me }: { me: Actor | null }) {
         <BulkBar
           selectedIds={selected}
           issues={issues}
+          index={issueIndex}
           labels={labels}
           actors={actors}
           onClear={() => setSelected(new Set())}
@@ -291,44 +374,17 @@ export function IssueList({ me }: { me: Actor | null }) {
             </thead>
             <tbody>
               {pager.pageItems.map((i) => (
-                <tr key={i.id} className="issue-row" onClick={() => (window.location.hash = `#/issues/${i.id}`)}>
-                  {me && (
-                    <td onClick={(e) => e.stopPropagation()}>
-                      <input type="checkbox" checked={selected.has(i.id)} onChange={() => toggleSelected(i.id)} />
-                    </td>
-                  )}
-                  {cols.id && <td className="muted">{i.id}</td>}
-                  {cols.title && <td><Markdown text={i.title} inline /> {i.locked && <span title="locked">🔒</span>}</td>}
-                  {cols.state && <td><StateBadge state={i.state} /></td>}
-                  {cols.labels && (
-                    <td>{i.labels.map((l) => { const lbl = labelOf(l); return lbl ? <LabelChip key={l} label={lbl} /> : null; })}</td>
-                  )}
-                  {cols.parent && (
-                    <td className="muted small">
-                      {i.parent != null
-                        ? <a href={`#/issues/${i.parent}`} onClick={(e) => e.stopPropagation()}>#{i.parent}</a>
-                        : "—"}
-                    </td>
-                  )}
-                  {cols.assignees && (
-                    <td className="muted small">
-                      {i.assignees.length
-                        ? i.assignees.map((aid) => { const a = actorOf(aid); return a?.displayName ?? `#${aid}`; }).join(", ")
-                        : "—"}
-                    </td>
-                  )}
-                  {cols.deps && <td className="muted small">{i.dependencies.length > 0 ? `${i.dependencies.length} dep(s)` : "—"}</td>}
-                  {cols.artifacts && <td className="muted small">{i.artifacts.length || "—"}</td>}
-                  {cols.checks && <td className="muted small">{i.checks.length || "—"}</td>}
-                  {cols.deadline && (
-                    <td className={`small ${isOverdue(i) ? "error" : "muted"}`}>
-                      {i.deadline != null ? new Date(i.deadline * 1000).toLocaleDateString() : "—"}
-                    </td>
-                  )}
-                  {cols.updated && (
-                    <td className="muted small" title={new Date(i.updatedAt * 1000).toLocaleString()}>{timeAgo(i.updatedAt)}</td>
-                  )}
-                </tr>
+                <IssueRowView
+                  key={i.id}
+                  issue={i}
+                  cols={cols}
+                  selectable={!!me}
+                  selected={selected.has(i.id)}
+                  onToggleSelected={toggleSelected}
+                  labelById={labelById}
+                  actorById={actorById}
+                  overdue={isOverdue(i)}
+                />
               ))}
               {filtered.length === 0 && (
                 <tr><td colSpan={colCount} className="muted" style={{ textAlign: "center", padding: 24 }}>No matching issues</td></tr>

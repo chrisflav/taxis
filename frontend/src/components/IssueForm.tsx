@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import type { Actor, Group, Issue, Label } from "../types";
-import { api } from "../api";
+import type { Actor, Group, Issue, IssueIndexEntry, Label } from "../types";
+import { api, paths } from "../api";
+import { EMPTY, REFERENCE_MAX_AGE, useResource } from "../cache";
 import { MultiSelect } from "./MultiSelect";
 import { SearchableSelect } from "./SearchableSelect";
 import { AutoTextarea } from "./AutoTextarea";
-import { breadcrumbLabel } from "../breadcrumbs";
+import { breadcrumbOptions } from "../breadcrumbs";
 import { localInputToUnix, unixToLocalInput } from "../datetime";
 import { useIssueRefAutocomplete } from "../useIssueRefAutocomplete";
 import { IssueRefMenu } from "./IssueRefMenu";
@@ -41,10 +42,10 @@ export function IssueForm({
   const [visibility, setVisibility] = useState<number[]>([]);
   const [deadline, setDeadline] = useState("");
   const [locked, setLocked] = useState(false);
-  const [allLabels, setAllLabels] = useState<Label[]>([]);
-  const [allActors, setAllActors] = useState<Actor[]>([]);
-  const [allGroups, setAllGroups] = useState<Group[]>([]);
-  const [allIssues, setAllIssues] = useState<Issue[]>([]);
+  const allLabels = useResource<Label[]>(paths.labels, api.listLabels, REFERENCE_MAX_AGE).data ?? EMPTY;
+  const allActors = useResource<Actor[]>(paths.actors, api.listActors, REFERENCE_MAX_AGE).data ?? EMPTY;
+  const allGroups = useResource<Group[]>(paths.groups, api.listGroups, REFERENCE_MAX_AGE).data ?? EMPTY;
+  const allIssues = useResource<IssueIndexEntry[]>(paths.issueIndex, api.issueIndex, REFERENCE_MAX_AGE).data ?? EMPTY;
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(!editing);
 
@@ -56,17 +57,13 @@ export function IssueForm({
   });
 
   useEffect(() => {
-    api.listLabels().then(setAllLabels).catch(() => {});
-    api.listActors().then(setAllActors).catch(() => {});
-    api.listGroups().then(setAllGroups).catch(() => {});
-    api.listIssues().then(setAllIssues).catch(() => {});
     if (editing) {
       api
         .getIssue(issueId!)
         .then((d) => {
           setTitle(d.issue.title);
-          setDescription(d.issue.description);
-          setGoal(d.issue.goal);
+          setDescription(d.issue.description ?? "");
+          setGoal(d.issue.goal ?? "");
           setLabels(d.issue.labels);
           setParent(d.issue.parent);
           setDependencies(d.issue.dependencies);
@@ -75,7 +72,7 @@ export function IssueForm({
           setDeadline(unixToLocalInput(d.issue.deadline));
           setLocked(d.issue.locked);
           baseline.current = {
-            title: d.issue.title, description: d.issue.description, goal: d.issue.goal, parent: d.issue.parent,
+            title: d.issue.title, description: d.issue.description ?? "", goal: d.issue.goal ?? "", parent: d.issue.parent,
             deadline: unixToLocalInput(d.issue.deadline),
             labels: d.issue.labels, dependencies: d.issue.dependencies, assignees: d.issue.assignees, visibility: d.issue.visibility,
           };
@@ -123,9 +120,7 @@ export function IssueForm({
 
   const labelOpts = allLabels.map((l) => ({ value: l.id, label: l.name }));
   const actorOpts = allActors.map((a) => ({ value: a.id, label: a.displayName }));
-  const issueOpts = allIssues
-    .filter((i) => i.id !== issueId)
-    .map((i) => ({ value: i.id, label: breadcrumbLabel(i, allIssues) }));
+  const issueOpts = breadcrumbOptions(allIssues).filter((o) => o.value !== issueId);
   // A user may only restrict visibility to groups they belong to (admins: any group).
   const visibleGroups = me?.admin ? allGroups : allGroups.filter((g) => me?.groups.includes(g.id));
 

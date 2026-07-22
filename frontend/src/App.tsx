@@ -1,17 +1,22 @@
-import { useEffect, useState } from "react";
+import { Suspense, lazy, useEffect, useRef, useState } from "react";
 import type { Actor } from "./types";
 import { api } from "./api";
+import { invalidateCache } from "./cache";
 import { IssueList } from "./components/IssueList";
 import { IssueDetail } from "./components/IssueDetail";
 import { IssueForm } from "./components/IssueForm";
-import { GraphView } from "./components/Graph";
-import { RepoGraphView } from "./components/RepoGraph";
-import { LabelsPage } from "./components/Labels";
-import { Admin } from "./components/Admin";
-import { TokensPage } from "./components/Tokens";
 import { LoginBar } from "./components/Login";
 import { NotificationBell } from "./components/NotificationBell";
-import { NotificationsPage } from "./components/NotificationsPage";
+
+// Views away from the issue list load on demand: the graphs in particular pull in their own
+// layout and canvas code, which nobody browsing issues should have to download first.
+const GraphView = lazy(() => import("./components/Graph").then((m) => ({ default: m.GraphView })));
+const RepoGraphView = lazy(() => import("./components/RepoGraph").then((m) => ({ default: m.RepoGraphView })));
+const LabelsPage = lazy(() => import("./components/Labels").then((m) => ({ default: m.LabelsPage })));
+const Admin = lazy(() => import("./components/Admin").then((m) => ({ default: m.Admin })));
+const TokensPage = lazy(() => import("./components/Tokens").then((m) => ({ default: m.TokensPage })));
+const NotificationsPage = lazy(() =>
+  import("./components/NotificationsPage").then((m) => ({ default: m.NotificationsPage })));
 
 // Minimal hash-based routing to avoid a router dependency.
 function useHashRoute(): string {
@@ -37,6 +42,17 @@ export function App() {
     api.me().then(setMe).catch(() => setMe(null)).finally(() => setMeLoaded(true));
 
   useEffect(() => { refreshMe(); }, []);
+
+  // Cached responses are scoped to whoever was signed in when they were fetched — issue reads are
+  // visibility-filtered per actor — so a sign-in or sign-out throws the whole cache away rather
+  // than letting the next view paint the previous session's data.
+  const lastIdentity = useRef<number | null | undefined>(undefined);
+  useEffect(() => {
+    if (!meLoaded) return;
+    const identity = me?.id ?? null;
+    if (lastIdentity.current !== undefined && lastIdentity.current !== identity) invalidateCache();
+    lastIdentity.current = identity;
+  }, [me?.id, meLoaded]);
 
   // e.g. "#/issues/3/edit" -> ["issues", "3", "edit"]; a trailing "?..." (view-state query params,
   // e.g. "#/issues?parent=7") is stripped before splitting into path segments.
@@ -111,7 +127,9 @@ export function App() {
       {/* Keying on the auth identity remounts the view whenever the user signs in or out, so it
           re-fetches and never shows data from the previous session. */}
       <main key={me ? `actor-${me.id}` : "anon"}>
-        {meLoaded ? view : <div className="muted" style={{ padding: 20 }}>Loading…</div>}
+        {meLoaded
+          ? <Suspense fallback={<div className="muted" style={{ padding: 20 }}>Loading…</div>}>{view}</Suspense>
+          : <div className="muted" style={{ padding: 20 }}>Loading…</div>}
       </main>
     </>
   );

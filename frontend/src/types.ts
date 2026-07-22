@@ -42,12 +42,22 @@ export interface Check {
   lastRun: number | null;
 }
 
-export interface Issue {
+/** An issue reduced to what it takes to name it: returned by `GET /issues/index` and used for
+    breadcrumb chains and issue pickers, which would otherwise force a view to hold every issue. */
+export interface IssueIndexEntry {
   id: number;
   title: string;
-  description: string;
-  // A short description of the goal condition: what must hold for the issue to be complete.
-  goal: string;
+  parent: number | null;
+}
+
+export interface Issue {
+  id: number;
+  // Absent on list rows: `GET /issues?summary=1` omits the two large free-text fields, which no
+  // list column renders and which otherwise dominate the payload. Only a single-issue read
+  // (`GET /issues/:id`) is guaranteed to carry them.
+  description?: string;
+  goal?: string;
+  title: string;
   state: IssueState;
   locked: boolean;
   labels: number[];

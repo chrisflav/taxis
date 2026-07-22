@@ -29,6 +29,10 @@ def runApi (ctx : AppContext) (req : Req) : IO ApiResponse := do
     | some m => pure (ApiError.unprocessable m).toResponse
     | none => pure (ApiError.server (toString ioErr)).toResponse
 
+/-- Look up a request header by name, case-insensitively. -/
+def headerValue (r : Request Body.Stream) (name : String) : Option String :=
+  (Header.Name.ofString? name).bind (r.line.headers.get? ·) |>.map toString
+
 /-- Build a `Req` from an incoming HTTP request, the API path segments (with the `api`
     prefix already stripped), and the already-read body. -/
 def toReq (r : Request Body.Stream) (segments : List String) (body : String) : Req :=
@@ -36,7 +40,7 @@ def toReq (r : Request Body.Stream) (segments : List String) (body : String) : R
     segments := segments
     query := fun k => r.line.uri.query.get k
     body := body
-    header := fun name => (Header.Name.ofString? name).bind (r.line.headers.get? ·) |>.map toString }
+    header := headerValue r }
 
 /-- Guess a `Content-Type` from a file name. -/
 def contentTypeOf (name : String) : String :=
@@ -50,22 +54,61 @@ def contentTypeOf (name : String) : String :=
   else if name.endsWith ".woff2" then "font/woff2"
   else "application/octet-stream"
 
+/-- The content codings the client said it accepts, lowercased and stripped of `q` weights. -/
+def acceptedEncodings (accept : Option String) : List String :=
+  (accept.getD "").splitOn "," |>.map fun part =>
+    ((part.splitOn ";").headD "").trimAscii.toString.toLower
+
+/-- Pre-compressed sibling files, most-preferred first. The Lean server has no compressor of its
+    own, so compression happens at build time (`frontend/scripts/precompress.mjs` writes a `.br`
+    and a `.gz` next to every compressible asset) and this just picks one. -/
+def encodedVariants : List (String × String) := [(".br", "br"), (".gz", "gzip")]
+
+/-- The best pre-compressed variant of `p` the client accepts, if one was built. -/
+def pickEncoded (p : System.FilePath) (accept : Option String) : IO (Option (System.FilePath × String)) := do
+  let accepted := acceptedEncodings accept
+  for (ext, coding) in encodedVariants do
+    if accepted.contains coding then
+      let candidate : System.FilePath := ⟨p.toString ++ ext⟩
+      if ← candidate.pathExists then
+        return some (candidate, coding)
+  return none
+
+/-- How long a static file may be cached. Vite content-hashes everything under `assets/`, so those
+    names are immutable and can be cached indefinitely; `index.html` (which names them) must be
+    revalidated or a deploy would never be picked up. -/
+def cacheControlFor (segs : List String) : String :=
+  if segs.head? == some "assets" then "public, max-age=31536000, immutable" else "no-cache"
+
 /-- Serve a static file from the configured frontend directory, falling back to `index.html`
     for client-side routes (SPA). Rejects path-traversal attempts. -/
-def serveStatic (ctx : AppContext) (segs : List String) : Async (Response Body.Full) := do
+def serveStatic (ctx : AppContext) (segs : List String) (acceptEncoding : Option String) :
+    Async (Response Body.Full) := do
   if segs.any (fun s => s == "..") then
     return ← Response.notFound.text "not found"
   let rel := if segs.isEmpty then "index.html" else "/".intercalate segs
-  let serveFile (p : System.FilePath) (ct : String) : Async (Response Body.Full) := do
-    let content ← (IO.FS.readBinFile p : IO ByteArray)
-    (Response.ok |>.header! "Content-Type" ct).fromBytes content
+  let serveFile (p : System.FilePath) (ct : String) (cacheControl : String) :
+      Async (Response Body.Full) := do
+    -- `Vary` goes on every response, compressed or not, so a shared cache never hands a
+    -- `Content-Encoding: br` body to a client that didn't ask for one.
+    let base := Response.ok
+      |>.header! "Content-Type" ct
+      |>.header! "Cache-Control" cacheControl
+      |>.header! "Vary" "Accept-Encoding"
+    match ← (pickEncoded p acceptEncoding : IO (Option (System.FilePath × String))) with
+    | some (encodedPath, coding) =>
+      let content ← (IO.FS.readBinFile encodedPath : IO ByteArray)
+      (base.header! "Content-Encoding" coding).fromBytes content
+    | none =>
+      let content ← (IO.FS.readBinFile p : IO ByteArray)
+      base.fromBytes content
   let path := ctx.config.frontendDir / rel
   if (← (path.pathExists : IO Bool)) && !(← (path.isDir : IO Bool)) then
-    serveFile path (contentTypeOf rel)
+    serveFile path (contentTypeOf rel) (cacheControlFor segs)
   else
     let index := ctx.config.frontendDir / "index.html"
     if ← (index.pathExists : IO Bool) then
-      serveFile index "text/html; charset=utf-8"
+      serveFile index "text/html; charset=utf-8" "no-cache"
     else
       Response.notFound.text s!"frontend not built (expected assets in {ctx.config.frontendDir})"
 
@@ -90,11 +133,23 @@ instance : Handler AppHandler where
     | some apiSegs =>
       let body ← req.body.readAll (maximumSize := some (8 * 1024 * 1024 : UInt64))
       let apiResp ← (runApi h.ctx (toReq req apiSegs body) : IO ApiResponse)
-      buildResponse apiResp
+      -- Successful reads get an `ETag` over their serialised body, so a client that already holds
+      -- that exact payload can revalidate into a bodyless `304`. The issue list is re-fetched on
+      -- almost every navigation, and is by far the largest thing the API returns.
+      if req.line.method == .get && apiResp.status == .ok then
+        let payload := apiResp.body.compress
+        let tag := etagOf payload
+        if headerValue req "If-None-Match" == some tag then
+          notModifiedResponse tag
+        else
+          buildResponseWith
+            { apiResp with headers := apiResp.headers ++ #[("ETag", tag), ("Cache-Control", "no-cache")] }
+            payload
+      else buildResponse apiResp
     | none =>
       match segs with
       | ["docs"] => Response.ok.html OpenApi.docsHtml
-      | _ => serveStatic h.ctx segs
+      | _ => serveStatic h.ctx segs (headerValue req "Accept-Encoding")
   onFailure _ err := do
     IO.eprintln s!"[issues] connection error: {err}"
 

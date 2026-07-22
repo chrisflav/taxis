@@ -72,13 +72,33 @@ def parseBody (α) [FromJson α] (body : String) : ApiM α := do
     | .error e => fail (.badRequest s!"invalid request body: {e}")
     | .ok v => pure v
 
-/-- Build the wire response, adding CORS headers and any response-specific headers. -/
-def buildResponse (r : ApiResponse) : Async (Response Body.Full) :=
-  let base := Response.withStatus r.status
-    |>.header! "Access-Control-Allow-Origin" "*"
+/-- The permissive CORS headers every API response carries. -/
+private def withCors (b : Response.Builder) : Response.Builder :=
+  b |>.header! "Access-Control-Allow-Origin" "*"
     |>.header! "Access-Control-Allow-Headers" "Content-Type, Authorization"
     |>.header! "Access-Control-Allow-Methods" "GET, POST, PATCH, DELETE, OPTIONS"
+
+/-- Build the wire response from an already-serialised body, adding CORS headers and any
+    response-specific headers. Taking the payload as an argument lets a caller that already
+    needed it (to derive an `ETag`) avoid serialising the JSON twice. -/
+def buildResponseWith (r : ApiResponse) (payload : String) : Async (Response Body.Full) :=
+  let base := withCors (Response.withStatus r.status)
   let builder := r.headers.foldl (fun b (k, v) => b.header! k v) base
-  builder.json r.body.compress
+  builder.json payload
+
+/-- Build the wire response, adding CORS headers and any response-specific headers. -/
+def buildResponse (r : ApiResponse) : Async (Response Body.Full) :=
+  buildResponseWith r r.body.compress
+
+/-- A strong `ETag` over a response body. A hash of the exact bytes is all a revalidation token
+    needs to be, and it stays stable across restarts because it depends on nothing else. -/
+def etagOf (payload : String) : String :=
+  "\"" ++ toString payload.hash ++ "\""
+
+/-- A bodyless `304 Not Modified`, echoing the validator the client already holds. -/
+def notModifiedResponse (tag : String) : Async (Response Body.Full) :=
+  (withCors (Response.withStatus .notModified)
+    |>.header! "ETag" tag
+    |>.header! "Cache-Control" "no-cache").fromBytes ByteArray.empty
 
 end Taxis.Server

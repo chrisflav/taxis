@@ -1,8 +1,10 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type {
-  Actor, Artifact, Check, Comment, Event, Group, Issue, IssueDetail as Detail, Label, PluginKind, Plugins, ReviewState,
+  Actor, Artifact, Check, Comment, Event, Group, IssueDetail as Detail, IssueIndexEntry, Label,
+  PluginKind, Plugins, ReviewState,
 } from "../types";
-import { api } from "../api";
+import { api, paths } from "../api";
+import { EMPTY, REFERENCE_MAX_AGE, useResource } from "../cache";
 import { Modal, ConfirmModal, useConfirmClose } from "./Modal";
 import { LabelChip } from "./LabelChip";
 import { Markdown } from "./Markdown";
@@ -11,12 +13,12 @@ import { SearchableSelect } from "./SearchableSelect";
 import { AutoTextarea } from "./AutoTextarea";
 import { ActorName } from "./ActorName";
 import { IssueBreadcrumbs } from "./Breadcrumbs";
-import { breadcrumbLabel } from "../breadcrumbs";
 import { IssueForm } from "./IssueForm";
 import { diffWords } from "../diff";
 import { localInputToUnix, unixToLocalInput } from "../datetime";
 import { useIssueRefAutocomplete } from "../useIssueRefAutocomplete";
 import { IssueRefMenu } from "./IssueRefMenu";
+import { breadcrumbOptions } from "../breadcrumbs";
 
 // Render a Unix (seconds) timestamp in the viewer's locale.
 function fmtTime(ts: number): string {
@@ -28,11 +30,6 @@ const CONTENT_KINDS = new Set(["title", "description", "goal", "comment_edited"]
 
 export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
   const [detail, setDetail] = useState<Detail | null>(null);
-  const [plugins, setPlugins] = useState<Plugins | null>(null);
-  const [groups, setGroups] = useState<Group[]>([]);
-  const [allLabels, setAllLabels] = useState<Label[]>([]);
-  const [allActors, setAllActors] = useState<Actor[]>([]);
-  const [allIssues, setAllIssues] = useState<Issue[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [addArtifact, setAddArtifact] = useState(false);
@@ -51,14 +48,24 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
 
   const load = () => api.getIssue(id).then(setDetail).catch((e) => setError(String(e)));
 
-  useEffect(() => {
-    load();
-    api.plugins().then(setPlugins).catch(() => {});
-    api.listGroups().then(setGroups).catch(() => {});
-    api.listLabels().then(setAllLabels).catch(() => {});
-    api.listActors().then(setAllActors).catch(() => {});
-    api.listIssues().then(setAllIssues).catch(() => {});
-  }, [id]);
+  useEffect(() => { load(); }, [id]);
+
+  // Reference data, read through the shared cache: these are the same four responses every other
+  // view wants, so after the first page of a session they cost nothing. The naming index replaces
+  // what used to be a full `listIssues()` here — the ancestor chain, the parent/dependency pickers
+  // and the `#123` autocomplete all only ever needed an issue's id, title and parent.
+  const plugins = useResource<Plugins>(paths.plugins, api.plugins, REFERENCE_MAX_AGE).data ?? null;
+  const groups = useResource<Group[]>(paths.groups, api.listGroups, REFERENCE_MAX_AGE).data ?? EMPTY;
+  const allLabels = useResource<Label[]>(paths.labels, api.listLabels, REFERENCE_MAX_AGE).data ?? EMPTY;
+  const allActors = useResource<Actor[]>(paths.actors, api.listActors, REFERENCE_MAX_AGE).data ?? EMPTY;
+  const issueIndex = useResource<IssueIndexEntry[]>(paths.issueIndex, api.issueIndex, REFERENCE_MAX_AGE).data ?? EMPTY;
+
+  const labelOpts = useMemo(() => allLabels.map((l) => ({ value: l.id, label: l.name })), [allLabels]);
+  const actorOpts = useMemo(() => allActors.map((a) => ({ value: a.id, label: a.displayName })), [allActors]);
+  const issueOpts = useMemo(
+    () => breadcrumbOptions(issueIndex).filter((o) => o.value !== id),
+    [issueIndex, id],
+  );
 
   if (error) return <div className="panel error">{error}</div>;
   if (!detail) return <div className="muted">Loading…</div>;
@@ -85,9 +92,6 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
   const failingChecks = detail.attachedChecks.filter((c) => c.status !== "passing");
   const completionBlocked = failingChecks.length > 0 && !me?.admin;
 
-  const labelOpts = allLabels.map((l) => ({ value: l.id, label: l.name }));
-  const actorOpts = allActors.map((a) => ({ value: a.id, label: a.displayName }));
-  const issueOpts = allIssues.filter((i) => i.id !== id).map((i) => ({ value: i.id, label: breadcrumbLabel(i, allIssues) }));
   const visibleGroups = me?.admin ? groups : groups.filter((g) => me?.groups.includes(g.id));
 
   const events = detail.events ?? [];
@@ -95,7 +99,7 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
 
   return (
     <div>
-      <IssueBreadcrumbs issue={issue} allIssues={allIssues} />
+      <IssueBreadcrumbs issue={issue} index={issueIndex} />
       {issue.creatorName && (
         <div className="muted small" style={{ marginBottom: 6 }}>
           Created by <ActorName name={issue.creatorName} /> · {fmtTime(issue.createdAt)}
@@ -124,24 +128,24 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
           <h3 className="field-heading">Description <HistoryDropdown events={historyFor("description")} label="Description history" /></h3>
         </div>
         <InlineText
-          value={issue.description}
+          value={issue.description ?? ""}
           canEdit={editableUnlessLocked}
           multiline
           placeholder="No description"
           onSave={(v) => patch({ description: v })}
-          issues={allIssues}
+          issues={issueIndex}
         />
         <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
           <h3 className="field-heading">Goal <HistoryDropdown events={historyFor("goal")} label="Goal history" /></h3>
         </div>
         <div className="muted small">The condition that must be fulfilled to complete this issue.</div>
         <InlineText
-          value={issue.goal}
+          value={issue.goal ?? ""}
           canEdit={editableUnlessLocked}
           multiline
           placeholder="No goal condition"
           onSave={(v) => patch({ goal: v })}
-          issues={allIssues}
+          issues={issueIndex}
         />
         <MetaRow label="Labels" canEdit={canEdit}
           display={detail.issueLabels.length
@@ -262,7 +266,7 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
         actorOf={actorOf}
         labelName={labelName}
         groupName={groupName}
-        allIssues={allIssues}
+        index={issueIndex}
         onChange={load}
         onError={setError}
       />
@@ -407,7 +411,7 @@ function InlineText({
   inline?: boolean;
   multiline?: boolean;
   placeholder?: string;
-  issues?: Issue[];
+  issues?: IssueIndexEntry[];
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
@@ -818,14 +822,14 @@ function AttachModal({
 // box to add a comment for signed-in users. Title/description/comment edits stay as edit-history
 // dropdowns next to their text rather than appearing here.
 function Timeline({
-  detail, me, actorOf, labelName, groupName, allIssues, onChange, onError,
+  detail, me, actorOf, labelName, groupName, index, onChange, onError,
 }: {
   detail: Detail;
   me: Actor | null;
   actorOf: (id: number) => Actor | undefined;
   labelName: (id: number) => string;
   groupName: (id: number) => string;
-  allIssues: Issue[];
+  index: IssueIndexEntry[];
   onChange: () => void;
   onError: (e: string) => void;
 }) {
@@ -834,7 +838,7 @@ function Timeline({
   const comments = detail.comments ?? [];
   const events = detail.events ?? [];
   const ctx: EventCtx = { actorOf, labelName, groupName };
-  const bodyAc = useIssueRefAutocomplete<HTMLTextAreaElement>(allIssues, body, setBody);
+  const bodyAc = useIssueRefAutocomplete<HTMLTextAreaElement>(index, body, setBody);
 
   const canModify = (authorId: number | null) => !!me && (me.admin || me.id === authorId);
 
@@ -850,7 +854,7 @@ function Timeline({
           history={events.filter((e) => e.kind === "comment_edited" && e.data.commentId === c.id)}
           bot={actorOf(c.authorId ?? -1)?.bot}
           canModify={canModify(c.authorId)}
-          issues={allIssues}
+          issues={index}
           onChange={onChange}
           onError={onError}
         />
@@ -893,7 +897,7 @@ function Timeline({
               onKeyDown={bodyAc.onKeyDown}
               placeholder="Add a comment… (Markdown & LaTeX supported, type # to link an issue)"
             />
-            <IssueRefMenu options={bodyAc.options} issues={allIssues} onChoose={bodyAc.choose} pos={bodyAc.menuPos} menuRef={bodyAc.menuRef} />
+            <IssueRefMenu options={bodyAc.options} issues={index} onChoose={bodyAc.choose} pos={bodyAc.menuPos} menuRef={bodyAc.menuRef} />
           </div>
           <div className="row" style={{ justifyContent: "flex-end", marginTop: 8 }}>
             <span className="muted small" style={{ marginRight: "auto" }}>Optionally post as a review:</span>
@@ -918,7 +922,7 @@ function CommentItem({
   history: Event[];
   bot?: boolean;
   canModify: boolean;
-  issues: Issue[];
+  issues: IssueIndexEntry[];
   onChange: () => void;
   onError: (e: string) => void;
 }) {

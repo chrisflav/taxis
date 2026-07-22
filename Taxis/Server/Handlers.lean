@@ -107,15 +107,40 @@ def visibleTo (actor : Option Actor) (issue : Issue) : Bool :=
      | none => false
      | some a => issue.visibility.any (fun g => a.groups.contains g))
 
+/-- Remove keys from a JSON object, leaving anything else untouched. -/
+private def dropKeys (keys : List String) : Json → Json
+  | .obj m => .obj (keys.foldl (fun m k => m.erase k) m)
+  | j => j
+
+/-- The fields `?summary=1` drops from list rows: the two large free-text bodies, which no list
+    column renders. They dominate the payload — descriptions alone are roughly 70% of it — so a
+    list view that asks for a summary transfers a small fraction of the bytes. -/
+private def summaryDroppedFields : List String := ["description", "goal"]
+
 def listIssuesH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
   let state := (req.query "state").bind IssueState.ofString?
   let labelId := (req.query "label").bind (·.toInt?) |>.map (fun n => (⟨Int64.ofInt n⟩ : LabelId))
   let q := req.query "q"
   let assignee := (req.query "assignee").bind (·.toInt?) |>.map (fun n => (⟨Int64.ofInt n⟩ : ActorId))
+  let parent := (req.query "parent").bind (·.toInt?) |>.map (fun n => (⟨Int64.ofInt n⟩ : IssueId))
   let limit := (req.query "limit").bind (·.toNat?)
   let offset := (req.query "offset").bind (·.toNat?) |>.getD 0
-  let issues ← ctx.dbM (fun db => Db.listIssues db state labelId q assignee limit offset)
-  ok (toJson (issues.filter (visibleTo req.actor)))
+  let issues ← ctx.dbM (fun db => Db.listIssues db state labelId q assignee parent limit offset)
+  let visible := issues.filter (visibleTo req.actor)
+  if req.query "summary" == some "1" then
+    ok (Json.arr (visible.map (fun i => dropKeys summaryDroppedFields (toJson i))))
+  else
+    ok (toJson visible)
+
+/-- The lightweight issue index: only what the breadcrumb trail and the issue-picker dropdowns
+    need to name an issue (`id`, `title`, `parent`). Views that filter server-side no longer hold
+    every issue, but still have to render an ancestor chain or offer any issue as a parent — this
+    is what they read instead of pulling the whole list back. -/
+def issueIndexH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
+  let issues ← ctx.dbM (fun db => Db.listIssues db none none none none)
+  let rows := (issues.filter (visibleTo req.actor)).map fun i =>
+    Json.mkObj [("id", toJson i.id), ("title", toJson i.title), ("parent", toJson i.parent)]
+  ok (Json.arr rows)
 
 /-- A non-admin actor may only restrict visibility to groups they belong to. -/
 private def ensureVisibilityAllowed (actor : Actor) (vis : Array GroupId) : ApiM Unit := do
@@ -806,6 +831,9 @@ def dispatch (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
 
   | .get, ["issues"] => listIssuesH ctx req
   | .post, ["issues"] => createIssueH ctx req
+  -- Must precede the `["issues", id]` route: that pattern also matches "index", and would then
+  -- fail parsing it as an id rather than falling through to here.
+  | .get, ["issues", "index"] => issueIndexH ctx req
   | .get, ["issues", id] => getIssueH ctx (← Req.parseId id) req.actor
   | .patch, ["issues", id] => updateIssueH ctx (← Req.parseId id) req
   | .delete, ["issues", id] => deleteIssueH ctx (← Req.parseId id)
