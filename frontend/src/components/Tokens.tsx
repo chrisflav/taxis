@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { PageHeader } from "./PageHeader";
 import type { Actor, ApiToken } from "../types";
 import { api } from "../api";
 import { ConfirmModal } from "./Modal";
@@ -30,11 +31,13 @@ export function TokensPage({ me }: { me: Actor | null }) {
 
   return (
     <div>
-      <h2>API tokens</h2>
-      <p className="muted small">
-        Bots and scripts authenticate by sending <code>Authorization: Bearer &lt;token&gt;</code>. A token
-        acts as you. Only a hash is stored — if you lose a token, revoke it and create a new one.
-      </p>
+      <PageHeader
+        title="API tokens"
+        description={<>
+          Bots and scripts authenticate by sending <code>Authorization: Bearer &lt;token&gt;</code>. A
+          token acts as you. Only a hash is stored — if you lose one, revoke it and create another.
+        </>}
+      />
       {err && <div className="panel error">{err}</div>}
 
       {freshSecret && (

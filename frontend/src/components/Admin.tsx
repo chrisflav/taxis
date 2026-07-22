@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { PageHeader } from "./PageHeader";
 import type { Actor, ApiToken, Group } from "../types";
 import { api } from "../api";
 import { Modal, ConfirmModal } from "./Modal";
@@ -14,7 +15,10 @@ export function Admin() {
   // Actors first, then groups below, each with its own search + pagination.
   return (
     <div>
-      <h2>Admin</h2>
+      <PageHeader
+        title="Admin"
+        description="Who can sign in, which groups they belong to, and bringing issues in from elsewhere."
+      />
       <ActorsPanel groups={groups} />
       <GroupsPanel groups={groups} onChange={loadGroups} />
       <ImportPanel />
@@ -59,7 +63,7 @@ function ActorsPanel({ groups }: { groups: Group[] }) {
         <tbody>
           {pager.pageItems.map((a) => (
             <tr key={a.id}>
-              <td className="muted">{a.id}</td>
+              <td className="cell-id">{a.id}</td>
               <td>
                 <ActorName name={a.displayName} bot={a.bot} />{" "}
                 {a.admin && <span className="badge">admin</span>}
@@ -68,10 +72,12 @@ function ActorsPanel({ groups }: { groups: Group[] }) {
                   <div>{a.groups.map((g) => <span key={g} className="chip">{groupName(g)}</span>)}</div>
                 )}
               </td>
-              <td className="row">
-                <button onClick={() => setEditing(a)}>Edit</button>
-                <button onClick={() => setTokensFor(a)}>Tokens</button>
-                <button className="danger" onClick={() => setDeleting(a)}>Delete</button>
+              <td className="cell-actions">
+                <div className="row">
+                  <button onClick={() => setEditing(a)}>Edit</button>
+                  <button onClick={() => setTokensFor(a)}>Tokens</button>
+                  <button className="danger" onClick={() => setDeleting(a)}>Delete</button>
+                </div>
               </td>
             </tr>
           ))}
@@ -208,10 +214,10 @@ function ActorModal({ actor, groups, onClose, onSaved }: {
           placeholder="Assign to groups…"
         />
         <label className="row small" style={{ marginTop: 10 }}>
-          <input type="checkbox" style={{ width: "auto" }} checked={admin} onChange={(e) => setAdmin(e.target.checked)} /> Administrator
+          <input type="checkbox" checked={admin} onChange={(e) => setAdmin(e.target.checked)} /> Administrator
         </label>
         <label className="row small" style={{ marginTop: 6 }}>
-          <input type="checkbox" style={{ width: "auto" }} checked={bot} onChange={(e) => setBot(e.target.checked)} /> Bot (shows a 🤖 marker next to the name)
+          <input type="checkbox" checked={bot} onChange={(e) => setBot(e.target.checked)} /> Bot (shows a 🤖 marker next to the name)
         </label>
         <div className="row" style={{ justifyContent: "flex-end", marginTop: 16 }}>
           <button type="button" onClick={onClose}>Cancel</button>
@@ -250,12 +256,14 @@ function GroupsPanel({ groups, onChange }: { groups: Group[]; onChange: () => vo
         <tbody>
           {pager.pageItems.map((g) => (
             <tr key={g.id}>
-              <td className="muted">{g.id}</td>
+              <td className="cell-id">{g.id}</td>
               <td>{g.name}</td>
               <td className="muted small">{g.description ?? ""}</td>
-              <td className="row">
-                <button onClick={() => setEditing(g)}>Edit</button>
-                <button className="danger" onClick={() => setDeleting(g)}>Delete</button>
+              <td className="cell-actions">
+                <div className="row">
+                  <button onClick={() => setEditing(g)}>Edit</button>
+                  <button className="danger" onClick={() => setDeleting(g)}>Delete</button>
+                </div>
               </td>
             </tr>
           ))}

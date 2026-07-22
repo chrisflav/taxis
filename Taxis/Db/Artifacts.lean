@@ -64,6 +64,17 @@ def findArtifactIssueByPayload (db : Conn) (kind needle : String) : IO (Option I
   let rows ← (← db query!"SELECT issue_id FROM artifacts WHERE kind = {kind} AND payload LIKE {like} LIMIT 1" as IssueId).toArray
   pure rows[0]?
 
+/-- Replace an artifact's payload, keeping its kind. Returns whether a row was updated.
+
+    The kind is deliberately fixed: it selects the plugin that gives the payload its shape, so
+    changing it would leave the stored payload describing nothing. Attaching a different kind is a
+    delete and a create. -/
+def updateArtifactPayload (db : Conn) (id : ArtifactId) (payload : Json) : IO Bool := do
+  let payloadStr := payload.compress
+  let updated ← (← db query!"UPDATE artifacts SET payload = {payloadStr} WHERE id = {id}
+    RETURNING id" as ArtifactId).toArray
+  pure !updated.isEmpty
+
 /-- Delete an artifact. Returns whether a row was removed. -/
 def deleteArtifact (db : Conn) (id : ArtifactId) : IO Bool := do
   let removed ← (← db query!"DELETE FROM artifacts WHERE id = {id} RETURNING id" as ArtifactId).toArray

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { PageHeader } from "./PageHeader";
 import type { Actor, Label } from "../types";
 import { api } from "../api";
 import { Modal, ConfirmModal } from "./Modal";
@@ -27,11 +28,11 @@ export function LabelsPage({ me }: { me: Actor | null }) {
 
   return (
     <div>
-      <div className="row" style={{ justifyContent: "space-between" }}>
-        <h2>Labels</h2>
-        {isAdmin && <button className="primary" onClick={() => setEditing("new")}>+ Add label</button>}
-      </div>
-      <p className="muted small">Labels are reusable across issues. Each has a name, an optional description, and a colour.</p>
+      <PageHeader
+        title="Labels"
+        description="Reusable tags an issue can carry any number of. Each has a name, an optional description, and a colour."
+        actions={isAdmin && <button className="primary" onClick={() => setEditing("new")}>+ Add label</button>}
+      />
       <input placeholder="Search labels…" value={query} onChange={(e) => setQuery(e.target.value)} style={{ maxWidth: 320 }} />
       {err && <div className="panel error">{err}</div>}
 
@@ -41,12 +42,14 @@ export function LabelsPage({ me }: { me: Actor | null }) {
           <tbody>
             {pager.pageItems.map((l) => (
               <tr key={l.id}>
-                <td className="muted">{l.id}</td>
+                <td className="cell-id">{l.id}</td>
                 <td><LabelChip label={l} /></td>
                 <td className="muted">{l.description ?? "—"}</td>
-                <td className="row">
-                  {isAdmin && <button onClick={() => setEditing(l)}>Edit</button>}
-                  {isAdmin && <button className="danger" onClick={() => setDeleting(l)}>Delete</button>}
+                <td className="cell-actions">
+                  <div className="row">
+                    {isAdmin && <button onClick={() => setEditing(l)}>Edit</button>}
+                    {isAdmin && <button className="danger" onClick={() => setDeleting(l)}>Delete</button>}
+                  </div>
                 </td>
               </tr>
             ))}

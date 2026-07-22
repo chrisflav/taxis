@@ -1,8 +1,55 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import type { Actor } from "../types";
 import { api } from "../api";
 import { ActorName } from "./ActorName";
 import { Modal } from "./Modal";
+
+// Everything that belongs to *you* rather than to the work: your tokens, the admin screens if you
+// have them, the API reference, and signing out. These used to sit in the main nav next to Issues
+// and Graph, which put four destinations you visit occasionally in the same row as the three you
+// move between constantly — and made the bar change width when you signed in.
+function AccountMenu({ me, onChange }: { me: Actor; onChange: () => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", onDoc); document.removeEventListener("keydown", onKey); };
+  }, [open]);
+
+  // Initials keep the control a fixed width whatever someone is called.
+  const initials = me.displayName.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join("").toUpperCase();
+
+  return (
+    <div className="account" ref={ref}>
+      <button
+        className="account-button"
+        onClick={() => setOpen((o) => !o)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title={me.displayName}
+      >
+        <span className="avatar">{initials || "?"}</span>
+      </button>
+      {open && (
+        <div className="account-menu" role="menu">
+          <div className="account-name">
+            <ActorName name={me.displayName} bot={me.bot} />
+            <div className="faint small">{me.email}</div>
+          </div>
+          <a role="menuitem" href="#/tokens" onClick={() => setOpen(false)}>API tokens</a>
+          {me.admin && <a role="menuitem" href="#/admin" onClick={() => setOpen(false)}>Admin</a>}
+          <a role="menuitem" href="/docs" target="_blank" rel="noreferrer">API reference ↗</a>
+          <button role="menuitem" onClick={() => { setOpen(false); api.logout().then(onChange); }}>Sign out</button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function LoginBar({ me, onChange }: { me: Actor | null; onChange: () => void }) {
   const [centralPasswordEnabled, setCentralPasswordEnabled] = useState(false);
@@ -18,14 +65,7 @@ export function LoginBar({ me, onChange }: { me: Actor | null; onChange: () => v
     }).catch(console.error);
   }, []);
 
-  if (me) {
-    return (
-      <div className="row">
-        <span className="muted small"><ActorName name={me.displayName} bot={me.bot} /></span>
-        <button onClick={() => api.logout().then(onChange)}>Sign out</button>
-      </div>
-    );
-  }
+  if (me) return <AccountMenu me={me} onChange={onChange} />;
 
   return (
     <div className="row">

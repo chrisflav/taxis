@@ -4,6 +4,10 @@ import { fuzzyMatch } from "../fuzzy";
 export interface Option {
   value: number;
   label: string;
+  /** Shorter stand-in for the chip left behind once the option is chosen. The open menu has room
+      to disambiguate (an issue picker names every ancestor); the chip is a one-line slot, and
+      giving it the full label is what used to wrap a chosen parent over six lines. */
+  chipLabel?: string;
 }
 
 // A compact multi-select: shows selected values as removable chips and a checklist popover with a
@@ -38,7 +42,9 @@ export function MultiSelect({
 
   const toggle = (v: number) =>
     onChange(selected.includes(v) ? selected.filter((x) => x !== v) : [...selected, v]);
-  const labelOf = (v: number) => options.find((o) => o.value === v)?.label ?? String(v);
+  const optionOf = (v: number) => options.find((o) => o.value === v);
+  const labelOf = (v: number) => optionOf(v)?.label ?? String(v);
+  const chipLabelOf = (v: number) => optionOf(v)?.chipLabel ?? labelOf(v);
   const visible = options.filter((o) => fuzzyMatch(query, o.label));
 
   return (
@@ -48,8 +54,8 @@ export function MultiSelect({
           <span className="muted">{placeholder}</span>
         ) : (
           selected.map((v) => (
-            <span key={v} className="chip">
-              {labelOf(v)}
+            <span key={v} className="chip" title={labelOf(v)}>
+              <span className="chip-text">{chipLabelOf(v)}</span>
               <button
                 type="button"
                 onClick={(e) => {

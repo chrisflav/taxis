@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { LockIcon, LockedMark } from "./Icon";
 import type { Actor, Group, Issue, IssueIndexEntry, Label } from "../types";
 import { api, paths } from "../api";
 import { EMPTY, REFERENCE_MAX_AGE, useResource } from "../cache";
@@ -131,13 +132,16 @@ export function IssueForm({
 
   return (
     <form className={embedded ? "" : "panel"} onSubmit={submit} style={embedded ? undefined : { maxWidth: 680 }}>
-      {!embedded && <h2>{editing ? `Edit issue #${issueId}` : "New issue"} {locked && <span title="locked">🔒</span>}</h2>}
+      {!embedded && <h2>{editing ? `Edit issue #${issueId}` : "New issue"} {locked && <LockedMark />}</h2>}
       {error && <div className="error">{error}</div>}
       {!me && <div className="panel error">You must sign in to create or edit issues.</div>}
       {locked && (
-        <div className="panel small" style={{ background: "var(--panel-2)" }}>
-          🔒 This issue is locked. Title, description, goal, and dependencies are frozen — unlock it
-          from the issue page to change them. Labels and assignees can still be edited.
+        <div className="panel small notice">
+          <LockIcon size={14} />
+          <span>
+            This issue is locked. Title, description, goal, and dependencies are frozen — unlock it
+            from the issue page to change them. Labels and assignees can still be edited.
+          </span>
         </div>
       )}
       <label>Title</label>

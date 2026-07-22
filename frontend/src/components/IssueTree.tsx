@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { LockedMark } from "./Icon";
 import type { Issue, Label } from "../types";
 import { LabelChip } from "./LabelChip";
 import { Markdown } from "./Markdown";
@@ -53,7 +54,7 @@ function TreeNode({
           <span className="tree-toggle-spacer" />
         )}
         <a href={`#/issues/${issue.id}`} className="tree-title">#{issue.id} <Markdown text={issue.title} inline /></a>
-        {issue.locked && <span title="locked">🔒</span>}
+        {issue.locked && <LockedMark />}
         <span className={`badge ${issue.state}`}>{issue.state}</span>
         {issue.labels.map((l) => { const lbl = labelOf(l); return lbl ? <LabelChip key={l} label={lbl} /> : null; })}
         {hasChildren && <span className="muted small">{children.length} child{children.length > 1 ? "ren" : ""}</span>}

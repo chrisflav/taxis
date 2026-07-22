@@ -1,11 +1,13 @@
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { LockedMark } from "./Icon";
 import type { Actor, Issue, IssueIndexEntry, Label } from "../types";
 import { api, paths, type IssueFilters } from "../api";
 import { EMPTY, LIST_MAX_AGE, REFERENCE_MAX_AGE, useResource } from "../cache";
 import {
-  emptyFilters, filtersFromParams, filtersToParams, matchesFilters, loadStoredViewState,
+  emptyFilters, filtersFromParams, filtersToParams, isOverdue, matchesFilters, loadStoredViewState,
   VIEW_STATE_STORAGE_KEY, type IssueFilterState,
 } from "../filters";
+import { PageHeader } from "./PageHeader";
 import { LabelChip } from "./LabelChip";
 import { Markdown } from "./Markdown";
 import { Filters } from "./Filters";
@@ -100,7 +102,7 @@ function timeAgo(ts: number): string {
 type SortKey = "id" | "title" | "updated" | "deps" | "deadline";
 
 // The filters the server can apply, so a filtered view transfers only the rows it will show —
-// clicking "Children" on an issue with three children fetches three rows, not the whole tracker.
+// opening the children of an issue with three children fetches three rows, not the whole tracker.
 // Single-valued selections push down; multi-valued ones (and the fuzzy query) stay client-side,
 // which stays correct because those only narrow the set further.
 function serverFilters(f: IssueFilterState): IssueFilters {
@@ -135,8 +137,8 @@ const IssueRowView = memo(function IssueRowView({
           <input type="checkbox" checked={selected} onChange={() => onToggleSelected(issue.id)} />
         </td>
       )}
-      {cols.id && <td className="muted">{issue.id}</td>}
-      {cols.title && <td><Markdown text={issue.title} inline /> {issue.locked && <span title="locked">🔒</span>}</td>}
+      {cols.id && <td className="cell-id">{issue.id}</td>}
+      {cols.title && <td><Markdown text={issue.title} inline /> {issue.locked && <LockedMark />}</td>}
       {cols.state && <td><StateBadge state={issue.state} /></td>}
       {cols.labels && (
         <td>{issue.labels.map((l) => { const lbl = labelById.get(l); return lbl ? <LabelChip key={l} label={lbl} /> : null; })}</td>
@@ -155,9 +157,10 @@ const IssueRowView = memo(function IssueRowView({
             : "—"}
         </td>
       )}
-      {cols.deps && <td className="muted small">{issue.dependencies.length > 0 ? `${issue.dependencies.length} dep(s)` : "—"}</td>}
-      {cols.artifacts && <td className="muted small">{issue.artifacts.length || "—"}</td>}
-      {cols.checks && <td className="muted small">{issue.checks.length || "—"}</td>}
+      {/* The column header already says what these are; the cell only has to say how many. */}
+      {cols.deps && <td className="cell-num">{issue.dependencies.length || "—"}</td>}
+      {cols.artifacts && <td className="cell-num">{issue.artifacts.length || "—"}</td>}
+      {cols.checks && <td className="cell-num">{issue.checks.length || "—"}</td>}
       {cols.deadline && (
         <td className={`small ${overdue ? "error" : "muted"}`}>
           {issue.deadline != null ? new Date(issue.deadline * 1000).toLocaleDateString() : "—"}
@@ -171,7 +174,7 @@ const IssueRowView = memo(function IssueRowView({
 });
 
 // The view options this page persists into the URL query string (e.g. "#/issues?state=open&view=tree"),
-// so browser back-navigation and links (like an issue's "Children" breadcrumb) restore them. "open"
+// so browser back-navigation and links (like an issue's Children panel) restore them. "open"
 // is only the fallback default for a genuinely first-ever visit (no stored state either). The
 // breadcrumbs' "Issues" root link uses "?reset=1" to explicitly ask for every issue, bypassing both
 // the URL and the stored view — it means "start over", not "whatever I had".
@@ -237,16 +240,14 @@ export function IssueList({ me }: { me: Actor | null }) {
 
   const labelById = useMemo(() => new Map(labels.map((l) => [l.id, l])), [labels]);
   const actorById = useMemo(() => new Map(actors.map((a) => [a.id, a])), [actors]);
-  const [overdueOnly, setOverdueOnly] = useState(false);
   const now = Date.now();
-  const isOverdue = (i: Issue) => i.deadline != null && i.state === "open" && i.deadline * 1000 < now;
   // Typing narrows the list at a lower priority than the keystroke itself, so the input keeps up
   // even when the re-render has to re-lay-out every visible row.
   const deferredQ = useDeferredValue(filters.q);
   const filtered = useMemo(
-    () => issues.filter((i) => matchesFilters(i, { ...filters, q: deferredQ }) && (!overdueOnly || isOverdue(i))),
+    () => issues.filter((i) => matchesFilters(i, { ...filters, q: deferredQ })),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [issues, filters, deferredQ, overdueOnly],
+    [issues, filters, deferredQ],
   );
   const colCount = Math.max(1, ALL_COLUMNS.filter((c) => cols[c.key]).length + (me ? 1 : 0));
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -298,27 +299,42 @@ export function IssueList({ me }: { me: Actor | null }) {
     try { localStorage.setItem(VIEW_STATE_STORAGE_KEY, JSON.stringify({ filters, view })); } catch {}
   }, [filters, view]);
 
+  // Narrowed to exactly one parent, this page *is* that issue's children — the breadcrumb names the
+  // parent and the heading names the view, so neither has to repeat the other.
+  const singleParent = filters.parents.length === 1 ? filters.parents[0] : null;
+  // Only one generation is fetched under a parent filter, so every row would be its own root and
+  // the tree would render as a flat copy of the list. Drop the choice rather than offer a view that
+  // cannot nest.
+  const canTree = singleParent == null;
+  const effectiveView = canTree ? view : "list";
+  // Whether an empty result means "this issue has no children" or "no child survived the other
+  // filters" — two different things to tell someone staring at an empty table.
+  const narrowedBeyondParent = !!filters.q || !!filters.state || filters.overdue
+    || filters.labels.length > 0 || filters.assignees.length > 0 || filters.dependsOn.length > 0;
+
   return (
     <div>
-      <ListBreadcrumbs parentId={filters.parents.length === 1 ? filters.parents[0] : null} index={issueIndex} />
-      <div className="row" style={{ justifyContent: "space-between", marginBottom: 12 }}>
-        <h2>Issues</h2>
-        <div className="row">
-          <div className="segmented">
-            <button className={view === "list" ? "active" : ""} onClick={() => setView("list")}>List</button>
-            <button className={view === "tree" ? "active" : ""} onClick={() => setView("tree")}>Tree</button>
-          </div>
-          {view === "list" && <ColumnPicker cols={cols} onChange={setCols} />}
-          {me && <button className="primary" onClick={() => setCreating(true)}>+ New issue</button>}
-        </div>
-      </div>
+      <ListBreadcrumbs parentId={singleParent} index={issueIndex} />
+      <PageHeader
+        title={singleParent != null ? "Children" : "Issues"}
+        description={singleParent != null
+          ? "The issues filed directly under this one."
+          : "Everything you can see, as a flat list or as the containment tree."}
+        actions={
+          <>
+            {canTree && (
+              <div className="segmented">
+                <button className={view === "list" ? "active" : ""} onClick={() => setView("list")}>List</button>
+                <button className={view === "tree" ? "active" : ""} onClick={() => setView("tree")}>Tree</button>
+              </div>
+            )}
+            {effectiveView === "list" && <ColumnPicker cols={cols} onChange={setCols} />}
+            {me && <button className="primary" onClick={() => setCreating(true)}>+ New issue</button>}
+          </>
+        }
+      />
 
       <Filters value={filters} onChange={setFilters} labels={labels} actors={actors} index={issueIndex} />
-
-      <label className="row small" style={{ margin: "0 0 12px" }}>
-        <input type="checkbox" style={{ width: "auto" }} checked={overdueOnly} onChange={(e) => setOverdueOnly(e.target.checked)} />
-        Overdue only
-      </label>
 
       {me && selected.size > 0 && (
         <BulkBar
@@ -335,9 +351,11 @@ export function IssueList({ me }: { me: Actor | null }) {
       {error && <div className="panel error">{error}</div>}
       {loading ? (
         <div className="muted">Loading…</div>
-      ) : view === "tree" ? (
+      ) : effectiveView === "tree" ? (
         <>
-          <p className="muted small">Foundational issues shown; unfold to reveal what depends on them.</p>
+          {/* The tree is built from the parent relation, so it unfolds into an issue's children —
+              not its dependants, which is what the Graph view shows. */}
+          <p className="muted small">Top-level issues shown; unfold to reveal the issues filed under them.</p>
           <IssueTree issues={filtered} labels={labels} />
         </>
       ) : (
@@ -365,9 +383,9 @@ export function IssueList({ me }: { me: Actor | null }) {
                 {cols.labels && <th>Labels</th>}
                 {cols.parent && <th>Parent</th>}
                 {cols.assignees && <th>Assignees</th>}
-                {cols.deps && <SortHeader label="Deps" k="deps" sort={sort} onSort={onSort} />}
-                {cols.artifacts && <th>Artifacts</th>}
-                {cols.checks && <th>Checks</th>}
+                {cols.deps && <SortHeader label="Deps" k="deps" sort={sort} onSort={onSort} style={{ textAlign: "right" }} />}
+                {cols.artifacts && <th style={{ textAlign: "right" }}>Artifacts</th>}
+                {cols.checks && <th style={{ textAlign: "right" }}>Checks</th>}
                 {cols.deadline && <SortHeader label="Deadline" k="deadline" sort={sort} onSort={onSort} />}
                 {cols.updated && <SortHeader label="Last updated" k="updated" sort={sort} onSort={onSort} style={{ width: 120 }} />}
               </tr>
@@ -383,11 +401,19 @@ export function IssueList({ me }: { me: Actor | null }) {
                   onToggleSelected={toggleSelected}
                   labelById={labelById}
                   actorById={actorById}
-                  overdue={isOverdue(i)}
+                  overdue={isOverdue(i, now)}
                 />
               ))}
               {filtered.length === 0 && (
-                <tr><td colSpan={colCount} className="muted" style={{ textAlign: "center", padding: 24 }}>No matching issues</td></tr>
+                <tr>
+                  <td colSpan={colCount} className="muted" style={{ textAlign: "center", padding: 24 }}>
+                    {singleParent == null
+                      ? "No matching issues"
+                      : narrowedBeyondParent
+                        ? "No child issues match these filters."
+                        : "Nothing is filed under this issue."}
+                  </td>
+                </tr>
               )}
             </tbody>
           </table>

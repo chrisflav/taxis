@@ -4,6 +4,23 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>taxis</title>
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <meta name="theme-color" content="#5B46D9" />
+    <script>
+      // Resolve the theme before the first paint. Doing this in React would show a light frame to
+      // anyone who prefers dark, and doing it in a CSS media query would leave no way to override
+      // the system. So `data-theme` is always set, here, and the stylesheet only reads it.
+      (function () {
+        try {
+          var stored = localStorage.getItem("taxis:theme");
+          var dark = stored === "dark"
+            || (stored !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+          document.documentElement.dataset.theme = dark ? "dark" : "light";
+        } catch (e) {
+          document.documentElement.dataset.theme = "light";
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

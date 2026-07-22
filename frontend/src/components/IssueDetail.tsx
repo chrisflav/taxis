@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type {
-  Actor, Artifact, Check, Comment, Event, Group, IssueDetail as Detail, IssueIndexEntry, Label,
-  PluginKind, Plugins, ReviewState,
+  Actor, Artifact, Check, Comment, Event, Group, Issue, IssueDetail as Detail, IssueIndexEntry,
+  IssueState, Label, PluginKind, Plugins, ReviewState,
 } from "../types";
 import { api, paths } from "../api";
-import { EMPTY, REFERENCE_MAX_AGE, useResource } from "../cache";
+import { EMPTY, LIST_MAX_AGE, REFERENCE_MAX_AGE, useResource } from "../cache";
 import { Modal, ConfirmModal, useConfirmClose } from "./Modal";
 import { LabelChip } from "./LabelChip";
 import { Markdown } from "./Markdown";
@@ -12,13 +12,15 @@ import { MultiSelect } from "./MultiSelect";
 import { SearchableSelect } from "./SearchableSelect";
 import { AutoTextarea } from "./AutoTextarea";
 import { ActorName } from "./ActorName";
-import { IssueBreadcrumbs } from "./Breadcrumbs";
+import { IssueBreadcrumbs, SiblingNav } from "./Breadcrumbs";
 import { IssueForm } from "./IssueForm";
 import { diffWords } from "../diff";
 import { localInputToUnix, unixToLocalInput } from "../datetime";
 import { useIssueRefAutocomplete } from "../useIssueRefAutocomplete";
 import { IssueRefMenu } from "./IssueRefMenu";
-import { breadcrumbOptions } from "../breadcrumbs";
+import { breadcrumbOptions, plainTitle } from "../breadcrumbs";
+import { fuzzyMatch } from "../fuzzy";
+import { ClockIcon, LockedMark, TrashIcon } from "./Icon";
 
 // Render a Unix (seconds) timestamp in the viewer's locale.
 function fmtTime(ts: number): string {
@@ -34,6 +36,8 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [addArtifact, setAddArtifact] = useState(false);
   const [addCheck, setAddCheck] = useState(false);
+  const [editArtifact, setEditArtifact] = useState<Artifact | null>(null);
+  const [editCheck, setEditCheck] = useState<Check | null>(null);
   const [delArtifact, setDelArtifact] = useState<Artifact | null>(null);
   const [delCheck, setDelCheck] = useState<Check | null>(null);
   const [completeConfirm, setCompleteConfirm] = useState(false);
@@ -60,7 +64,16 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
   const allActors = useResource<Actor[]>(paths.actors, api.listActors, REFERENCE_MAX_AGE).data ?? EMPTY;
   const issueIndex = useResource<IssueIndexEntry[]>(paths.issueIndex, api.issueIndex, REFERENCE_MAX_AGE).data ?? EMPTY;
 
+  // This issue's children, read as rows rather than taken from the naming index: the index carries
+  // no state or labels, and a container's children are worth showing with the same badges the list
+  // shows. Server-filtered, so an issue with three children transfers three rows.
+  const childQuery = { parent: id, summary: true };
+  const childrenRes = useResource<Issue[]>(
+    paths.issues(childQuery), () => api.listIssues(childQuery), LIST_MAX_AGE);
+  const children = childrenRes.data ?? EMPTY;
+
   const labelOpts = useMemo(() => allLabels.map((l) => ({ value: l.id, label: l.name })), [allLabels]);
+  const labelById = useMemo(() => new Map(allLabels.map((l) => [l.id, l])), [allLabels]);
   const actorOpts = useMemo(() => allActors.map((a) => ({ value: a.id, label: a.displayName })), [allActors]);
   const issueOpts = useMemo(
     () => breadcrumbOptions(issueIndex).filter((o) => o.value !== id),
@@ -99,211 +112,257 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
 
   return (
     <div>
-      <IssueBreadcrumbs issue={issue} index={issueIndex} />
-      {issue.creatorName && (
-        <div className="muted small" style={{ marginBottom: 6 }}>
-          Created by <ActorName name={issue.creatorName} /> · {fmtTime(issue.createdAt)}
-        </div>
-      )}
-      <h2 style={{ marginTop: 0 }}>
-        <span className="muted">#{issue.id}</span>{" · "}
-        <InlineText
-          value={issue.title}
-          canEdit={editableUnlessLocked}
-          inline
-          onSave={(v) => patch({ title: v })}
-        />{" "}
-        <span className={`badge ${issue.state}`}>{issue.state}</span>
-        {issue.locked && <span title="locked" style={{ marginLeft: 6 }}>🔒</span>}
-        <HistoryDropdown events={historyFor("title")} label="Title history" />
-        {canEdit && (
-          <button className="small" style={{ marginLeft: 10 }} onClick={() => setAddingChild(true)}>
-            + New child issue
-          </button>
-        )}
-      </h2>
-
-      <div className="panel">
-        <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
-          <h3 className="field-heading">Description <HistoryDropdown events={historyFor("description")} label="Description history" /></h3>
-        </div>
-        <InlineText
-          value={issue.description ?? ""}
-          canEdit={editableUnlessLocked}
-          multiline
-          placeholder="No description"
-          onSave={(v) => patch({ description: v })}
-          issues={issueIndex}
-        />
-        <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
-          <h3 className="field-heading">Goal <HistoryDropdown events={historyFor("goal")} label="Goal history" /></h3>
-        </div>
-        <div className="muted small">The condition that must be fulfilled to complete this issue.</div>
-        <InlineText
-          value={issue.goal ?? ""}
-          canEdit={editableUnlessLocked}
-          multiline
-          placeholder="No goal condition"
-          onSave={(v) => patch({ goal: v })}
-          issues={issueIndex}
-        />
-        <MetaRow label="Labels" canEdit={canEdit}
-          display={detail.issueLabels.length
-            ? detail.issueLabels.map((l) => <LabelChip key={l.id} label={l} />)
-            : <span className="muted small">none</span>}
-          editor={(close) => <MultiEditor options={labelOpts} initial={issue.labels} placeholder="Add labels…"
-            onSave={(v) => patch({ labels: v })} onClose={close} onError={setError} />} />
-
-        <MetaRow label="Parent" canEdit={editableUnlessLocked}
-          display={issue.parent != null
-            ? <a href={`#/issues/${issue.parent}`}>#{issue.parent}</a>
-            : <span className="muted small">none</span>}
-          editor={(close) => <SelectEditor options={issueOpts} initial={issue.parent}
-            onSave={(v) => patch({ parent: v })} onClose={close} onError={setError} />} />
-
-        <MetaRow label="Depends on" canEdit={editableUnlessLocked}
-          display={issue.dependencies.length
-            ? issue.dependencies.map((p) => <a key={p} href={`#/issues/${p}`} style={{ marginRight: 6 }}>#{p}</a>)
-            : <span className="muted small">none</span>}
-          editor={(close) => <MultiEditor options={issueOpts} initial={issue.dependencies} placeholder="Select dependencies…"
-            onSave={(v) => patch({ dependencies: v })} onClose={close} onError={setError} />} />
-
-        <MetaRow label="Assignees" canEdit={canEdit}
-          display={detail.assignedActors.length
-            ? detail.assignedActors.map((a) => <span key={a.id} className="chip"><ActorName name={a.displayName} bot={a.bot} /></span>)
-            : <span className="muted small">none</span>}
-          editor={(close) => <MultiEditor options={actorOpts} initial={issue.assignees} placeholder="Assign actors…"
-            onSave={(v) => patch({ assignees: v })} onClose={close} onError={setError} />} />
-
-        <MetaRow label="Visible to" canEdit={canEdit}
-          display={issue.visibility.length
-            ? issue.visibility.map((g) => <span key={g} className="chip">{groupName(g)}</span>)
-            : <span className="muted small">Everyone (public)</span>}
-          editor={(close) => <MultiEditor options={visibleGroups.map((g) => ({ value: g.id, label: g.name }))}
-            initial={issue.visibility} placeholder="Everyone (public)"
-            onSave={(v) => patch({ visibility: v })} onClose={close} onError={setError} />} />
-
-        <MetaRow label="Deadline" canEdit={canEdit}
-          display={issue.deadline != null
-            ? <span className={`small ${overdue ? "error" : ""}`}>{fmtTime(issue.deadline)}{overdue ? " (overdue)" : ""}</span>
-            : <span className="muted small">none</span>}
-          editor={(close) => <DeadlineEditor initial={issue.deadline}
-            onSave={(v) => patch({ deadline: v })} onClose={close} onError={setError} />} />
+      <div className="crumb-bar">
+        <IssueBreadcrumbs issue={issue} index={issueIndex} />
+        <SiblingNav issue={issue} index={issueIndex} />
       </div>
 
-      <div className="panel">
-        <div className="row" style={{ justifyContent: "space-between" }}>
-          <h3 style={{ margin: 0 }}>Artifacts</h3>
-          {me && <button onClick={() => setAddArtifact(true)}>+ Add artifact</button>}
-        </div>
-        {detail.attachedArtifacts.map((a) => (
-          <div key={a.id} className="row" style={{ justifyContent: "space-between", borderBottom: "1px solid var(--border)", padding: "6px 0" }}>
-            <span>
-              <span className="badge">{a.kind}</span>{" "}
-              {a.display.url
-                ? <a href={a.display.url} target="_blank" rel="noreferrer">{a.display.label}</a>
-                : <span className="muted small">{a.display.label}</span>}
-            </span>
-            {me && <button className="danger" onClick={() => setDelArtifact(a)}>Remove</button>}
-          </div>
-        ))}
-        {detail.attachedArtifacts.length === 0 && <div className="muted small" style={{ marginTop: 8 }}>None attached</div>}
-      </div>
-
-      <div className="panel">
-        <div className="row" style={{ justifyContent: "space-between" }}>
-          <h3 style={{ margin: 0 }}>Checks</h3>
-          {me && <button onClick={() => setAddCheck(true)}>+ Add check</button>}
-        </div>
-        {detail.attachedChecks.length > 0 && (
-          <div className="muted small" style={{ marginTop: 4 }}>
-            A non-passing check here blocks "Close as completed" below — admins can bypass it.
+      <div className="page-head">
+        <h2 className="issue-title">
+          <span className="issue-number">#{issue.id}</span>
+          <InlineText
+            value={issue.title}
+            canEdit={editableUnlessLocked}
+            inline
+            onSave={(v) => patch({ title: v })}
+          />
+          <span className={`badge ${issue.state}`}>{issue.state}</span>
+          {issue.locked && <LockedMark />}
+          <HistoryDropdown events={historyFor("title")} label="Title history" />
+        </h2>
+        {issue.creatorName && (
+          <div className="page-byline">
+            Opened by <ActorName name={issue.creatorName} /> · {fmtTime(issue.createdAt)}
           </div>
         )}
-        {detail.attachedChecks.map((c) => (
-          <div key={c.id} className="row" style={{ justifyContent: "space-between", borderBottom: "1px solid var(--border)", padding: "6px 0" }}>
-            <span>
-              <span className="badge">{c.kind}</span>{" "}
-              <span className={`badge ${c.status}`}>{c.status}</span>{" "}
-              {c.detail && <span className="muted small">{c.detail}</span>}
-            </span>
-            {me && (
-              <span className="row">
-                <button onClick={() => api.runCheck(c.id).then(load)}>Run</button>
-                <button className="danger" onClick={() => setDelCheck(c)}>Remove</button>
-              </span>
-            )}
-          </div>
-        ))}
-        {detail.attachedChecks.length === 0 && <div className="muted small" style={{ marginTop: 8 }}>None attached</div>}
       </div>
 
-      <div className="panel">
-        <div className="row" style={{ justifyContent: "space-between" }}>
-          <h3 style={{ margin: 0 }}>Reviewers</h3>
-          {me && <button onClick={() => setRequestingReview(true)}>+ Request review</button>}
+      {/* Substance on the left, relations on the right. The four attachment panels that used to
+          stack down the page each announcing "None attached" now sit in the rail as one line
+          apiece, which puts the children — the thing you actually navigate by — directly under
+          the goal they belong to. */}
+      <div className="issue-layout">
+        <div>
+          <div className="panel">
+            <h3 className="field-heading">
+              Description <HistoryDropdown events={historyFor("description")} label="Description history" />
+            </h3>
+            <InlineText
+              value={issue.description ?? ""}
+              canEdit={editableUnlessLocked}
+              multiline
+              placeholder="No description"
+              onSave={(v) => patch({ description: v })}
+              issues={issueIndex}
+            />
+
+            <h3 className="field-heading" style={{ marginTop: 20 }}>
+              Goal <HistoryDropdown events={historyFor("goal")} label="Goal history" />
+            </h3>
+            {/* An issue is an obligation, and this is the condition that discharges it — so it is
+                set the way a goal is set in Lean, behind a turnstile. */}
+            <div className="goal-block">
+              <span className="goal-turnstile" aria-hidden="true">⊢</span>
+              <div className="goal-body">
+                <InlineText
+                  value={issue.goal ?? ""}
+                  canEdit={editableUnlessLocked}
+                  multiline
+                  placeholder="sorry — no goal stated yet"
+                  placeholderClass="goal-sorry"
+                  onSave={(v) => patch({ goal: v })}
+                  issues={issueIndex}
+                />
+              </div>
+            </div>
+          </div>
+
+          <ChildrenPanel
+            parent={issue}
+            items={children}
+            loading={childrenRes.loading}
+            labelById={labelById}
+            canEdit={canEdit}
+            onAdd={() => setAddingChild(true)}
+          />
+
+          <Timeline
+            detail={detail}
+            me={me}
+            actorOf={actorOf}
+            labelName={labelName}
+            groupName={groupName}
+            index={issueIndex}
+            onChange={load}
+            onError={setError}
+          />
         </div>
-        {detail.reviewRequests.map((rr) => (
-          <div key={rr.id} className="row" style={{ justifyContent: "space-between", borderBottom: "1px solid var(--border)", padding: "6px 0" }}>
-            <span className="small">
-              <ActorName name={rr.actorName ?? `#${rr.actorId}`} />{" "}
-              {rr.resolvedAt ? <span className="badge passing">reviewed</span> : <span className="badge pending">pending</span>}
-              <span className="muted"> · requested by <ActorName name={rr.requestedByName ?? "someone"} /> · {fmtTime(rr.createdAt)}</span>
-            </span>
-            {me && !rr.resolvedAt && (
-              <button className="danger" onClick={() => api.cancelReviewRequest(rr.id).then(load).catch((e) => setActionError(String(e)))}>
-                Withdraw
-              </button>
-            )}
+
+        <aside className="issue-rail">
+          <div className="panel">
+            <MetaRow label="Labels" canEdit={canEdit}
+              display={detail.issueLabels.length
+                ? detail.issueLabels.map((l) => <LabelChip key={l.id} label={l} />)
+                : <span className="rail-empty">None</span>}
+              editor={(close) => <MultiEditor options={labelOpts} initial={issue.labels} placeholder="Add labels…"
+                onSave={(v) => patch({ labels: v })} onClose={close} onError={setError} />} />
+
+            <MetaRow label="Parent" canEdit={editableUnlessLocked}
+              display={issue.parent != null
+                ? <IssueRef id={issue.parent} index={issueIndex} />
+                : <span className="rail-empty">None</span>}
+              editor={(close) => <SelectEditor options={issueOpts} initial={issue.parent}
+                onSave={(v) => patch({ parent: v })} onClose={close} onError={setError} />} />
+
+            <MetaRow label="Depends on" canEdit={editableUnlessLocked}
+              display={issue.dependencies.length
+                ? issue.dependencies.map((p) => <IssueRef key={p} id={p} index={issueIndex} />)
+                : <span className="rail-empty">Nothing</span>}
+              editor={(close) => <MultiEditor options={issueOpts} initial={issue.dependencies} placeholder="Select dependencies…"
+                onSave={(v) => patch({ dependencies: v })} onClose={close} onError={setError} />} />
+
+            <MetaRow label="Assignees" canEdit={canEdit}
+              display={detail.assignedActors.length
+                ? detail.assignedActors.map((a) => <span key={a.id} className="chip"><ActorName name={a.displayName} bot={a.bot} /></span>)
+                : <span className="rail-empty">Nobody</span>}
+              editor={(close) => <MultiEditor options={actorOpts} initial={issue.assignees} placeholder="Assign actors…"
+                onSave={(v) => patch({ assignees: v })} onClose={close} onError={setError} />} />
+
+            <MetaRow label="Visible to" canEdit={canEdit}
+              display={issue.visibility.length
+                ? issue.visibility.map((g) => <span key={g} className="chip">{groupName(g)}</span>)
+                : <span className="rail-empty">Everyone</span>}
+              editor={(close) => <MultiEditor options={visibleGroups.map((g) => ({ value: g.id, label: g.name }))}
+                initial={issue.visibility} placeholder="Everyone (public)"
+                onSave={(v) => patch({ visibility: v })} onClose={close} onError={setError} />} />
+
+            <MetaRow label="Deadline" canEdit={canEdit}
+              display={issue.deadline != null
+                ? <span className={overdue ? "error" : undefined}>{fmtTime(issue.deadline)}{overdue ? " · overdue" : ""}</span>
+                : <span className="rail-empty">None</span>}
+              editor={(close) => <DeadlineEditor initial={issue.deadline}
+                onSave={(v) => patch({ deadline: v })} onClose={close} onError={setError} />} />
           </div>
-        ))}
-        {detail.reviewRequests.length === 0 && <div className="muted small" style={{ marginTop: 8 }}>No review requests</div>}
-      </div>
 
-      <Timeline
-        detail={detail}
-        me={me}
-        actorOf={actorOf}
-        labelName={labelName}
-        groupName={groupName}
-        index={issueIndex}
-        onChange={load}
-        onError={setError}
-      />
+          <div className="panel">
+            <div className="rail-section">
+              <h3 className="panel-title">
+                Artifacts <span className="count">{detail.attachedArtifacts.length || ""}</span>
+                <span className="spacer" />
+                {me && <button className="ghost" onClick={() => setAddArtifact(true)}>Add</button>}
+              </h3>
+              {detail.attachedArtifacts.map((a) => (
+                <div key={a.id} className="attach-row">
+                  <span className="attach-main">
+                    <span className="badge">{a.kind}</span>
+                    {a.display.url
+                      ? <a href={a.display.url} target="_blank" rel="noreferrer" className="small">{a.display.label}</a>
+                      : <span className="muted small">{a.display.label}</span>}
+                  </span>
+                  {me && (
+                    <span className="attach-actions">
+                      <button className="ghost" title="Edit artifact" aria-label="Edit artifact"
+                        onClick={() => setEditArtifact(a)}>✎</button>
+                      <button className="ghost" title="Remove artifact" aria-label="Remove artifact"
+                        onClick={() => setDelArtifact(a)}>×</button>
+                    </span>
+                  )}
+                </div>
+              ))}
+              {detail.attachedArtifacts.length === 0 && <div className="rail-empty">None attached</div>}
+            </div>
 
-      {me && (
-        <>
-          {actionError && <div className="panel error small">{actionError}</div>}
-          <div className="actions-bar">
-            <button
-              onClick={() => (detail.participating ? api.unsubscribe(id) : api.subscribe(id)).then(load).catch((e) => setActionError(String(e)))}
-              title={detail.participating ? "Stop getting notified about this issue" : "Get notified about this issue's activity"}
-            >
-              {detail.participating ? "🔕 Unsubscribe" : "🔔 Subscribe"}
-            </button>
-            {issue.state === "open" ? (
-              <>
-                <button onClick={() => setState("closed")}>Close</button>
+            <div className="rail-section">
+              <h3 className="panel-title">
+                Checks <span className="count">{detail.attachedChecks.length || ""}</span>
+                <span className="spacer" />
+                {me && <button className="ghost" onClick={() => setAddCheck(true)}>Add</button>}
+              </h3>
+              {detail.attachedChecks.map((c) => (
+                <div key={c.id} className="attach-row">
+                  <span className="attach-main">
+                    <span className={`badge ${c.status}`}>{c.status}</span>
+                    <span className="small">{c.kind}</span>
+                    {c.detail && <span className="muted small">{c.detail}</span>}
+                  </span>
+                  {me && (
+                    <span className="attach-actions">
+                      <button className="ghost" title="Run this check now" onClick={() => api.runCheck(c.id).then(load)}>Run</button>
+                      <button className="ghost" title="Edit check" aria-label="Edit check"
+                        onClick={() => setEditCheck(c)}>✎</button>
+                      <button className="ghost" title="Remove check" aria-label="Remove check"
+                        onClick={() => setDelCheck(c)}>×</button>
+                    </span>
+                  )}
+                </div>
+              ))}
+              {detail.attachedChecks.length === 0
+                ? <div className="rail-empty">None attached</div>
+                : <div className="rail-empty" style={{ marginTop: 6 }}>
+                    A check that is not passing blocks "Complete" — admins can bypass it.
+                  </div>}
+            </div>
+
+            <div className="rail-section">
+              <h3 className="panel-title">
+                Reviewers <span className="count">{detail.reviewRequests.length || ""}</span>
+                <span className="spacer" />
+                {me && <button className="ghost" onClick={() => setRequestingReview(true)}>Request</button>}
+              </h3>
+              {detail.reviewRequests.map((rr) => (
+                <div key={rr.id} className="attach-row">
+                  <span className="attach-main">
+                    {rr.resolvedAt ? <span className="badge passing">reviewed</span> : <span className="badge pending">pending</span>}
+                    <span className="small"><ActorName name={rr.actorName ?? `#${rr.actorId}`} /></span>
+                  </span>
+                  {me && !rr.resolvedAt && (
+                    <button className="ghost" title="Withdraw review request"
+                      onClick={() => api.cancelReviewRequest(rr.id).then(load).catch((e) => setActionError(String(e)))}>×</button>
+                  )}
+                </div>
+              ))}
+              {detail.reviewRequests.length === 0 && <div className="rail-empty">Nobody asked</div>}
+            </div>
+          </div>
+
+          {me && (
+            <div className="panel">
+              {actionError && <div className="error small" style={{ marginBottom: 8 }}>{actionError}</div>}
+              <div className="rail-actions">
+                {issue.state === "open" ? (
+                  <>
+                    <button
+                      className="primary"
+                      onClick={() => (failingChecks.length > 0 ? setCompleteConfirm(true) : setState("completed"))}
+                      disabled={completionBlocked}
+                      title={completionBlocked
+                        ? `Blocked: ${failingChecks.length} check(s) not passing (${failingChecks.map((c) => c.kind).join(", ")})`
+                        : undefined}
+                    >
+                      Complete
+                    </button>
+                    <button onClick={() => setState("closed")}>Close without completing</button>
+                  </>
+                ) : (
+                  <button className="primary" onClick={() => setState("open")}>Reopen</button>
+                )}
                 <button
-                  onClick={() => (failingChecks.length > 0 ? setCompleteConfirm(true) : setState("completed"))}
-                  disabled={completionBlocked}
-                  title={completionBlocked
-                    ? `Blocked: ${failingChecks.length} check(s) not passing (${failingChecks.map((c) => c.kind).join(", ")})`
-                    : undefined}
+                  onClick={() => (detail.participating ? api.unsubscribe(id) : api.subscribe(id)).then(load).catch((e) => setActionError(String(e)))}
+                  title={detail.participating ? "Stop getting notified about this issue" : "Get notified about this issue's activity"}
                 >
-                  Close as completed
+                  {detail.participating ? "Unsubscribe" : "Subscribe"}
                 </button>
-              </>
-            ) : (
-              <button onClick={() => setState("open")}>Reopen</button>
-            )}
-            <button onClick={() => { setActionError(null); patch({ locked: !issue.locked }).catch((e) => setActionError(String(e))); }}>
-              {issue.locked ? "🔓 Unlock" : "🔒 Lock"}
-            </button>
-            <button className="danger" onClick={() => setConfirmDelete(true)}>Delete</button>
-          </div>
-        </>
-      )}
+                <button onClick={() => { setActionError(null); patch({ locked: !issue.locked }).catch((e) => setActionError(String(e))); }}>
+                  {issue.locked ? "Unlock editing" : "Lock editing"}
+                </button>
+              </div>
+              <div className="rail-danger">
+                <button className="danger" style={{ width: "100%" }} onClick={() => setConfirmDelete(true)}>Delete issue</button>
+              </div>
+            </div>
+          )}
+        </aside>
+      </div>
 
       {addArtifact && (
         <AttachModal
@@ -321,6 +380,26 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
           onClose={() => setAddCheck(false)}
           onSubmit={(kind, value) => api.addCheck(issue.id, kind, value)}
           onDone={() => { setAddCheck(false); load(); }}
+        />
+      )}
+      {editArtifact && (
+        <AttachModal
+          title="Edit artifact"
+          kinds={plugins?.artifactKinds ?? []}
+          existing={{ kind: editArtifact.kind, value: editArtifact.payload }}
+          onClose={() => setEditArtifact(null)}
+          onSubmit={(_kind, value) => api.updateArtifact(editArtifact.id, value)}
+          onDone={() => { setEditArtifact(null); load(); }}
+        />
+      )}
+      {editCheck && (
+        <AttachModal
+          title="Edit check"
+          kinds={plugins?.checkKinds ?? []}
+          existing={{ kind: editCheck.kind, value: editCheck.config }}
+          onClose={() => setEditCheck(null)}
+          onSubmit={(_kind, value) => api.updateCheck(editCheck.id, value)}
+          onDone={() => { setEditCheck(null); load(); }}
         />
       )}
       {requestingReview && (
@@ -400,10 +479,146 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
   );
 }
 
+// A link to another issue that says which issue it is. A bare "#18" makes you visit it to find out
+// what it was, which is the round trip this page is trying to stop making.
+function IssueRef({ id, index }: { id: number; index: IssueIndexEntry[] }) {
+  const entry = index.find((i) => i.id === id);
+  const title = entry ? plainTitle(entry.title) : "";
+  return (
+    <a className="issue-ref" href={`#/issues/${id}`} title={title || undefined}>
+      <span className="issue-ref-id">#{id}</span>
+      {title ? ` ${title}` : ""}
+    </a>
+  );
+}
+
+// The issues contained by this one, listed here rather than behind a link to a filtered issue list.
+// Going one step down the containment tree used to mean leaving the issue for the search page and
+// coming back, which is a round trip to answer "what is in this?" — a question the page it starts
+// on should simply answer.
+//
+// The list stays here; the issue list stays the place for sorting, columns and bulk edits, and is
+// one link away for anyone who wants them.
+function ChildrenPanel({
+  parent, items, loading, labelById, canEdit, onAdd,
+}: {
+  parent: Issue;
+  items: Issue[];
+  loading: boolean;
+  labelById: Map<number, Label>;
+  canEdit: boolean;
+  onAdd: () => void;
+}) {
+  // Filtering here is deliberately two controls, not a copy of the issue list's filter bar: on a
+  // container with thirty children the questions you ask in place are "which one was that" and
+  // "what is still open". Anything beyond that is what the issue list is for, one link below.
+  const [q, setQ] = useState("");
+  const [state, setState] = useState<"" | IssueState>("");
+
+  // Counted over every child, not the filtered view — this is the issue's progress, and it should
+  // not change because you typed in the search box. What the filters change is the row count
+  // reported next to them.
+  const total = items.length;
+  const done = items.filter((c) => c.state === "completed").length;
+  const open = items.filter((c) => c.state === "open").length;
+
+  const shown = useMemo(
+    () => items.filter((c) => (!state || c.state === state) && fuzzyMatch(q, c.title)),
+    [items, q, state],
+  );
+
+  const STATE_TABS: { value: "" | IssueState; label: string }[] = [
+    { value: "", label: "All" },
+    { value: "open", label: "Open" },
+    { value: "closed", label: "Closed" },
+    { value: "completed", label: "Completed" },
+  ];
+
+  return (
+    <div className="panel">
+      <h3 className="panel-title">
+        Children
+        {total > 0 && <span className="count">{total} · {open} open · {done} completed</span>}
+        <span className="spacer" />
+        {canEdit && <button onClick={onAdd}>+ New child issue</button>}
+      </h3>
+
+      {/* How much of this obligation is discharged, as a line rather than another sentence. */}
+      {total > 0 && (
+        <div
+          className="progress"
+          role="img"
+          aria-label={`${done} of ${total} children completed`}
+        >
+          <span style={{ width: `${Math.round((done / total) * 100)}%` }} />
+        </div>
+      )}
+
+      {loading && total === 0 && <div className="rail-empty" style={{ marginTop: 8 }}>Loading…</div>}
+      {!loading && total === 0 && (
+        <div className="rail-empty" style={{ marginTop: 8 }}>
+          Nothing is filed under this issue{canEdit ? " yet — add the first child above." : "."}
+        </div>
+      )}
+
+      {total > 0 && (
+        <div className="child-filters">
+          <input
+            type="search"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Filter these children…"
+            aria-label="Filter children by title"
+          />
+          <div className="segmented compact">
+            {STATE_TABS.map((t) => (
+              <button
+                key={t.value}
+                type="button"
+                className={state === t.value ? "active" : ""}
+                onClick={() => setState(t.value)}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+          {/* Always rendered, so the row never changes shape. Filling this in used to squeeze the
+              flexible search box and shove the state tabs sideways on every keystroke. */}
+          <span className="child-count" aria-live="polite">
+            {shown.length !== total ? `${shown.length} of ${total}` : ""}
+          </span>
+        </div>
+      )}
+
+      {shown.map((c) => (
+        <a key={c.id} className="child-row" href={`#/issues/${c.id}`}>
+          <span className="child-id">#{c.id}</span>
+          <span className="child-title"><Markdown text={c.title} inline /></span>
+          {c.locked && <LockedMark />}
+          {c.labels.map((l) => { const lbl = labelById.get(l); return lbl ? <LabelChip key={l} label={lbl} /> : null; })}
+          {/* Last and right-aligned in a fixed slot, so every row's state reads down one column
+              instead of landing wherever that row's labels happen to end. */}
+          <span className="child-state"><span className={`badge ${c.state}`}>{c.state}</span></span>
+        </a>
+      ))}
+
+      {total > 0 && shown.length === 0 && (
+        <div className="rail-empty" style={{ padding: "14px 0 4px" }}>No child matches that.</div>
+      )}
+
+      {total > 0 && (
+        <div className="small" style={{ marginTop: 12 }}>
+          <a href={`#/issues?parents=${parent.id}`}>Open these in the issue list →</a>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // An inline-editable text value: renders the value (as markdown), and — for editors — a pencil that
 // swaps the block for an input/textarea with Save/Cancel, leaving the rest of the page in place.
 function InlineText({
-  value, canEdit, onSave, inline = false, multiline = false, placeholder, issues = [],
+  value, canEdit, onSave, inline = false, multiline = false, placeholder, placeholderClass, issues = [],
 }: {
   value: string;
   canEdit: boolean;
@@ -411,6 +626,8 @@ function InlineText({
   inline?: boolean;
   multiline?: boolean;
   placeholder?: string;
+  /** Lets a caller style its own empty state — the goal's is `sorry`, not grey filler text. */
+  placeholderClass?: string;
   issues?: IssueIndexEntry[];
 }) {
   const [editing, setEditing] = useState(false);
@@ -442,7 +659,7 @@ function InlineText({
 
   const body = value
     ? <Markdown text={value} inline={inline} issues={issues} />
-    : <span className="muted">{placeholder ?? "empty"}</span>;
+    : <span className={placeholderClass ?? "muted"}>{placeholder ?? "empty"}</span>;
   return (
     <span className={inline ? "editable editable-inline" : "editable"}>
       {body}
@@ -615,7 +832,7 @@ function HistoryDropdown({ events, label }: { events: Event[]; label: string }) 
   return (
     <span className="history" ref={ref}>
       <button className="history-toggle" title={label} onClick={() => setOpen((o) => !o)}>
-        🕓 {events.length} edit{events.length === 1 ? "" : "s"}
+        <ClockIcon size={12} /> {events.length} edit{events.length === 1 ? "" : "s"}
       </button>
       {open && (
         <div className="history-menu">
@@ -692,10 +909,14 @@ function describeEvent(e: Event, ctx: EventCtx): ReactNode {
       return joinChange("label", ids(d.added).map((i) => ctx.labelName(i)), ids(d.removed).map((i) => ctx.labelName(i)));
     case "artifact_added":
       return <>attached a <span className="badge">{String(d.kind ?? "")}</span> artifact{d.label ? <> ({String(d.label)})</> : null}</>;
+    case "artifact_updated":
+      return <>edited the <span className="badge">{String(d.kind ?? "")}</span> artifact{d.label ? <> ({String(d.label)})</> : null}</>;
     case "artifact_removed":
       return <>removed a <span className="badge">{String(d.kind ?? "")}</span> artifact</>;
     case "check_added":
       return <>added a <span className="badge">{String(d.kind ?? "")}</span> check</>;
+    case "check_updated":
+      return <>edited the <span className="badge">{String(d.kind ?? "")}</span> check — it needs running again</>;
     case "check_removed":
       return <>removed a <span className="badge">{String(d.kind ?? "")}</span> check</>;
     case "comment_deleted":
@@ -730,19 +951,35 @@ function joinChange(noun: string, added: ReactNode[], removed: ReactNode[]): Rea
   return parts.flatMap((p, i) => (i > 0 ? [" and ", p] : [p]));
 }
 
-// Modal for attaching an artifact or check. Renders a form derived from the selected kind's
-// field schema (from /api/plugins) and assembles the payload — no raw JSON needed.
+// Modal for attaching *or editing* an artifact or check. Renders a form derived from the selected
+// kind's field schema (from /api/plugins) and assembles the payload — no raw JSON needed.
+//
+// Editing passes `existing`, which seeds the fields from the stored payload and fixes the kind: the
+// kind is what selects the schema the payload is written against, so changing it would leave the
+// values describing nothing. Swapping kind is a remove and an attach.
 function AttachModal({
-  title, kinds, onClose, onSubmit, onDone,
+  title, kinds, existing, onClose, onSubmit, onDone,
 }: {
   title: string;
   kinds: PluginKind[];
+  existing?: { kind: string; value: unknown };
   onClose: () => void;
   onSubmit: (kind: string, value: unknown) => Promise<unknown>;
   onDone: () => void;
 }) {
-  const [kind, setKind] = useState("");
-  const [values, setValues] = useState<Record<string, string | boolean>>({});
+  const [kind, setKind] = useState(existing?.kind ?? "");
+  // Seeded from the stored payload so an edit starts from what is there rather than from blank —
+  // the schema's field names are exactly the payload's keys.
+  const [values, setValues] = useState<Record<string, string | boolean>>(() => {
+    if (!existing) return {};
+    const stored = (existing.value ?? {}) as Record<string, unknown>;
+    const seeded: Record<string, string | boolean> = {};
+    for (const f of kinds.find((k) => k.kind === existing.kind)?.fields ?? []) {
+      const v = stored[f.name];
+      seeded[f.name] = f.type === "boolean" ? !!v : v == null ? "" : String(v);
+    }
+    return seeded;
+  });
   const [err, setErr] = useState<string | null>(null);
 
   const selected = kinds.find((k) => k.kind === kind);
@@ -785,10 +1022,19 @@ function AttachModal({
       <form onSubmit={submit}>
         {err && <div className="error small">{err}</div>}
         <label>Kind</label>
-        <select value={kind} onChange={(e) => chooseKind(e.target.value)} required>
-          <option value="" disabled>choose a kind…</option>
-          {kinds.map((k) => <option key={k.kind} value={k.kind}>{k.kind}</option>)}
-        </select>
+        {existing ? (
+          <>
+            <div className="field-disabled">{existing.kind}</div>
+            <div className="rail-empty" style={{ marginTop: 4 }}>
+              The kind is fixed. To use a different one, remove this and add a new one.
+            </div>
+          </>
+        ) : (
+          <select value={kind} onChange={(e) => chooseKind(e.target.value)} required>
+            <option value="" disabled>choose a kind…</option>
+            {kinds.map((k) => <option key={k.kind} value={k.kind}>{k.kind}</option>)}
+          </select>
+        )}
 
         {selected && selected.fields.length === 0 && (
           <p className="muted small">No additional fields required.</p>
@@ -797,7 +1043,7 @@ function AttachModal({
           <div key={f.name}>
             <label>{f.label}{f.required ? " *" : ""}</label>
             {f.type === "boolean" ? (
-              <input type="checkbox" style={{ width: "auto" }} checked={!!values[f.name]} onChange={(e) => setField(f.name, e.target.checked)} />
+              <input type="checkbox" checked={!!values[f.name]} onChange={(e) => setField(f.name, e.target.checked)} />
             ) : f.type === "text" ? (
               <AutoTextarea value={String(values[f.name] ?? "")} placeholder={f.placeholder ?? ""} onChange={(e) => setField(f.name, e.target.value)} />
             ) : (
@@ -809,7 +1055,7 @@ function AttachModal({
 
         <div className="row" style={{ justifyContent: "flex-end", marginTop: 16 }}>
           <button type="button" onClick={onClose}>Cancel</button>
-          <button className="primary" type="submit" disabled={!selected}>Attach</button>
+          <button className="primary" type="submit" disabled={!selected}>{existing ? "Save" : "Attach"}</button>
         </div>
       </form>
     </Modal>
@@ -881,8 +1127,11 @@ function Timeline({
 
   return (
     <div className="panel">
-      <h3 style={{ marginTop: 0 }}>Activity <span className="muted small">({comments.length} comment{comments.length === 1 ? "" : "s"})</span></h3>
-      {items.length === 0 && <div className="muted small">No activity yet.</div>}
+      <h3 className="panel-title">
+        Activity
+        <span className="count">{comments.length} comment{comments.length === 1 ? "" : "s"}</span>
+      </h3>
+      {items.length === 0 && <div className="rail-empty">No activity yet.</div>}
       <div className="timeline-list">
         {items.map((it) => <div key={it.key} className="timeline-entry">{it.node}</div>)}
       </div>
@@ -953,7 +1202,7 @@ function CommentItem({
           <span className="comment-controls">
             <button className="edit-pencil" title="Edit comment" onClick={() => { setDraft(c.body); setEditing(true); }}>✎</button>
             <button className="edit-pencil edit-pencil-danger" title="Delete comment"
-              onClick={() => setConfirmDel(true)}>🗑</button>
+              aria-label="Delete comment" onClick={() => setConfirmDel(true)}><TrashIcon size={13} /></button>
           </span>
         )}
       </div>

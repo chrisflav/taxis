@@ -55,6 +55,19 @@ def createCheck (db : Conn) (issueId : IssueId) (input : CheckInput) : IO Check 
 def recordCheckResult (db : Conn) (id : CheckId) (status : CheckStatus) (detail : Option String) : IO Unit := do
   db exec!"UPDATE checks SET status = {status}, detail = {detail}, last_run = unixepoch() WHERE id = {id}"
 
+/-- Replace a check's config, keeping its kind, and put it back to `pending`.
+
+    The previous status described the *old* config, so carrying it over would leave a check
+    reporting `passing` for a condition nobody has evaluated yet — and, since a non-passing check
+    blocks completing an issue, that is the direction that silently lets work through. Clearing it
+    makes the check say what is true: not run since it changed. -/
+def updateCheckConfig (db : Conn) (id : CheckId) (config : Json) : IO Bool := do
+  let configStr := config.compress
+  let updated ← (← db query!"UPDATE checks
+    SET config = {configStr}, status = 'pending', detail = NULL, last_run = NULL
+    WHERE id = {id} RETURNING id" as CheckId).toArray
+  pure !updated.isEmpty
+
 /-- Delete a check. Returns whether a row was removed. -/
 def deleteCheck (db : Conn) (id : CheckId) : IO Bool := do
   let removed ← (← db query!"DELETE FROM checks WHERE id = {id} RETURNING id" as CheckId).toArray

@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="taxis">
+  <!-- An issue in taxis is an obligation with a goal, so the mark is the turnstile the goal is set
+       behind everywhere in the interface. Two bars and a tile: the whole glyph is straight edges at
+       one weight, which is what survives being drawn 16 pixels wide in a browser tab. The tile is
+       filled rather than transparent so the mark holds up against a light or a dark tab strip. -->
+  <rect width="32" height="32" rx="7" fill="#5B46D9"/>
+  <g fill="#FFFFFF">
+    <rect x="10" y="7.5" width="3.6" height="17" rx="1.8"/>
+    <rect x="10" y="14.2" width="12" height="3.6" rx="1.8"/>
+  </g>
+</svg>

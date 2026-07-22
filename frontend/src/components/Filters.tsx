@@ -30,7 +30,7 @@ export const Filters = memo(function Filters({
 
   return (
     <div className="filters panel">
-      <div style={{ flex: 2 }}>
+      <div>
         <label>Search (fuzzy)</label>
         <input placeholder="type to filter…" value={value.q} onChange={(e) => set({ q: e.target.value })} />
       </div>
@@ -39,6 +39,13 @@ export const Filters = memo(function Filters({
         <select value={value.state} onChange={(e) => set({ state: e.target.value })}>
           <option value="">any</option>
           {STATES.map((s) => <option key={s} value={s}>{s}</option>)}
+        </select>
+      </div>
+      <div>
+        <label>Deadline</label>
+        <select value={value.overdue ? "overdue" : ""} onChange={(e) => set({ overdue: e.target.value === "overdue" })}>
+          <option value="">any</option>
+          <option value="overdue">overdue</option>
         </select>
       </div>
       <div>

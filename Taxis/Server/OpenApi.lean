@@ -196,13 +196,19 @@ private def paths : Json := obj [
 
   ("/issues/{id}/artifacts", obj [("post", operation "Artifacts" "Attach an artifact to an issue"
     [idParam] (some (jsonBody (ref "ArtifactInput"))) [("201", jsonResp "Created" (ref "Artifact")), ("422", jsonResp "Unknown kind or invalid payload" (ref "Error"))])]),
-  ("/artifacts/{id}", obj [("delete", operation "Artifacts" "Delete an artifact" [idParam] none [("200", jsonResp "Deleted" (ref "Deleted"))])]),
+  ("/artifacts/{id}", obj [
+    ("patch", operation "Artifacts" "Replace an artifact's payload (its kind cannot change)"
+      [idParam] (some (jsonBody (ref "ArtifactInput"))) [("200", jsonResp "Updated" (ref "Artifact")), ("422", jsonResp "Changed kind or invalid payload" (ref "Error"))]),
+    ("delete", operation "Artifacts" "Delete an artifact" [idParam] none [("200", jsonResp "Deleted" (ref "Deleted"))])]),
 
   ("/issues/{id}/checks", obj [
     ("get", operation "Checks" "List checks on an issue" [idParam] none [("200", jsonResp "Checks" (arrayOf (ref "Check")))]),
     ("post", operation "Checks" "Attach a check to an issue" [idParam] (some (jsonBody (ref "CheckInput"))) [("201", jsonResp "Created" (ref "Check"))])]),
   ("/checks/{id}/run", obj [("post", operation "Checks" "Evaluate a check now" [idParam] none [("200", jsonResp "Updated check" (ref "Check"))])]),
-  ("/checks/{id}", obj [("delete", operation "Checks" "Delete a check" [idParam] none [("200", jsonResp "Deleted" (ref "Deleted"))])]),
+  ("/checks/{id}", obj [
+    ("patch", operation "Checks" "Replace a check's config (its kind cannot change; the check goes back to pending)"
+      [idParam] (some (jsonBody (ref "CheckInput"))) [("200", jsonResp "Updated" (ref "Check")), ("422", jsonResp "Changed kind or invalid config" (ref "Error"))]),
+    ("delete", operation "Checks" "Delete a check" [idParam] none [("200", jsonResp "Deleted" (ref "Deleted"))])]),
 
   ("/issues/{id}/comments", obj [
     ("get", operation "Comments" "List comments on an issue" [idParam] none [("200", jsonResp "Comments" (arrayOf (ref "Comment")))]),

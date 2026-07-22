@@ -64,6 +64,13 @@ def redirect (location : String) (setCookie : Option String := none) : ApiM ApiR
   let headers := #[("Location", location)] ++ (setCookie.map (fun c => #[("Set-Cookie", c)]) |>.getD #[])
   pure { status := .found, body := Json.mkObj [], headers }
 
+/-- Decode a request body as raw JSON, for handlers that read a couple of optional fields out of it
+    rather than a fixed input structure. -/
+def parseJsonBody (body : String) : ApiM Json := do
+  match Json.parse body with
+  | .error e => fail (.badRequest s!"invalid JSON: {e}")
+  | .ok j => pure j
+
 /-- Decode a request body as JSON of type `α`. -/
 def parseBody (α) [FromJson α] (body : String) : ApiM α := do
   match Json.parse body with

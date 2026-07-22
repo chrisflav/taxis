@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Actor } from "../types";
 import { api } from "../api";
+import { BellIcon } from "./Icon";
 
 const POLL_MS = 30_000;
 
@@ -24,7 +25,8 @@ export function NotificationBell({ me, active = false }: { me: Actor | null; act
 
   return (
     <a className={`notif-bell${active ? " active" : ""}`} href="#/notifications" title="Notifications">
-      🔔{unreadCount > 0 && <span className="notif-count">{unreadCount > 99 ? "99+" : unreadCount}</span>}
+      <BellIcon size={17} />
+      {unreadCount > 0 && <span className="notif-count">{unreadCount > 99 ? "99+" : unreadCount}</span>}
     </a>
   );
 }

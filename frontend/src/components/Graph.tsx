@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+import { LockedMark } from "./Icon";
+import { PageHeader } from "./PageHeader";
 import type { Actor, Issue, Label } from "../types";
 import { api, paths } from "../api";
 import { EMPTY, LIST_MAX_AGE, REFERENCE_MAX_AGE, useResource } from "../cache";
@@ -126,7 +128,10 @@ export function GraphView() {
 
   return (
     <div>
-      <h2>Graph</h2>
+      <PageHeader
+        title="Graph"
+        description="Every issue you can see, drawn as the graph its dependencies and parents form."
+      />
       {/* The rows already carry id/title/parent, so the pickers need no extra request. */}
       <Filters value={filters} onChange={setFilters} labels={labels} actors={actors} index={issues} />
       <div className="row" style={{ marginBottom: 12, justifyContent: "space-between" }}>
@@ -157,13 +162,13 @@ export function GraphView() {
           </div>
         </div>
         <label className="row small" style={{ margin: 0 }}>
-          <input type="checkbox" style={{ width: "auto" }} checked={showLabels} onChange={(e) => setShowLabels(e.target.checked)} /> Show labels
+          <input type="checkbox" checked={showLabels} onChange={(e) => setShowLabels(e.target.checked)} /> Show labels
         </label>
         <label className="row small" style={{ margin: 0 }}>
-          <input type="checkbox" style={{ width: "auto" }} checked={showAssignees} onChange={(e) => setShowAssignees(e.target.checked)} /> Show assignees
+          <input type="checkbox" checked={showAssignees} onChange={(e) => setShowAssignees(e.target.checked)} /> Show assignees
         </label>
       </div>
-      <p className="muted small" style={{ marginTop: -6 }}>
+      <p className="canvas-legend">
         {layoutMode === "dependencies"
           ? "Arrows point from an issue to the dependency it needs."
           : "Arrows point from a child issue to its parent."}{" "}
@@ -188,7 +193,7 @@ export function GraphView() {
               <div className="row" style={{ gap: 6 }}>
                 <span className="muted small">#{n.issue.id}</span>
                 <span className="graph-card-title"><Markdown text={n.issue.title} inline /></span>
-                {n.issue.locked && <span title="locked">🔒</span>}
+                {n.issue.locked && <LockedMark />}
               </div>
               <div><span className={`badge ${n.issue.state}`}>{n.issue.state}</span></div>
               {showLabels && (

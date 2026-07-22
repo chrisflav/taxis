@@ -7,6 +7,7 @@ import { IssueDetail } from "./components/IssueDetail";
 import { IssueForm } from "./components/IssueForm";
 import { LoginBar } from "./components/Login";
 import { NotificationBell } from "./components/NotificationBell";
+import { ThemeToggle } from "./components/ThemeToggle";
 
 // Views away from the issue list load on demand: the graphs in particular pull in their own
 // layout and canvas code, which nobody browsing issues should have to download first.
@@ -17,6 +18,20 @@ const Admin = lazy(() => import("./components/Admin").then((m) => ({ default: m.
 const TokensPage = lazy(() => import("./components/Tokens").then((m) => ({ default: m.TokensPage })));
 const NotificationsPage = lazy(() =>
   import("./components/NotificationsPage").then((m) => ({ default: m.NotificationsPage })));
+
+// The same mark as the favicon, so the tab and the page agree on what this is. Drawn here rather
+// than loaded from /icon.svg: it is smaller inline than the request would be.
+function Turnstile() {
+  return (
+    <svg viewBox="0 0 32 32" width="19" height="19" aria-hidden="true">
+      <rect width="32" height="32" rx="7" fill="var(--accent)" />
+      <g fill="var(--accent-fg)">
+        <rect x="10" y="7.5" width="3.6" height="17" rx="1.8" />
+        <rect x="10" y="14.2" width="12" height="3.6" rx="1.8" />
+      </g>
+    </svg>
+  );
+}
 
 // Minimal hash-based routing to avoid a router dependency.
 function useHashRoute(): string {
@@ -60,6 +75,8 @@ export function App() {
   const segments = pathPart.split("/").filter(Boolean);
   const top = segments[0] ?? "issues";
   const navClass = (t: string) => (top === t ? "active" : "");
+  // The active tab is styled, but styling is not something a screen reader can hear.
+  const navCurrent = (t: string) => (top === t ? ("page" as const) : undefined);
 
   // Pick up a "notif" query param from wherever it appears, mark it read, and immediately strip it
   // from the URL — its only job is to seed `activeNotifId`, after which the banner's lifetime is
@@ -99,20 +116,29 @@ export function App() {
 
   return (
     <>
+      {/* The bar carries only the surfaces you move between while working. Everything that belongs
+          to your account — tokens, admin, the API reference, signing out — is behind the account
+          control on the right, which also keeps the bar the same width signed in or out. */}
+      {/* The bar's rule and background span the window, but its contents sit in the same column the
+          page below uses — otherwise the wordmark and the account button hang off the far edges
+          while everything they belong to is centred. */}
       <header className="topbar">
-        <h1>taxis</h1>
-        <nav>
-          <a className={navClass("issues")} href="#/issues">Issues</a>
-          <a className={navClass("graph")} href="#/graph">Graph</a>
-          <a className={navClass("repos")} href="#/repos">Repos</a>
-          <a className={navClass("labels")} href="#/labels">Labels</a>
-          {me && <a className={navClass("tokens")} href="#/tokens">Tokens</a>}
-          {me?.admin && <a className={navClass("admin")} href="#/admin">Admin</a>}
-          <a href="/docs" target="_blank" rel="noreferrer">API ↗</a>
-        </nav>
-        <div className="spacer" />
-        {meLoaded && <NotificationBell me={me} active={top === "notifications"} />}
-        {meLoaded && <LoginBar me={me} onChange={refreshMe} />}
+        <div className="topbar-inner">
+          <a className="wordmark" href="#/issues" aria-label="taxis — all issues">
+            <Turnstile />
+            <span>taxis</span>
+          </a>
+          <nav aria-label="Main">
+            <a className={navClass("issues")} aria-current={navCurrent("issues")} href="#/issues">Issues</a>
+            <a className={navClass("graph")} aria-current={navCurrent("graph")} href="#/graph">Graph</a>
+            <a className={navClass("repos")} aria-current={navCurrent("repos")} href="#/repos">Repos</a>
+            <a className={navClass("labels")} aria-current={navCurrent("labels")} href="#/labels">Labels</a>
+          </nav>
+          <div className="spacer" />
+          {meLoaded && <NotificationBell me={me} active={top === "notifications"} />}
+          <ThemeToggle />
+          {meLoaded && <LoginBar me={me} onChange={refreshMe} />}
+        </div>
       </header>
       {activeNotifId != null && (
         <div className="notif-banner">

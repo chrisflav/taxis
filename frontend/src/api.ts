@@ -49,7 +49,7 @@ export interface IssueFilters {
   label?: number;
   q?: string;
   assignee?: number;
-  /** Direct children of this issue — what the detail view's "Children" link asks for. */
+  /** Direct children of this issue — what the detail view's Children panel lists. */
   parent?: number;
   limit?: number;
   offset?: number;
@@ -123,6 +123,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ kind, payload }),
     }).then(issuesChanged),
+  /** Replace an artifact's payload. Its kind is fixed — that is what gives the payload its shape,
+      so switching kind means removing this artifact and attaching another. */
+  updateArtifact: (id: number, payload: unknown) =>
+    req<unknown>(`/artifacts/${id}`, { method: "PATCH", body: JSON.stringify({ payload }) }).then(issuesChanged),
   deleteArtifact: (id: number) =>
     req<unknown>(`/artifacts/${id}`, { method: "DELETE" }).then(issuesChanged),
 
@@ -131,6 +135,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ kind, config }),
     }).then(issuesChanged),
+  /** Replace a check's config. Like an artifact its kind is fixed, and the server puts the check
+      back to `pending` — the old result described the old config. */
+  updateCheck: (id: number, config: unknown) =>
+    req<Check>(`/checks/${id}`, { method: "PATCH", body: JSON.stringify({ config }) }).then(issuesChanged),
   runCheck: (id: number) => req<Check>(`/checks/${id}/run`, { method: "POST" }).then(issuesChanged),
   deleteCheck: (id: number) => req<unknown>(`/checks/${id}`, { method: "DELETE" }).then(issuesChanged),
 

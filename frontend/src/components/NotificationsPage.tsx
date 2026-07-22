@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { PageHeader } from "./PageHeader";
 import type { Actor, IssueIndexEntry, Label, Notification } from "../types";
 import { api, paths } from "../api";
 import { EMPTY, REFERENCE_MAX_AGE, useResource } from "../cache";
@@ -20,8 +21,10 @@ function describeNotification(n: Notification): string {
     case "visibility": return "changed visibility";
     case "labels": return "changed labels";
     case "artifact_added": return "attached an artifact";
+    case "artifact_updated": return "edited an artifact";
     case "artifact_removed": return "removed an artifact";
     case "check_added": return "added a check";
+    case "check_updated": return "edited a check";
     case "check_removed": return "removed a check";
     case "comment_edited": return "edited a comment";
     case "comment_deleted": return "deleted a comment";
@@ -34,7 +37,8 @@ function describeNotification(n: Notification): string {
 
 const KIND_OPTIONS = [
   "state", "locked", "parent", "deadline", "dependencies", "assignees", "visibility", "labels",
-  "artifact_added", "artifact_removed", "check_added", "check_removed", "comment_edited",
+  "artifact_added", "artifact_updated", "artifact_removed", "check_added", "check_updated",
+  "check_removed", "comment_edited",
   "comment_deleted", "review", "comment", "review_requested",
 ];
 
@@ -222,10 +226,13 @@ export function NotificationsPage({ me }: { me: Actor | null }) {
 
   return (
     <div>
-      <h2>Notifications</h2>
+      <PageHeader
+        title="Notifications"
+        description="Activity on the issues you're involved in. Marking one done clears it from your queue."
+      />
 
       <div className="filters panel">
-        <div style={{ flex: 2 }}>
+        <div>
           <label>Search (issue title)</label>
           <input placeholder="type to filter…" value={q} onChange={(e) => setQ(e.target.value)} />
         </div>

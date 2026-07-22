@@ -244,6 +244,37 @@ def createArtifactH (ctx : AppContext) (issueId : Int64) (req : Req) : ApiM ApiR
   | some a => created (toJson (← liftIO (toArtifactView a)))
   | none => fail (.notFound s!"issue {issueId} not found")
 
+/-- Edit an attached artifact's payload. The kind stays as it is (see `Db.updateArtifactPayload`),
+    so the body needs only the new payload — but a body that repeats the kind is accepted as long
+    as it agrees, which is what a client round-tripping the artifact will send. -/
+def updateArtifactH (ctx : AppContext) (id : Int64) (req : Req) : ApiM ApiResponse := do
+  match ← ctx.dbM (Db.getArtifact · ⟨id⟩) with
+  | none => fail (.notFound s!"artifact {id} not found")
+  | some art =>
+    let body ← parseJsonBody req.body
+    match (body.getObjValAs? String "kind").toOption with
+    | some k => if k != art.kind then
+        fail (.unprocessable s!"an artifact's kind cannot be changed (it is '{art.kind}'); remove it and attach a new one")
+    | none => pure ()
+    let payload := (body.getObjVal? "payload").toOption.getD .null
+    let label ← match ← liftIO (Plugins.artifactHandler? art.kind) with
+      | none => fail (.unprocessable s!"unknown artifact kind '{art.kind}'")
+      | some h => match h.validate payload with
+        | .error e => fail (.unprocessable s!"invalid {art.kind} payload: {e}")
+        | .ok _ => pure (h.render payload).label
+    let actorId := req.actor.map (·.id)
+    match ← ctx.dbM (fun db => do
+        match ← Db.artifactIssue db ⟨id⟩ with
+        | none => pure none
+        | some issueId =>
+          let updated ← Db.updateArtifactPayload db ⟨id⟩ payload
+          if updated then
+            Db.recordEvent db issueId actorId "artifact_updated"
+              (Json.mkObj [("kind", art.kind), ("label", label)])
+          pure (some updated)) with
+    | some true => ok (toJson (← liftIO (toArtifactView { art with payload })))
+    | _ => fail (.notFound s!"artifact {id} not found")
+
 def deleteArtifactH (ctx : AppContext) (id : Int64) (req : Req) : ApiM ApiResponse := do
   let actorId := req.actor.map (·.id)
   match ← ctx.dbM (fun db => do
@@ -279,6 +310,37 @@ def createCheckH (ctx : AppContext) (issueId : Int64) (req : Req) : ApiM ApiResp
         pure (some c)) with
   | some c => created (toJson c)
   | none => fail (.notFound s!"issue {issueId} not found")
+
+/-- Edit an attached check's config. As with artifacts the kind is fixed; the check goes back to
+    `pending` because its stored result described the config it had before. -/
+def updateCheckH (ctx : AppContext) (id : Int64) (req : Req) : ApiM ApiResponse := do
+  match ← ctx.dbM (Db.getCheck · ⟨id⟩) with
+  | none => fail (.notFound s!"check {id} not found")
+  | some chk =>
+    let body ← parseJsonBody req.body
+    match (body.getObjValAs? String "kind").toOption with
+    | some k => if k != chk.kind then
+        fail (.unprocessable s!"a check's kind cannot be changed (it is '{chk.kind}'); remove it and add a new one")
+    | none => pure ()
+    let config := (body.getObjVal? "config").toOption.getD .null
+    match ← liftIO (Plugins.checkHandler? chk.kind) with
+    | none => fail (.unprocessable s!"unknown check kind '{chk.kind}'")
+    | some h => match h.validateConfig config with
+      | .error e => fail (.unprocessable s!"invalid {chk.kind} config: {e}")
+      | .ok _ => pure ()
+    let actorId := req.actor.map (·.id)
+    match ← ctx.dbM (fun db => do
+        match ← Db.checkIssue db ⟨id⟩ with
+        | none => pure none
+        | some issueId =>
+          let updated ← Db.updateCheckConfig db ⟨id⟩ config
+          if updated then
+            Db.recordEvent db issueId actorId "check_updated" (Json.mkObj [("kind", chk.kind)])
+          pure (some updated)) with
+    | some true => match ← ctx.dbM (Db.getCheck · ⟨id⟩) with
+      | some c => ok (toJson c)
+      | none => fail (.notFound s!"check {id} not found")
+    | _ => fail (.notFound s!"check {id} not found")
 
 def deleteCheckH (ctx : AppContext) (id : Int64) (req : Req) : ApiM ApiResponse := do
   let actorId := req.actor.map (·.id)
@@ -840,11 +902,13 @@ def dispatch (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
   | .get, ["issues", id, "events"] => listEventsH ctx (← Req.parseId id) req.actor
 
   | .post, ["issues", id, "artifacts"] => createArtifactH ctx (← Req.parseId id) req
+  | .patch, ["artifacts", id] => updateArtifactH ctx (← Req.parseId id) req
   | .delete, ["artifacts", id] => deleteArtifactH ctx (← Req.parseId id) req
 
   | .get, ["issues", id, "checks"] => listChecksH ctx (← Req.parseId id)
   | .post, ["issues", id, "checks"] => createCheckH ctx (← Req.parseId id) req
   | .post, ["checks", id, "run"] => runCheckH ctx (← Req.parseId id)
+  | .patch, ["checks", id] => updateCheckH ctx (← Req.parseId id) req
   | .delete, ["checks", id] => deleteCheckH ctx (← Req.parseId id) req
 
   | .get, ["issues", id, "comments"] => listCommentsH ctx (← Req.parseId id)
