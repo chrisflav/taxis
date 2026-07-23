@@ -11,3 +11,6 @@ docker/data/
 # Python bytecode
 __pycache__/
 *.pyc
+
+# Written by bench/run.py --json (and by the CI benchmark job).
+bench-results.json

@@ -1,0 +1,44 @@
+{
+  "_comment": [
+    "Ceilings for bench/run.py --check, enforced in CI.",
+    "requests: the exact number of API calls a route makes on a cold open. A change here is a view",
+    "  starting or stopping a call, which should always be deliberate.",
+    "gzip_bytes: a ceiling, not a measurement, set about 30% above what the route costs today.",
+    "  Headroom is deliberate: zlib versions differ slightly in output size between machines, and a",
+    "  benchmark that fails on that teaches people to ignore it. Regressions worth catching are far",
+    "  larger than 30%.",
+    "Update these in the same commit as any change that moves them, with the reason in the message.",
+    "feed_requests: how many pages the list pulls after its first, which the client's cap bounds. A jump here means paging stopped making progress -- it once looped 2,824 times against a cursor the server was ignoring."
+  ],
+  "requests": {
+    "#/issues": 6,
+    "#/issues/{id}": 9,
+    "#/graph": 6,
+    "#/labels": 5
+  },
+  "gzip_bytes": {
+    "100": {
+      "#/issues": 6800,
+      "#/issues/{id}": 6800,
+      "#/graph": 8900,
+      "#/labels": 4000
+    },
+    "1000": {
+      "#/issues": 29500,
+      "#/issues/{id}": 23400,
+      "#/graph": 64600,
+      "#/labels": 20500
+    },
+    "10000": {
+      "#/issues": 192500,
+      "#/issues/{id}": 187400,
+      "#/graph": 624500,
+      "#/labels": 183100
+    }
+  },
+  "feed_requests": {
+    "100": 1,
+    "1000": 3,
+    "10000": 25
+  }
+}
