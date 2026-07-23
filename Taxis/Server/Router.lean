@@ -60,3 +60,9 @@ end Taxis.Server
 def Taxis.AppContext.dbM (ctx : Taxis.AppContext) (act : Taxis.Db.Conn → IO α) :
     Taxis.Server.ApiM α :=
   ExceptT.lift (ctx.withDb act)
+
+/-- Run a **read-only** database action, lifted into `ApiM`. See `AppContext.withRead`: this runs
+    on a connection opened read-only, so it must not be given anything that writes. -/
+def Taxis.AppContext.readM (ctx : Taxis.AppContext) (act : Taxis.Db.Conn → IO α) :
+    Taxis.Server.ApiM α :=
+  ExceptT.lift (ctx.withRead act)

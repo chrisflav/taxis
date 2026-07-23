@@ -151,11 +151,20 @@ def collect (artifacts : Array (IssueId × Artifact)) : Array AttachedRepo := Id
     are dropped. -/
 def build (ttlSeconds : Nat) (includeExternal : Bool) (repos : Array AttachedRepo) : IO Graph := do
   let attached : Std.HashSet String := repos.foldl (fun s r => s.insert r.ref.canonical) {}
+  -- Resolved concurrently. Each repository's dependencies come from manifests fetched over the
+  -- network, and one repository's fetches tell us nothing about another's — so done one after the
+  -- next, a graph over n repositories took n round trips end to end, which was nearly all of what
+  -- this endpoint spent its time on.
+  --
+  -- `resolveDeps` writes its result into the shared cache without synchronisation. Two resolutions
+  -- finishing together can drop one of the two entries; the cost of that is re-reading one
+  -- repository's manifests next time, which is the same thing a cold cache does anyway.
+  let tasks ← repos.mapM (fun repo => IO.asTask (resolveDeps ttlSeconds repo))
+  let results ← tasks.mapM (fun t => IO.ofExcept t.get)
   let mut nodes : Array Node := #[]
   let mut edges : Array Edge := #[]
   let mut external : Std.HashMap String Node := {}
-  for repo in repos do
-    let result ← resolveDeps ttlSeconds repo
+  for (repo, result) in repos.zip results do
     nodes := nodes.push {
       id := repo.ref.canonical
       url := repo.ref.url

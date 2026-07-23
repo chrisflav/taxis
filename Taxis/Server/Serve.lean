@@ -138,13 +138,18 @@ instance : Handler AppHandler where
       -- almost every navigation, and is by far the largest thing the API returns.
       if req.line.method == .get && apiResp.status == .ok then
         let payload := apiResp.body.compress
+        -- The validator identifies the resource, so it is taken over the JSON itself rather than
+        -- over whichever encoding this particular client gets. `Vary: Accept-Encoding` on the
+        -- response is what keeps that honest for a shared cache.
         let tag := etagOf payload
         if headerValue req "If-None-Match" == some tag then
           notModifiedResponse tag
         else
+          let acceptsGzip :=
+            (acceptedEncodings (headerValue req "Accept-Encoding")).contains "gzip"
           buildResponseWith
             { apiResp with headers := apiResp.headers ++ #[("ETag", tag), ("Cache-Control", "no-cache")] }
-            payload
+            payload acceptsGzip
       else buildResponse apiResp
     | none =>
       match segs with

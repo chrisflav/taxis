@@ -222,6 +222,28 @@ def main : IO Unit := do
   check "node lists every issue it hangs off" (collected[0]!.issues == #[⟨1⟩, ⟨2⟩])
   check "unparseable repository artifact dropped" (collected.all (·.ref.canonical != "not a url at all"))
 
+  IO.println "Response compression"
+  -- A gzip stream this decompresses to the input is checked from the outside, by
+  -- `scripts/check-gzip.mjs`; what is checked here is the framing and the decision rule.
+  let jsonish := String.join (List.replicate 400 "{\"id\":12,\"title\":\"a repeated title\"},")
+  let compressed := gzipBytes jsonish.toUTF8 gzipLevel
+  check "gzip magic bytes" (compressed[0]? == some 0x1f && compressed[1]? == some 0x8b)
+  check "gzip deflate method" (compressed[2]? == some 0x08)
+  check "gzip shrinks repetitive json" (compressed.size < jsonish.toUTF8.size / 4)
+  check "gzip of empty input is a valid stream" ((gzipBytes ByteArray.empty gzipLevel).size > 0)
+  check "compresses a large body for a client that accepts it"
+    ((gzipIfWorthwhile jsonish true).isSome)
+  check "sends plain to a client that does not accept gzip"
+    ((gzipIfWorthwhile jsonish false).isNone)
+  check "leaves a body below the threshold alone"
+    ((gzipIfWorthwhile "{\"ok\":true}" true).isNone)
+  -- Incompressible and over the threshold: the result would be larger, so it must be declined.
+  let noisy := String.join ((List.range 1200).map (fun i => toString (i * 7919 % 100000)))
+  check "declines when compression would not help"
+    (match gzipIfWorthwhile noisy true with
+     | some out => out.size < noisy.toUTF8.size
+     | none => true)
+
   IO.println "Visibility"
   let pub : Issue := { id := ⟨1⟩, title := "p", visibility := #[], createdAt := ⟨0⟩, updatedAt := ⟨0⟩ }
   let priv : Issue := { pub with visibility := #[⟨5⟩] }

@@ -59,8 +59,9 @@ taxis is an extensible issue tracker built in Lean 4, with a REST API backend an
 
 ## Build & run
 
-Prerequisites: [`elan`](https://github.com/leanprover/elan) (Lean toolchain manager) and
-Node.js 22+.
+Prerequisites: [`elan`](https://github.com/leanprover/elan) (Lean toolchain manager), Node.js 22+,
+and zlib's development headers (`zlib1g-dev` on Debian/Ubuntu, `zlib-devel` on Fedora, already
+present in the macOS SDK) — the server compresses its own API responses, through `bindings/gzip.c`.
 
 ```bash
 # Backend

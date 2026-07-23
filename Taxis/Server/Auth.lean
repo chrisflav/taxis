@@ -299,7 +299,10 @@ def passwordLoginH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
 private def resolveBySession (ctx : AppContext) (req : Req) : IO Req := do
   match req.sessionToken with
   | none => pure req
-  | some tok => pure { req with actor := ← ctx.withDb (Db.sessionActor · tok) }
+  -- On a reader: this runs before *every* request a browser makes, so putting it on the write
+  -- connection meant the whole server took that lock several times per page load merely to find
+  -- out who was asking. `sessionActor` only reads.
+  | some tok => pure { req with actor := ← ctx.withRead (Db.sessionActor · tok) }
 
 /-- Resolve the actor for a request. An `Authorization: Bearer <token>` header (used by bots)
     takes precedence; the presented secret is hashed and looked up, never compared in plaintext.
