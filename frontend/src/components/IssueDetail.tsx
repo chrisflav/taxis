@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Suspense, lazy, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type {
   Actor, Artifact, Check, Comment, Event, Group, Issue, IssueDetail as Detail, IssueIndexEntry,
-  IssueState, Label, PluginKind, Plugins, ReviewState,
+  IssueListRow, IssuePage, IssueState, Label, Plugins, ReviewState,
 } from "../types";
-import { api, paths } from "../api";
+import { api, childrenQuery, issuePagePath, paths } from "../api";
 import { EMPTY, LIST_MAX_AGE, REFERENCE_MAX_AGE, useResource } from "../cache";
 import { Modal, ConfirmModal, useConfirmClose } from "./Modal";
 import { LabelChip } from "./LabelChip";
@@ -13,7 +13,6 @@ import { SearchableSelect } from "./SearchableSelect";
 import { AutoTextarea } from "./AutoTextarea";
 import { ActorName } from "./ActorName";
 import { IssueBreadcrumbs, SiblingNav } from "./Breadcrumbs";
-import { IssueForm } from "./IssueForm";
 import { diffWords } from "../diff";
 import { localInputToUnix, unixToLocalInput } from "../datetime";
 import { useIssueRefAutocomplete } from "../useIssueRefAutocomplete";
@@ -21,6 +20,15 @@ import { IssueRefMenu } from "./IssueRefMenu";
 import { breadcrumbOptions, plainTitle } from "../breadcrumbs";
 import { fuzzyMatch } from "../fuzzy";
 import { ClockIcon, LockedMark, TrashIcon } from "./Icon";
+
+// Everything behind a button loads when that button is pressed. None of it is reachable without a
+// deliberate action, and between them the three carry the whole issue-creation form and both
+// attachment dialogues — code that every reader of every issue was previously made to download
+// before the page could render.
+const AttachModal = lazy(() => import("./AttachModal").then((m) => ({ default: m.AttachModal })));
+const RequestReviewModal = lazy(() =>
+  import("./AttachModal").then((m) => ({ default: m.RequestReviewModal })));
+const IssueForm = lazy(() => import("./IssueForm").then((m) => ({ default: m.IssueForm })));
 
 // Render a Unix (seconds) timestamp in the viewer's locale.
 function fmtTime(ts: number): string {
@@ -31,7 +39,6 @@ function fmtTime(ts: number): string {
 const CONTENT_KINDS = new Set(["title", "description", "goal", "comment_edited"]);
 
 export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
-  const [detail, setDetail] = useState<Detail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [addArtifact, setAddArtifact] = useState(false);
@@ -50,9 +57,14 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
   // not passing) is a normal, recoverable outcome, not a reason to lose the rest of the page.
   const [actionError, setActionError] = useState<string | null>(null);
 
-  const load = () => api.getIssue(id).then(setDetail).catch((e) => setError(String(e)));
-
-  useEffect(() => { load(); }, [id]);
+  // The issue itself, read through the same cache as everything else on this page rather than into
+  // local state. Coming back to an issue — from the list, from a child, from the back button — then
+  // repaints from the last response immediately and revalidates behind it, instead of blanking the
+  // page for a round trip it has already made. `main.tsx` starts this read from the URL before
+  // React mounts, so on a cold load it is usually already in flight by the time this runs.
+  const detailRes = useResource<Detail>(paths.issue(id), () => api.getIssue(id), LIST_MAX_AGE);
+  const detail = detailRes.data ?? null;
+  const load = detailRes.reload;
 
   // Reference data, read through the shared cache: these are the same four responses every other
   // view wants, so after the first page of a session they cost nothing. The naming index replaces
@@ -66,11 +78,16 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
 
   // This issue's children, read as rows rather than taken from the naming index: the index carries
   // no state or labels, and a container's children are worth showing with the same badges the list
-  // shows. Server-filtered, so an issue with three children transfers three rows.
-  const childQuery = { parent: id, summary: true };
-  const childrenRes = useResource<Issue[]>(
-    paths.issues(childQuery), () => api.listIssues(childQuery), LIST_MAX_AGE);
-  const children = childrenRes.data ?? EMPTY;
+  // shows.
+  //
+  // One page of them, not all. This used to fetch every child in a single response, which on a
+  // container with a thousand of them was 32 KB gzipped sitting on the detail view's critical path
+  // and growing with no bound. The page's `stateCounts` still describes *every* child, so the
+  // progress line remains a fact about the issue rather than about what happened to be fetched.
+  const childQuery = useMemo(() => childrenQuery(id), [id]);
+  const childrenRes = useResource<IssuePage>(
+    issuePagePath(childQuery), () => api.issuePage(childQuery), LIST_MAX_AGE);
+  const children = childrenRes.data?.issues ?? EMPTY;
 
   const labelOpts = useMemo(() => allLabels.map((l) => ({ value: l.id, label: l.name })), [allLabels]);
   const labelById = useMemo(() => new Map(allLabels.map((l) => [l.id, l])), [allLabels]);
@@ -81,7 +98,14 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
   );
 
   if (error) return <div className="panel error">{error}</div>;
-  if (!detail) return <div className="muted">Loading…</div>;
+  // A failed *first* load has nothing to fall back on. A failed revalidation of an issue already on
+  // screen is left to the inline error paths, rather than throwing away a good page.
+  if (!detail && detailRes.error) return <div className="panel error">{detailRes.error}</div>;
+  // Nothing to render the body from yet — but the page's structure does not depend on the body.
+  // The id is in the URL and the naming index (prefetched, and usually warm) carries the title and
+  // the ancestor chain, so the frame, the heading and the breadcrumbs are real from the first
+  // paint and only the parts that genuinely need the response are placeheld.
+  if (!detail) return <IssueSkeleton id={id} index={issueIndex} />;
   const { issue } = detail;
 
   // Persist a patch to the issue and refresh. Returns the promise so inline editors can await it.
@@ -180,6 +204,8 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
           <ChildrenPanel
             parent={issue}
             items={children}
+            total={childrenRes.data?.total ?? null}
+            counts={childrenRes.data?.stateCounts ?? null}
             loading={childrenRes.loading}
             labelById={labelById}
             canEdit={canEdit}
@@ -364,117 +390,190 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
         </aside>
       </div>
 
-      {addArtifact && (
-        <AttachModal
-          title="Add artifact"
-          kinds={plugins?.artifactKinds ?? []}
-          onClose={() => setAddArtifact(false)}
-          onSubmit={(kind, value) => api.addArtifact(issue.id, kind, value)}
-          onDone={() => { setAddArtifact(false); load(); }}
-        />
-      )}
-      {addCheck && (
-        <AttachModal
-          title="Add check"
-          kinds={plugins?.checkKinds ?? []}
-          onClose={() => setAddCheck(false)}
-          onSubmit={(kind, value) => api.addCheck(issue.id, kind, value)}
-          onDone={() => { setAddCheck(false); load(); }}
-        />
-      )}
-      {editArtifact && (
-        <AttachModal
-          title="Edit artifact"
-          kinds={plugins?.artifactKinds ?? []}
-          existing={{ kind: editArtifact.kind, value: editArtifact.payload }}
-          onClose={() => setEditArtifact(null)}
-          onSubmit={(_kind, value) => api.updateArtifact(editArtifact.id, value)}
-          onDone={() => { setEditArtifact(null); load(); }}
-        />
-      )}
-      {editCheck && (
-        <AttachModal
-          title="Edit check"
-          kinds={plugins?.checkKinds ?? []}
-          existing={{ kind: editCheck.kind, value: editCheck.config }}
-          onClose={() => setEditCheck(null)}
-          onSubmit={(_kind, value) => api.updateCheck(editCheck.id, value)}
-          onDone={() => { setEditCheck(null); load(); }}
-        />
-      )}
-      {requestingReview && (
-        <RequestReviewModal
-          issueId={issue.id}
-          actors={allActors}
-          onClose={() => setRequestingReview(false)}
-          onDone={() => { setRequestingReview(false); load(); }}
-        />
-      )}
-      {addingChild && (
-        <Modal title={`New child issue of #${issue.id}`} onClose={addChildClose.requestClose}>
-          <IssueForm
-            me={me}
-            embedded
-            initialParent={issue.id}
-            onCancel={addChildClose.requestClose}
-            onDirtyChange={setAddChildDirty}
-            onDone={(newId) => { setAddingChild(false); window.location.hash = `#/issues/${newId}`; }}
+      {/* Dialogues, all of them lazily loaded. `fallback={null}` because the alternative to
+          a dialogue that appears a frame late is a spinner that appears a frame late; the
+          chunk is small and same-origin, and after the first open it is in cache. */}
+      <Suspense fallback={null}>
+        {addArtifact && (
+          <AttachModal
+            title="Add artifact"
+            kinds={plugins?.artifactKinds ?? []}
+            onClose={() => setAddArtifact(false)}
+            onSubmit={(kind, value) => api.addArtifact(issue.id, kind, value)}
+            onDone={() => { setAddArtifact(false); load(); }}
           />
-        </Modal>
-      )}
-      {addChildClose.confirming && (
-        <ConfirmModal
-          title="Discard new issue?"
-          message="You have unsaved changes. Discard them?"
-          confirmLabel="Discard"
-          danger
-          onConfirm={addChildClose.confirmDiscard}
-          onCancel={addChildClose.cancelDiscard}
-        />
-      )}
-      {completeConfirm && (
-        <ConfirmModal
-          title="Complete with failing checks?"
-          message={`${failingChecks.length} check(s) are not passing (${failingChecks.map((c) => c.kind).join(", ")}). As an admin you can bypass this and complete the issue anyway.`}
-          confirmLabel="Complete anyway"
-          onConfirm={() => { setCompleteConfirm(false); setState("completed"); }}
-          onCancel={() => setCompleteConfirm(false)}
-        />
-      )}
-      {confirmDelete && (
-        <ConfirmModal
-          title="Delete issue"
-          message={`Delete issue #${issue.id} "${issue.title}"? This cannot be undone.`}
-          confirmLabel="Delete"
-          danger
-          onConfirm={del}
-          onCancel={() => setConfirmDelete(false)}
-        />
-      )}
-      {delArtifact && (
-        <ConfirmModal
-          title="Remove artifact"
-          message={`Remove the ${delArtifact.kind} artifact "${delArtifact.display.label}"?`}
-          confirmLabel="Remove"
-          danger
-          onConfirm={() => api.deleteArtifact(delArtifact.id)
-            .then(() => { setDelArtifact(null); load(); })
-            .catch((e) => { setDelArtifact(null); setError(String(e)); })}
-          onCancel={() => setDelArtifact(null)}
-        />
-      )}
-      {delCheck && (
-        <ConfirmModal
-          title="Remove check"
-          message={`Remove the ${delCheck.kind} check from this issue?`}
-          confirmLabel="Remove"
-          danger
-          onConfirm={() => api.deleteCheck(delCheck.id)
-            .then(() => { setDelCheck(null); load(); })
-            .catch((e) => { setDelCheck(null); setError(String(e)); })}
-          onCancel={() => setDelCheck(null)}
-        />
-      )}
+        )}
+        {addCheck && (
+          <AttachModal
+            title="Add check"
+            kinds={plugins?.checkKinds ?? []}
+            onClose={() => setAddCheck(false)}
+            onSubmit={(kind, value) => api.addCheck(issue.id, kind, value)}
+            onDone={() => { setAddCheck(false); load(); }}
+          />
+        )}
+        {editArtifact && (
+          <AttachModal
+            title="Edit artifact"
+            kinds={plugins?.artifactKinds ?? []}
+            existing={{ kind: editArtifact.kind, value: editArtifact.payload }}
+            onClose={() => setEditArtifact(null)}
+            onSubmit={(_kind, value) => api.updateArtifact(editArtifact.id, value)}
+            onDone={() => { setEditArtifact(null); load(); }}
+          />
+        )}
+        {editCheck && (
+          <AttachModal
+            title="Edit check"
+            kinds={plugins?.checkKinds ?? []}
+            existing={{ kind: editCheck.kind, value: editCheck.config }}
+            onClose={() => setEditCheck(null)}
+            onSubmit={(_kind, value) => api.updateCheck(editCheck.id, value)}
+            onDone={() => { setEditCheck(null); load(); }}
+          />
+        )}
+        {requestingReview && (
+          <RequestReviewModal
+            issueId={issue.id}
+            actors={allActors}
+            onClose={() => setRequestingReview(false)}
+            onDone={() => { setRequestingReview(false); load(); }}
+          />
+        )}
+        {addingChild && (
+          <Modal title={`New child issue of #${issue.id}`} onClose={addChildClose.requestClose}>
+            <IssueForm
+              me={me}
+              embedded
+              initialParent={issue.id}
+              onCancel={addChildClose.requestClose}
+              onDirtyChange={setAddChildDirty}
+              onDone={(newId) => { setAddingChild(false); window.location.hash = `#/issues/${newId}`; }}
+            />
+          </Modal>
+        )}
+        {addChildClose.confirming && (
+          <ConfirmModal
+            title="Discard new issue?"
+            message="You have unsaved changes. Discard them?"
+            confirmLabel="Discard"
+            danger
+            onConfirm={addChildClose.confirmDiscard}
+            onCancel={addChildClose.cancelDiscard}
+          />
+        )}
+        {completeConfirm && (
+          <ConfirmModal
+            title="Complete with failing checks?"
+            message={`${failingChecks.length} check(s) are not passing (${failingChecks.map((c) => c.kind).join(", ")}). As an admin you can bypass this and complete the issue anyway.`}
+            confirmLabel="Complete anyway"
+            onConfirm={() => { setCompleteConfirm(false); setState("completed"); }}
+            onCancel={() => setCompleteConfirm(false)}
+          />
+        )}
+        {confirmDelete && (
+          <ConfirmModal
+            title="Delete issue"
+            message={`Delete issue #${issue.id} "${issue.title}"? This cannot be undone.`}
+            confirmLabel="Delete"
+            danger
+            onConfirm={del}
+            onCancel={() => setConfirmDelete(false)}
+          />
+        )}
+        {delArtifact && (
+          <ConfirmModal
+            title="Remove artifact"
+            message={`Remove the ${delArtifact.kind} artifact "${delArtifact.display.label}"?`}
+            confirmLabel="Remove"
+            danger
+            onConfirm={() => api.deleteArtifact(delArtifact.id)
+              .then(() => { setDelArtifact(null); load(); })
+              .catch((e) => { setDelArtifact(null); setError(String(e)); })}
+            onCancel={() => setDelArtifact(null)}
+          />
+        )}
+        {delCheck && (
+          <ConfirmModal
+            title="Remove check"
+            message={`Remove the ${delCheck.kind} check from this issue?`}
+            confirmLabel="Remove"
+            danger
+            onConfirm={() => api.deleteCheck(delCheck.id)
+              .then(() => { setDelCheck(null); load(); })
+              .catch((e) => { setDelCheck(null); setError(String(e)); })}
+            onCancel={() => setDelCheck(null)}
+          />
+        )}
+      </Suspense>
+    </div>
+  );
+}
+
+// The issue page before its response has arrived.
+//
+// The structure of an issue page is the same for every issue, and the naming index — prefetched
+// before React mounts, and cached across navigations — already holds this one's title and its
+// place in the tree. So the frame, the breadcrumbs, the sibling nav and the heading are all real
+// on the first paint, and only the slots that genuinely need the response are placeheld. What used
+// to happen here was a bare "Loading…", followed by the entire page appearing at once.
+//
+// The panels are laid out in the same grid as the real page, so nothing jumps when it fills in.
+function IssueSkeleton({ id, index }: { id: number; index: IssueIndexEntry[] }) {
+  const entry = index.find((i) => i.id === id);
+  // Enough to name the issue and place it in the tree; the title is empty until the index arrives,
+  // which only costs the heading, not the frame around it.
+  const nameable = entry ?? { id, title: "", parent: null };
+  const bar = (width: string) => <span className="skeleton-line" style={{ width }} />;
+
+  return (
+    <div aria-busy="true">
+      <div className="crumb-bar">
+        <IssueBreadcrumbs issue={nameable} index={index} />
+        <SiblingNav issue={nameable} index={index} />
+      </div>
+
+      <div className="page-head">
+        <h2 className="issue-title">
+          <span className="issue-number">#{id}</span>
+          {entry ? <Markdown text={entry.title} inline /> : <span style={{ flex: 1 }}>{bar("24ch")}</span>}
+        </h2>
+      </div>
+
+      <div className="issue-layout">
+        <div>
+          <div className="panel">
+            <h3 className="field-heading">Description</h3>
+            {bar("100%")}{bar("97%")}{bar("62%")}
+            <h3 className="field-heading" style={{ marginTop: 20 }}>Goal</h3>
+            <div className="goal-block">
+              <span className="goal-turnstile" aria-hidden="true">⊢</span>
+              <div className="goal-body" style={{ flex: 1 }}>{bar("55%")}</div>
+            </div>
+          </div>
+
+          <div className="panel">
+            <h3 className="panel-title">Children</h3>
+            {bar("100%")}{bar("100%")}
+          </div>
+
+          <div className="panel">
+            <h3 className="panel-title">Activity</h3>
+            {bar("100%")}{bar("78%")}
+          </div>
+        </div>
+
+        <aside className="issue-rail">
+          <div className="panel">
+            {["Labels", "Parent", "Depends on", "Assignees", "Visible to", "Deadline"].map((label) => (
+              <div key={label} className="meta-row">
+                <span className="meta-label muted small">{label}</span>
+                <span className="meta-value" style={{ flex: 1 }}>{bar("9ch")}</span>
+              </div>
+            ))}
+          </div>
+        </aside>
+      </div>
     </div>
   );
 }
@@ -500,10 +599,15 @@ function IssueRef({ id, index }: { id: number; index: IssueIndexEntry[] }) {
 // The list stays here; the issue list stays the place for sorting, columns and bulk edits, and is
 // one link away for anyone who wants them.
 function ChildrenPanel({
-  parent, items, loading, labelById, canEdit, onAdd,
+  parent, items, total, counts, loading, labelById, canEdit, onAdd,
 }: {
   parent: Issue;
-  items: Issue[];
+  /** One page of children — not necessarily all of them. */
+  items: IssueListRow[];
+  /** How many children there are in total, however many were fetched. */
+  total: number | null;
+  /** Those children by state, so progress describes the issue and not the page. */
+  counts: { open: number; closed: number; completed: number } | null;
   loading: boolean;
   labelById: Map<number, Label>;
   canEdit: boolean;
@@ -515,12 +619,13 @@ function ChildrenPanel({
   const [q, setQ] = useState("");
   const [state, setState] = useState<"" | IssueState>("");
 
-  // Counted over every child, not the filtered view — this is the issue's progress, and it should
-  // not change because you typed in the search box. What the filters change is the row count
-  // reported next to them.
-  const total = items.length;
-  const done = items.filter((c) => c.state === "completed").length;
-  const open = items.filter((c) => c.state === "open").length;
+  // Counted over every child, not over the filtered view and not over the fetched page — this is
+  // the issue's progress, and it should change neither because you typed in the search box nor
+  // because the panel stopped fetching at a hundred rows. The server sends the breakdown with the
+  // page; `items.length` is only a fallback for a response that predates it.
+  const childCount = total ?? items.length;
+  const done = counts?.completed ?? items.filter((c) => c.state === "completed").length;
+  const open = counts?.open ?? items.filter((c) => c.state === "open").length;
 
   const shown = useMemo(
     () => items.filter((c) => (!state || c.state === state) && fuzzyMatch(q, c.title)),
@@ -538,30 +643,36 @@ function ChildrenPanel({
     <div className="panel">
       <h3 className="panel-title">
         Children
-        {total > 0 && <span className="count">{total} · {open} open · {done} completed</span>}
+        {childCount > 0 && <span className="count">{childCount} · {open} open · {done} completed</span>}
         <span className="spacer" />
         {canEdit && <button onClick={onAdd}>+ New child issue</button>}
       </h3>
 
       {/* How much of this obligation is discharged, as a line rather than another sentence. */}
-      {total > 0 && (
+      {childCount > 0 && (
         <div
           className="progress"
           role="img"
-          aria-label={`${done} of ${total} children completed`}
+          aria-label={`${done} of ${childCount} children completed`}
         >
-          <span style={{ width: `${Math.round((done / total) * 100)}%` }} />
+          <span style={{ width: `${Math.round((done / childCount) * 100)}%` }} />
         </div>
       )}
 
-      {loading && total === 0 && <div className="rail-empty" style={{ marginTop: 8 }}>Loading…</div>}
-      {!loading && total === 0 && (
+      {loading && items.length === 0 && (
+        <div style={{ marginTop: 8 }}>
+          {[0, 1, 2].map((i) => (
+            <span key={i} className="skeleton-line" style={{ width: `${72 - i * 14}%` }} />
+          ))}
+        </div>
+      )}
+      {!loading && childCount === 0 && (
         <div className="rail-empty" style={{ marginTop: 8 }}>
           Nothing is filed under this issue{canEdit ? " yet — add the first child above." : "."}
         </div>
       )}
 
-      {total > 0 && (
+      {childCount > 0 && (
         <div className="child-filters">
           <input
             type="search"
@@ -585,7 +696,7 @@ function ChildrenPanel({
           {/* Always rendered, so the row never changes shape. Filling this in used to squeeze the
               flexible search box and shove the state tabs sideways on every keystroke. */}
           <span className="child-count" aria-live="polite">
-            {shown.length !== total ? `${shown.length} of ${total}` : ""}
+            {shown.length !== items.length ? `${shown.length} of ${items.length}` : ""}
           </span>
         </div>
       )}
@@ -602,12 +713,21 @@ function ChildrenPanel({
         </a>
       ))}
 
-      {total > 0 && shown.length === 0 && (
-        <div className="rail-empty" style={{ padding: "14px 0 4px" }}>No child matches that.</div>
+      {childCount > 0 && shown.length === 0 && (
+        <div className="rail-empty" style={{ padding: "14px 0 4px" }}>
+          {items.length < childCount
+            ? "No match among the children loaded here — the issue list searches all of them."
+            : "No child matches that."}
+        </div>
       )}
 
-      {total > 0 && (
+      {childCount > 0 && (
         <div className="small" style={{ marginTop: 12 }}>
+          {items.length < childCount && (
+            <div className="muted" style={{ marginBottom: 4 }}>
+              Showing {items.length} of {childCount}.
+            </div>
+          )}
           <a href={`#/issues?parents=${parent.id}`}>Open these in the issue list →</a>
         </div>
       )}
@@ -775,45 +895,6 @@ function DeadlineEditor({
   );
 }
 
-// Modal to ask a specific actor to review the issue — independent of assignment.
-function RequestReviewModal({
-  issueId, actors, onClose, onDone,
-}: {
-  issueId: number;
-  actors: Actor[];
-  onClose: () => void;
-  onDone: () => void;
-}) {
-  const [actorId, setActorId] = useState<number | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-
-  const submit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (actorId == null) { setErr("Choose who should review this."); return; }
-    api.requestReview(issueId, actorId).then(onDone).catch((e2) => setErr(String(e2)));
-  };
-
-  return (
-    <Modal title="Request review" onClose={onClose}>
-      <form onSubmit={submit}>
-        {err && <div className="error small">{err}</div>}
-        <label>Reviewer</label>
-        <SearchableSelect
-          options={actors.map((a) => ({ value: a.id, label: a.displayName }))}
-          value={actorId}
-          onChange={setActorId}
-          allowNone={false}
-          placeholder="Choose an actor…"
-        />
-        <div className="row" style={{ justifyContent: "flex-end", marginTop: 16 }}>
-          <button type="button" onClick={onClose}>Cancel</button>
-          <button className="primary" type="submit" disabled={actorId == null}>Request</button>
-        </div>
-      </form>
-    </Modal>
-  );
-}
-
 // A collapsible edit-history popover shown next to a title/description/comment. Each entry shows
 // who changed it and when, with the previous → new value.
 function HistoryDropdown({ events, label }: { events: Event[]; label: string }) {
@@ -949,117 +1030,6 @@ function joinChange(noun: string, added: ReactNode[], removed: ReactNode[]): Rea
   if (removed.length) parts.push(<span key="r">removed {plural(removed.length)} {list(removed)}</span>);
   if (parts.length === 0) return `changed ${noun}s`;
   return parts.flatMap((p, i) => (i > 0 ? [" and ", p] : [p]));
-}
-
-// Modal for attaching *or editing* an artifact or check. Renders a form derived from the selected
-// kind's field schema (from /api/plugins) and assembles the payload — no raw JSON needed.
-//
-// Editing passes `existing`, which seeds the fields from the stored payload and fixes the kind: the
-// kind is what selects the schema the payload is written against, so changing it would leave the
-// values describing nothing. Swapping kind is a remove and an attach.
-function AttachModal({
-  title, kinds, existing, onClose, onSubmit, onDone,
-}: {
-  title: string;
-  kinds: PluginKind[];
-  existing?: { kind: string; value: unknown };
-  onClose: () => void;
-  onSubmit: (kind: string, value: unknown) => Promise<unknown>;
-  onDone: () => void;
-}) {
-  const [kind, setKind] = useState(existing?.kind ?? "");
-  // Seeded from the stored payload so an edit starts from what is there rather than from blank —
-  // the schema's field names are exactly the payload's keys.
-  const [values, setValues] = useState<Record<string, string | boolean>>(() => {
-    if (!existing) return {};
-    const stored = (existing.value ?? {}) as Record<string, unknown>;
-    const seeded: Record<string, string | boolean> = {};
-    for (const f of kinds.find((k) => k.kind === existing.kind)?.fields ?? []) {
-      const v = stored[f.name];
-      seeded[f.name] = f.type === "boolean" ? !!v : v == null ? "" : String(v);
-    }
-    return seeded;
-  });
-  const [err, setErr] = useState<string | null>(null);
-
-  const selected = kinds.find((k) => k.kind === kind);
-
-  const chooseKind = (k: string) => {
-    setKind(k);
-    setErr(null);
-    const kd = kinds.find((x) => x.kind === k);
-    const init: Record<string, string | boolean> = {};
-    kd?.fields.forEach((f) => { init[f.name] = f.type === "boolean" ? false : ""; });
-    setValues(init);
-  };
-  const setField = (name: string, v: string | boolean) => setValues((prev) => ({ ...prev, [name]: v }));
-
-  const submit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selected) { setErr("choose a kind"); return; }
-    const payload: Record<string, unknown> = {};
-    for (const f of selected.fields) {
-      const raw = values[f.name];
-      if (f.type === "boolean") { payload[f.name] = !!raw; continue; }
-      const s = String(raw ?? "").trim();
-      if (s === "") {
-        if (f.required) { setErr(`${f.label} is required`); return; }
-        continue;
-      }
-      if (f.type === "number") {
-        const n = Number(s);
-        if (Number.isNaN(n)) { setErr(`${f.label} must be a number`); return; }
-        payload[f.name] = n;
-      } else {
-        payload[f.name] = s;
-      }
-    }
-    onSubmit(kind, payload).then(onDone).catch((e2) => setErr(String(e2)));
-  };
-
-  return (
-    <Modal title={title} onClose={onClose}>
-      <form onSubmit={submit}>
-        {err && <div className="error small">{err}</div>}
-        <label>Kind</label>
-        {existing ? (
-          <>
-            <div className="field-disabled">{existing.kind}</div>
-            <div className="rail-empty" style={{ marginTop: 4 }}>
-              The kind is fixed. To use a different one, remove this and add a new one.
-            </div>
-          </>
-        ) : (
-          <select value={kind} onChange={(e) => chooseKind(e.target.value)} required>
-            <option value="" disabled>choose a kind…</option>
-            {kinds.map((k) => <option key={k.kind} value={k.kind}>{k.kind}</option>)}
-          </select>
-        )}
-
-        {selected && selected.fields.length === 0 && (
-          <p className="muted small">No additional fields required.</p>
-        )}
-        {selected?.fields.map((f) => (
-          <div key={f.name}>
-            <label>{f.label}{f.required ? " *" : ""}</label>
-            {f.type === "boolean" ? (
-              <input type="checkbox" checked={!!values[f.name]} onChange={(e) => setField(f.name, e.target.checked)} />
-            ) : f.type === "text" ? (
-              <AutoTextarea value={String(values[f.name] ?? "")} placeholder={f.placeholder ?? ""} onChange={(e) => setField(f.name, e.target.value)} />
-            ) : (
-              <input type={f.type === "number" ? "number" : "text"} value={String(values[f.name] ?? "")} placeholder={f.placeholder ?? ""} onChange={(e) => setField(f.name, e.target.value)} />
-            )}
-            {f.help && <div className="muted small">{f.help}</div>}
-          </div>
-        ))}
-
-        <div className="row" style={{ justifyContent: "flex-end", marginTop: 16 }}>
-          <button type="button" onClick={onClose}>Cancel</button>
-          <button className="primary" type="submit" disabled={!selected}>{existing ? "Save" : "Attach"}</button>
-        </div>
-      </form>
-    </Modal>
-  );
 }
 
 // One unified, chronological stream of an issue's activity: comments (each editable/removable by

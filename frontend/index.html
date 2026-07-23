@@ -23,7 +23,47 @@
     </script>
   </head>
   <body>
-    <div id="root"></div>
+    <!-- The page frame, drawn before a byte of JavaScript has run.
+         React clears whatever is in the root container on its first render, so this is a plain
+         placeholder with no handover to arrange: the stylesheet in <head> is render-blocking and
+         has already applied, so the bar below lands in its final position and the application
+         mounts into the same frame rather than replacing a blank page with a whole one.
+         It is worth the duplication of the bar's markup (the copy that matters lives in App.tsx,
+         and only the frame is repeated here — no active tab, no account controls, nothing that
+         depends on who is signed in or where they are) because the alternative is showing nothing
+         at all until ~80 KB of compressed JavaScript has been fetched, parsed and run. -->
+    <div id="root">
+      <header class="topbar">
+        <div class="topbar-inner">
+          <a class="wordmark" href="#/issues" aria-label="taxis — all issues">
+            <svg viewBox="0 0 32 32" width="19" height="19" aria-hidden="true">
+              <rect width="32" height="32" rx="7" fill="var(--accent)" />
+              <g fill="var(--accent-fg)">
+                <rect x="10" y="7.5" width="3.6" height="17" rx="1.8" />
+                <rect x="10" y="14.2" width="12" height="3.6" rx="1.8" />
+              </g>
+            </svg>
+            <span>taxis</span>
+          </a>
+          <nav aria-label="Main">
+            <a href="#/issues">Issues</a>
+            <a href="#/graph">Graph</a>
+            <a href="#/repos">Repos</a>
+            <a href="#/labels">Labels</a>
+          </nav>
+          <div class="spacer"></div>
+        </div>
+      </header>
+      <main aria-busy="true">
+        <span class="skeleton-line" style="width: 18ch"></span>
+        <span class="skeleton-line" style="width: 32ch; height: 1.3em; margin-top: 1em"></span>
+        <div class="panel" style="margin-top: 14px">
+          <span class="skeleton-line" style="width: 100%"></span>
+          <span class="skeleton-line" style="width: 97%"></span>
+          <span class="skeleton-line" style="width: 62%"></span>
+        </div>
+      </main>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

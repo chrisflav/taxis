@@ -1,19 +1,25 @@
-import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import { LockedMark } from "./Icon";
-import type { Actor, Issue, IssueIndexEntry, Label } from "../types";
-import { api, paths, type IssueFilters } from "../api";
-import { EMPTY, LIST_MAX_AGE, REFERENCE_MAX_AGE, useResource } from "../cache";
 import {
-  emptyFilters, filtersFromParams, filtersToParams, isOverdue, matchesFilters, loadStoredViewState,
-  VIEW_STATE_STORAGE_KEY, type IssueFilterState,
+  Suspense, lazy, memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState,
+} from "react";
+import { LockedMark } from "./Icon";
+import type { Actor, IssueListRow, IssueIndexEntry, Label } from "../types";
+import { api, paths, type IssuePageQuery } from "../api";
+import { EMPTY, REFERENCE_MAX_AGE, useResource } from "../cache";
+import {
+  emptyFilters, filtersFromParams, filtersToParams, isOverdue, matchesStructuralFilters, matchesText,
+  loadStoredViewState, VIEW_STATE_STORAGE_KEY, type IssueFilterState,
 } from "../filters";
+import { useIssueFeed } from "../useIssueFeed";
 import { PageHeader } from "./PageHeader";
 import { LabelChip } from "./LabelChip";
 import { Markdown } from "./Markdown";
 import { Filters } from "./Filters";
 import { IssueTree } from "./IssueTree";
 import { Modal, ConfirmModal, useConfirmClose } from "./Modal";
-import { IssueForm } from "./IssueForm";
+// Behind the "New issue" button, so it loads when that is pressed. Lazy here as well as in the
+// detail view: a single static import anywhere would pull it back into the entry chunk and undo
+// the split for both.
+const IssueForm = lazy(() => import("./IssueForm").then((m) => ({ default: m.IssueForm })));
 import { Pagination, usePagination } from "./Pagination";
 import { ListBreadcrumbs } from "./Breadcrumbs";
 import { BulkBar } from "./BulkBar";
@@ -105,13 +111,16 @@ type SortKey = "id" | "title" | "updated" | "deps" | "deadline";
 // opening the children of an issue with three children fetches three rows, not the whole tracker.
 // Single-valued selections push down; multi-valued ones (and the fuzzy query) stay client-side,
 // which stays correct because those only narrow the set further.
-function serverFilters(f: IssueFilterState): IssueFilters {
+function serverFilters(f: IssueFilterState, sort: SortState<SortKey>): IssuePageQuery {
   return {
-    summary: true,
     state: f.state || undefined,
     parent: f.parents.length === 1 ? f.parents[0] : undefined,
     label: f.labels.length === 1 ? f.labels[0] : undefined,
     assignee: f.assignees.length === 1 ? f.assignees[0] : undefined,
+    // Pushed down so the rows arrive in order: every sort key here has an index behind it, which
+    // is what lets the server seek instead of sorting the whole table. It also makes the order
+    // correct across a partially-loaded list — sorting locally would only order what had arrived.
+    sort: sort.key === "deps" ? undefined : sort.key,
   };
 }
 
@@ -121,7 +130,7 @@ function serverFilters(f: IssueFilterState): IssueFilters {
 const IssueRowView = memo(function IssueRowView({
   issue, cols, selectable, selected, onToggleSelected, labelById, actorById, overdue,
 }: {
-  issue: Issue;
+  issue: IssueListRow;
   cols: Columns;
   selectable: boolean;
   selected: boolean;
@@ -159,8 +168,8 @@ const IssueRowView = memo(function IssueRowView({
       )}
       {/* The column header already says what these are; the cell only has to say how many. */}
       {cols.deps && <td className="cell-num">{issue.dependencies.length || "—"}</td>}
-      {cols.artifacts && <td className="cell-num">{issue.artifacts.length || "—"}</td>}
-      {cols.checks && <td className="cell-num">{issue.checks.length || "—"}</td>}
+      {cols.artifacts && <td className="cell-num">{issue.artifactCount || "—"}</td>}
+      {cols.checks && <td className="cell-num">{issue.checkCount || "—"}</td>}
       {cols.deadline && (
         <td className={`small ${overdue ? "error" : "muted"}`}>
           {issue.deadline != null ? new Date(issue.deadline * 1000).toLocaleDateString() : "—"}
@@ -205,19 +214,30 @@ export function IssueList({ me }: { me: Actor | null }) {
   // The rows themselves, narrowed server-side. Reference data and the naming index are read
   // through the same cache, so arriving here from the detail view (which already read them)
   // paints without waiting on the network.
-  const query = useMemo(() => serverFilters(filters), [filters]);
-  const issuesRes = useResource<Issue[]>(paths.issues(query), () => api.listIssues(query), LIST_MAX_AGE);
+  // Narrowed to exactly one parent, this page *is* that issue's children — the breadcrumb names the
+  // parent and the heading names the view, so neither has to repeat the other.
+  const singleParent = filters.parents.length === 1 ? filters.parents[0] : null;
+  // Only one generation is fetched under a parent filter, so every row would be its own root and
+  // the tree would render as a flat copy of the list. Drop the choice rather than offer a view that
+  // cannot nest.
+  const canTree = singleParent == null;
+  const effectiveView = canTree ? view : "list";
+
+  const query = useMemo(() => serverFilters(filters, sort), [filters, sort]);
+  // Rows arrive a page at a time and accumulate; see `useIssueFeed`. The table draws whatever has
+  // landed, so a large tracker paints as promptly as a small one.
+  const feed = useIssueFeed(query, filters.q, effectiveView === "list");
   const labelsRes = useResource<Label[]>(paths.labels, api.listLabels, REFERENCE_MAX_AGE);
   const actorsRes = useResource<Actor[]>(paths.actors, api.listActors, REFERENCE_MAX_AGE);
   const indexRes = useResource<IssueIndexEntry[]>(paths.issueIndex, api.issueIndex, REFERENCE_MAX_AGE);
 
-  const issues = issuesRes.data ?? EMPTY;
+  const issues = feed.rows;
   const labels = labelsRes.data ?? EMPTY;
   const actors = actorsRes.data ?? EMPTY;
   const issueIndex = indexRes.data ?? EMPTY;
-  const loading = issuesRes.loading;
-  const error = issuesRes.error ?? labelsRes.error ?? actorsRes.error;
-  const load = issuesRes.reload;
+  const loading = feed.loading;
+  const error = feed.error ?? labelsRes.error ?? actorsRes.error;
+  const load = feed.reload;
 
   // The breadcrumbs' "Issues" root link uses "?reset=1" to explicitly clear every filter — but
   // when it's clicked while already on this page (e.g. from the "Children" filtered view), the
@@ -244,16 +264,22 @@ export function IssueList({ me }: { me: Actor | null }) {
   // Typing narrows the list at a lower priority than the keystroke itself, so the input keeps up
   // even when the re-render has to re-lay-out every visible row.
   const deferredQ = useDeferredValue(filters.q);
+  // The text query is answered two ways. Locally it narrows the rows already held, which costs no
+  // request and is why they are held at all. A row the server returned for this same query is kept
+  // regardless of what the local test makes of it — the server matched descriptions too, and it is
+  // the authority on rows that were never here to test.
   const filtered = useMemo(
-    () => issues.filter((i) => matchesFilters(i, { ...filters, q: deferredQ })),
+    () => issues.filter((i) =>
+      matchesStructuralFilters(i, filters)
+      && (matchesText(i, deferredQ) || feed.serverMatched.has(i.id))),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [issues, filters, deferredQ],
+    [issues, filters, deferredQ, feed.serverMatched],
   );
   const colCount = Math.max(1, ALL_COLUMNS.filter((c) => cols[c.key]).length + (me ? 1 : 0));
   const [selected, setSelected] = useState<Set<number>>(new Set());
   // A selection belongs to the rows it was made on. Now that changing a filter fetches a different
   // set of rows, keeping it would leave the bulk bar counting issues that are no longer loaded.
-  const issuesKey = paths.issues(query);
+  const issuesKey = JSON.stringify(query);
   useEffect(() => { setSelected(new Set()); }, [issuesKey]);
   const toggleSelected = useCallback((id: number) =>
     setSelected((s) => { const next = new Set(s); if (next.has(id)) next.delete(id); else next.add(id); return next; }), []);
@@ -267,7 +293,7 @@ export function IssueList({ me }: { me: Actor | null }) {
   const sorted = useMemo(() => {
     const dir = sort.dir === "asc" ? 1 : -1;
     // Issues without a deadline always sort after ones with one, regardless of direction.
-    const deadlineKey = (i: Issue) => i.deadline ?? Infinity;
+    const deadlineKey = (i: IssueListRow) => i.deadline ?? Infinity;
     return [...filtered].sort((a, b) => {
       let cmp = 0;
       switch (sort.key) {
@@ -299,14 +325,6 @@ export function IssueList({ me }: { me: Actor | null }) {
     try { localStorage.setItem(VIEW_STATE_STORAGE_KEY, JSON.stringify({ filters, view })); } catch {}
   }, [filters, view]);
 
-  // Narrowed to exactly one parent, this page *is* that issue's children — the breadcrumb names the
-  // parent and the heading names the view, so neither has to repeat the other.
-  const singleParent = filters.parents.length === 1 ? filters.parents[0] : null;
-  // Only one generation is fetched under a parent filter, so every row would be its own root and
-  // the tree would render as a flat copy of the list. Drop the choice rather than offer a view that
-  // cannot nest.
-  const canTree = singleParent == null;
-  const effectiveView = canTree ? view : "list";
   // Whether an empty result means "this issue has no children" or "no child survived the other
   // filters" — two different things to tell someone staring at an empty table.
   const narrowedBeyondParent = !!filters.q || !!filters.state || filters.overdue
@@ -349,14 +367,30 @@ export function IssueList({ me }: { me: Actor | null }) {
       )}
 
       {error && <div className="panel error">{error}</div>}
-      {loading ? (
-        <div className="muted">Loading…</div>
-      ) : effectiveView === "tree" ? (
+      {/* What is actually in hand. A list that stopped at the cap looks exactly like a list that
+          reached the end, and the difference decides whether searching it is conclusive. */}
+      {(feed.streaming || feed.capped || feed.searching) && (
+        <div className="feed-status small muted" role="status">
+          {feed.searching
+            ? "Searching the rest of the tracker…"
+            : feed.streaming
+              ? `Loaded ${feed.rows.length.toLocaleString()}${feed.total != null ? ` of ${feed.total.toLocaleString()}` : ""}…`
+              : `Showing the ${feed.rows.length.toLocaleString()} most recently updated of `
+                + `${(feed.total ?? feed.rows.length).toLocaleString()}. Type to search the rest.`}
+        </div>
+      )}
+      {/* The table is not gated on the rows arriving. Its header, its sort controls and which
+          columns are shown are all settled before the first row is — and this is the landing page,
+          so collapsing all of that to the word "Loading" was the first thing anyone saw of the
+          application. Only the body waits. */}
+      {effectiveView === "tree" ? (
         <>
           {/* The tree is built from the parent relation, so it unfolds into an issue's children —
               not its dependants, which is what the Graph view shows. */}
           <p className="muted small">Top-level issues shown; unfold to reveal the issues filed under them.</p>
-          <IssueTree issues={filtered} labels={labels} />
+          {/* The tree reads its own levels as they are unfolded, so it is handed the server-side
+              filters rather than the rows the list happens to hold. */}
+          <IssueTree query={query} labels={labels} />
         </>
       ) : (
         <>
@@ -404,7 +438,14 @@ export function IssueList({ me }: { me: Actor | null }) {
                   overdue={isOverdue(i, now)}
                 />
               ))}
-              {filtered.length === 0 && (
+              {loading && filtered.length === 0 && Array.from({ length: 8 }, (_, i) => (
+                <tr key={`placeholder-${i}`} aria-hidden="true">
+                  {Array.from({ length: colCount }, (_, c) => (
+                    <td key={c}><span className="skeleton-line" style={{ width: c === 1 ? "70%" : "4ch" }} /></td>
+                  ))}
+                </tr>
+              ))}
+              {!loading && filtered.length === 0 && (
                 <tr>
                   <td colSpan={colCount} className="muted" style={{ textAlign: "center", padding: 24 }}>
                     {singleParent == null
@@ -424,13 +465,15 @@ export function IssueList({ me }: { me: Actor | null }) {
 
       {creating && (
         <Modal title="New issue" onClose={createClose.requestClose}>
-          <IssueForm
-            me={me}
-            embedded
-            onCancel={createClose.requestClose}
-            onDirtyChange={setCreateDirty}
-            onDone={(id) => { setCreating(false); window.location.hash = `#/issues/${id}`; }}
-          />
+          <Suspense fallback={null}>
+            <IssueForm
+              me={me}
+              embedded
+              onCancel={createClose.requestClose}
+              onDirtyChange={setCreateDirty}
+              onDone={(id) => { setCreating(false); window.location.hash = `#/issues/${id}`; }}
+            />
+          </Suspense>
         </Modal>
       )}
       {createClose.confirming && (

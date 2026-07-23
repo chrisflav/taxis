@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { PageHeader } from "./PageHeader";
+import { PAGE_META } from "../pages";
 import type { Actor, Label } from "../types";
-import { api } from "../api";
+import { api, paths } from "../api";
+import { EMPTY, REFERENCE_MAX_AGE, useResource } from "../cache";
 import { Modal, ConfirmModal } from "./Modal";
 import { LabelChip } from "./LabelChip";
 import { Pagination, usePagination } from "./Pagination";
@@ -10,14 +12,18 @@ const DEFAULT_COLOR = "#6b7280";
 
 export function LabelsPage({ me }: { me: Actor | null }) {
   const isAdmin = !!me?.admin;
-  const [labels, setLabels] = useState<Label[]>([]);
-  const [err, setErr] = useState<string | null>(null);
+  // Through the shared cache, like every other view. Read into local state, this page re-requested
+  // the label list on arrival even though the application had already fetched it before React
+  // mounted — a whole round trip to be told what it was holding — and painted "No matching labels"
+  // over an empty table until the answer came back. The reference data is prefetched at startup,
+  // so this now normally renders from cache on the first frame.
+  const labelsRes = useResource<Label[]>(paths.labels, api.listLabels, REFERENCE_MAX_AGE);
+  const labels = labelsRes.data ?? EMPTY;
+  const err = labelsRes.error;
+  const load = labelsRes.reload;
   const [query, setQuery] = useState("");
   const [editing, setEditing] = useState<Label | "new" | null>(null);
   const [deleting, setDeleting] = useState<Label | null>(null);
-
-  const load = () => api.listLabels().then(setLabels).catch((e) => setErr(String(e)));
-  useEffect(() => { load(); }, []);
 
   const q = query.trim().toLowerCase();
   const filtered = labels.filter(
@@ -29,8 +35,7 @@ export function LabelsPage({ me }: { me: Actor | null }) {
   return (
     <div>
       <PageHeader
-        title="Labels"
-        description="Reusable tags an issue can carry any number of. Each has a name, an optional description, and a colour."
+        {...PAGE_META.labels}
         actions={isAdmin && <button className="primary" onClick={() => setEditing("new")}>+ Add label</button>}
       />
       <input placeholder="Search labels…" value={query} onChange={(e) => setQuery(e.target.value)} style={{ maxWidth: 320 }} />
@@ -53,7 +58,17 @@ export function LabelsPage({ me }: { me: Actor | null }) {
                 </td>
               </tr>
             ))}
-            {filtered.length === 0 && <tr><td colSpan={4} className="muted" style={{ textAlign: "center", padding: 24 }}>No matching labels</td></tr>}
+            {/* Rows in the shape of the ones that are coming. "No matching labels" is an answer,
+                and it is the wrong one to give before the question has been asked. */}
+            {labelsRes.loading && labels.length === 0 && [0, 1, 2].map((i) => (
+              <tr key={`placeholder-${i}`} aria-hidden="true">
+                <td className="cell-id"><span className="skeleton-line" style={{ width: "2ch" }} /></td>
+                <td><span className="skeleton-line" style={{ width: "8ch" }} /></td>
+                <td><span className="skeleton-line" style={{ width: "60%" }} /></td>
+                <td />
+              </tr>
+            ))}
+            {!labelsRes.loading && filtered.length === 0 && <tr><td colSpan={4} className="muted" style={{ textAlign: "center", padding: 24 }}>No matching labels</td></tr>}
           </tbody>
         </table>
       </div>

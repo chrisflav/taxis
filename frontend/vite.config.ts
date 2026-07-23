@@ -8,9 +8,14 @@ export default defineConfig({
     outDir: "dist",
     rollupOptions: {
       output: {
-        // Keep React in its own chunk: it never changes between deploys, so a returning visitor
-        // re-downloads only the application code. KaTeX is already split out by the dynamic
-        // import in `Markdown.tsx`.
+        // React never changes between deploys, so a returning visitor re-downloads only the
+        // application code.
+        //
+        // `marked`, `dompurify` and KaTeX are not listed: they are reached exclusively through the
+        // dynamic imports in `Markdown.tsx`, so Rollup splits them out by itself and — unlike a
+        // manual chunk — keeps them off the critical path entirely. Naming one here would pull it
+        // back into the initial graph, which is how `marked` came to be a quarter of what had to
+        // arrive before anything could be drawn.
         manualChunks: {
           react: ["react", "react-dom", "react-dom/client"],
         },

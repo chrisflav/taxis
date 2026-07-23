@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { PageHeader } from "./PageHeader";
+import { PAGE_META } from "../pages";
 import type { Actor, IssueIndexEntry, Label, Notification } from "../types";
 import { api, paths } from "../api";
 import { EMPTY, REFERENCE_MAX_AGE, useResource } from "../cache";
@@ -226,10 +227,7 @@ export function NotificationsPage({ me }: { me: Actor | null }) {
 
   return (
     <div>
-      <PageHeader
-        title="Notifications"
-        description="Activity on the issues you're involved in. Marking one done clears it from your queue."
-      />
+      <PageHeader {...PAGE_META.notifications} />
 
       <div className="filters panel">
         <div>

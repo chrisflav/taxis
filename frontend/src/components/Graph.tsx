@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { LockedMark } from "./Icon";
 import { PageHeader } from "./PageHeader";
+import { PAGE_META } from "../pages";
 import type { Actor, Issue, Label } from "../types";
-import { api, paths } from "../api";
+import { api, graphQuery, paths } from "../api";
 import { EMPTY, LIST_MAX_AGE, REFERENCE_MAX_AGE, useResource } from "../cache";
 import { emptyFilters, filtersFromParams, filtersToParams, matchesFilters, type IssueFilterState } from "../filters";
 import { Filters } from "./Filters";
-import { GraphCanvas, type GraphDirection, type GraphNode } from "./GraphCanvas";
+import { GraphCanvas, GraphPlaceholder, type GraphDirection, type GraphNode } from "./GraphCanvas";
 import { LabelChip } from "./LabelChip";
 import { Markdown } from "./Markdown";
 import { MultiSelect } from "./MultiSelect";
@@ -45,9 +46,6 @@ function readGraphFiltersFromHash(): IssueFilterState {
   return filtersFromParams(new URLSearchParams(hash.slice(qIndex + 1)));
 }
 
-// Hoisted so the cache key and the fetch closure are stable across renders.
-const GRAPH_QUERY = { summary: true } as const;
-
 export function GraphView() {
   const [filters, setFilters] = useState<IssueFilterState>(readGraphFiltersFromHash);
   const [layoutMode, setLayoutMode] = useState<GraphMode>("dependencies");
@@ -59,7 +57,7 @@ export function GraphView() {
   // filters hide, and the generation of a node is defined by its full parent chain. It does not
   // render descriptions though, so it asks for summary rows.
   const issuesRes = useResource<Issue[]>(
-    paths.issues(GRAPH_QUERY), () => api.listIssues(GRAPH_QUERY), LIST_MAX_AGE);
+    paths.issues(graphQuery), () => api.listIssues(graphQuery), LIST_MAX_AGE);
   const labelsRes = useResource<Label[]>(paths.labels, api.listLabels, REFERENCE_MAX_AGE);
   const actorsRes = useResource<Actor[]>(paths.actors, api.listActors, REFERENCE_MAX_AGE);
 
@@ -128,10 +126,7 @@ export function GraphView() {
 
   return (
     <div>
-      <PageHeader
-        title="Graph"
-        description="Every issue you can see, drawn as the graph its dependencies and parents form."
-      />
+      <PageHeader {...PAGE_META.graph} />
       {/* The rows already carry id/title/parent, so the pickers need no extra request. */}
       <Filters value={filters} onChange={setFilters} labels={labels} actors={actors} index={issues} />
       <div className="row" style={{ marginBottom: 12, justifyContent: "space-between" }}>
@@ -177,7 +172,7 @@ export function GraphView() {
 
       {error && <div className="panel error">{error}</div>}
       {loading ? (
-        <div className="muted">Loading…</div>
+        <GraphPlaceholder />
       ) : nodes.length === 0 ? (
         <div className="panel muted">No matching issues.</div>
       ) : (

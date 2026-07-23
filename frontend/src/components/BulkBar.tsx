@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import type { Actor, Issue, IssueIndexEntry, Label } from "../types";
+import type { Actor, IssueListRow, IssueIndexEntry, Label } from "../types";
 import { api } from "../api";
 import { MultiSelect } from "./MultiSelect";
 import { SearchableSelect } from "./SearchableSelect";
@@ -14,7 +14,7 @@ export function BulkBar({
 }: {
   selectedIds: Set<number>;
   /** The rows currently listed — the source of each selected issue's existing labels/assignees. */
-  issues: Issue[];
+  issues: IssueListRow[];
   /** Every issue, for the parent picker: a parent may well be outside the current filter. */
   index: IssueIndexEntry[];
   labels: Label[];

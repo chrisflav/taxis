@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import type { Actor } from "../types";
-import { api } from "../api";
+import { api, paths } from "../api";
+import { REFERENCE_MAX_AGE, cachedGet } from "../cache";
 import { ActorName } from "./ActorName";
 import { Modal } from "./Modal";
 
@@ -57,8 +58,11 @@ export function LoginBar({ me, onChange }: { me: Actor | null; onChange: () => v
   const [githubEnabled, setGithubEnabled] = useState(false);
   const [showPasswordForm, setShowPasswordForm] = useState(false);
 
+  // Which sign-in methods exist is server configuration: it cannot change while the tab is open,
+  // so it is read through the cache rather than re-requested every time the bar mounts — which,
+  // because the view is keyed on the auth identity, is on every navigation.
   useEffect(() => {
-    api.health().then(h => {
+    cachedGet(paths.health, api.health, REFERENCE_MAX_AGE).then(h => {
       setCentralPasswordEnabled(!!h.centralPasswordEnabled);
       setGoogleEnabled(!!h.googleEnabled);
       setGithubEnabled(!!h.githubEnabled);

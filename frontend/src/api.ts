@@ -10,6 +10,7 @@ import type {
   Issue,
   IssueDetail,
   IssueIndexEntry,
+  IssuePage,
   IssueState,
   Label,
   Notification,
@@ -61,6 +62,40 @@ function issuesPath(f: IssueFilters): string {
   return "/issues" + qs({ ...f, summary: f.summary ? "1" : undefined });
 }
 
+/** How many children the detail view shows at once. The panel is a place to see what is filed
+    under an issue and jump into it, not a place to page through a thousand rows — beyond this it
+    points at the issue list, which is built for that. */
+export const CHILDREN_PAGE_SIZE = 100;
+
+/** The children query the issue detail view lists with. Shared with the startup prefetch so both
+    derive the same cache key — two hand-written copies would drift, and a key that differs by one
+    character is a silent extra request. */
+export const childrenQuery = (parent: number): IssuePageQuery =>
+  ({ parent, limit: CHILDREN_PAGE_SIZE });
+
+/** The server-side half of the issue list's filters, plus paging. Anything expressible here is
+    applied in SQL, so a page carries only rows that will be shown. */
+export interface IssuePageQuery {
+  state?: string;
+  label?: number;
+  assignee?: number;
+  /** An issue id, or "none" for the roots of the containment tree. */
+  parent?: number | "none";
+  q?: string;
+  sort?: "updated" | "title" | "deadline" | "id";
+  limit?: number;
+  cursor?: string;
+}
+
+export function issuePagePath(query: IssuePageQuery): string {
+  return "/issues/page" + qs({ ...query });
+}
+
+/** The filter the graph view reads with: every issue, since an edge may point at one the current
+    filters hide, but without the descriptions it never draws. Shared with the prefetch for the
+    same reason as `childrenQuery`. */
+export const graphQuery: IssueFilters = { summary: true };
+
 /** Request paths, doubling as cache keys for `useResource`. */
 export const paths = {
   issues: issuesPath,
@@ -71,6 +106,8 @@ export const paths = {
   groups: "/groups",
   plugins: "/plugins",
   graph: "/graph",
+  repoGraph: (external: boolean) => "/repo-graph" + (external ? "?external=1" : ""),
+  health: "/health",
 };
 
 /** Anything that changes an issue invalidates every cached issue read: list variants are keyed by
@@ -108,6 +145,8 @@ export const api = {
   plugins: () => req<Plugins>("/plugins"),
 
   listIssues: (filters: IssueFilters = {}) => req<Issue[]>(issuesPath(filters)),
+  /** One page of the issue list. See `IssueListRow` for why this is not `listIssues`. */
+  issuePage: (query: IssuePageQuery) => req<IssuePage>(issuePagePath(query)),
   /** Every visible issue reduced to `{id, title, parent}` — enough to render an ancestor chain or
       populate an issue picker, without pulling rows the view will never show. */
   issueIndex: () => req<IssueIndexEntry[]>(paths.issueIndex),

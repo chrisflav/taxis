@@ -74,6 +74,42 @@ export interface Issue {
   updatedAt: number;
 }
 
+/** One row of the issue list, as `GET /issues/page` returns it.
+ *
+ *  Deliberately not an `Issue`. A list row carries what the table draws and what its filters narrow
+ *  by, and nothing else — no description, goal, creator, creation time or visibility groups, none of
+ *  which any column renders. Attachments and children are counts because the only thing drawn is how
+ *  many; dependencies keep their ids because the "depends on" filter tests membership. */
+export interface IssueListRow {
+  id: number;
+  title: string;
+  state: IssueState;
+  locked: boolean;
+  parent: number | null;
+  deadline: number | null;
+  updatedAt: number;
+  labels: number[];
+  assignees: number[];
+  dependencies: number[];
+  artifactCount: number;
+  checkCount: number;
+  /** How many issues are filed under this one, so the tree can offer to unfold a node without
+      having read the level below it. */
+  childCount: number;
+}
+
+/** One page of the issue list. `nextCursor` is null at the end of the result set; `total` is only
+ *  computed for the first page of a query. */
+export interface IssuePage {
+  issues: IssueListRow[];
+  nextCursor: string | null;
+  total: number | null;
+  /** The total broken down by state. Lets a caller show how much of a set is finished without
+      holding all of it — the children panel counts progress over every child while displaying one
+      page of them. */
+  stateCounts: { open: number; closed: number; completed: number } | null;
+}
+
 export interface Comment {
   id: number;
   issueId: number;

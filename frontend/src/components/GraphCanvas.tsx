@@ -320,3 +320,18 @@ export function GraphCanvas<N extends GraphNode>({
     </div>
   );
 }
+
+/** The canvas frame before its graph has arrived.
+
+    Reuses the viewport's own styling so it stands in the space the graph will occupy. The
+    alternative — a one-line "Loading…" — collapses three quarters of the viewport height and then
+    shoves the whole page back down when the data lands. `note` says what is being waited on where
+    that is worth saying: the repository graph reads package manifests over the network, and a
+    second of apparent nothing is better explained than not. */
+export function GraphPlaceholder({ note }: { note?: string }) {
+  return (
+    <div className="graph-viewport graph-viewport-empty" aria-busy="true">
+      <span className="muted small">{note ?? "Laying out the graph…"}</span>
+    </div>
+  );
+}

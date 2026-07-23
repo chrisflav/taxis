@@ -1,19 +1,61 @@
 import { memo, useEffect, useState } from "react";
-import DOMPurify from "dompurify";
-import { marked } from "marked";
 import type { IssueIndexEntry } from "../types";
 import { linkifyIssueRefs } from "../issueLinks";
+import { plainTitle } from "../breadcrumbs";
 
-// KaTeX (and its stylesheet) is around half of the application bundle, but only matters for text
-// that actually contains math. It is loaded on demand the first time such text is rendered, and
-// anything already on screen re-renders once it arrives.
+// Markdown rendering, loaded on demand.
 //
-// The flags are module-wide, so a page full of comments does one import and one round of
-// re-rendering rather than one per block.
-let mathLoaded = false;
-let mathLoading = false;
-const mathWaiters = new Set<() => void>();
+// `marked` and `dompurify` together are 21 KB compressed — a quarter of everything the application
+// downloads before it can draw anything — and until they arrive there is still something honest to
+// show, because the source of a markdown document is text. So the text goes up immediately and the
+// rendered form replaces it when the parser lands. Nothing waits on a parser to display a title.
+//
+// KaTeX loads the same way underneath, for the same reason, and is a further 78 KB — which is why
+// it is only fetched for text that actually contains math.
 
+type Renderer = {
+  parse: (src: string) => string;
+  parseInline: (src: string) => string;
+  /** Registers the math extension once KaTeX is on hand. */
+  use: (ext: unknown) => void;
+  sanitize: (html: string) => string;
+};
+
+let renderer: Renderer | null = null;
+let mathLoaded = false;
+// One shared set of subscribers for both loads: either arriving means every mounted `Markdown`
+// has something new to show, and re-rendering them is what makes the upgrade appear.
+const waiters = new Set<() => void>();
+const notify = () => { waiters.forEach((f) => f()); };
+
+const SANITIZE_OPTIONS = {
+  // KaTeX emits MathML, which the default profile strips.
+  ADD_TAGS: ["math", "annotation", "semantics", "mrow", "mi", "mo", "mn", "msup", "mspace", "msqrt", "mfrac"],
+  ADD_ATTR: ["target", "display", "xmlns"],
+};
+
+let rendererLoading = false;
+function loadRenderer(): void {
+  if (renderer || rendererLoading) return;
+  rendererLoading = true;
+  Promise.all([import("marked"), import("dompurify")])
+    .then(([{ marked }, dompurify]) => {
+      const purify = dompurify.default;
+      renderer = {
+        parse: (src) => marked.parse(src) as string,
+        parseInline: (src) => marked.parseInline(src) as string,
+        use: (ext) => marked.use(ext as Parameters<typeof marked.use>[0]),
+        sanitize: (html) => purify.sanitize(html, SANITIZE_OPTIONS),
+      };
+      notify();
+    })
+    .catch(() => {
+      // Leave the plain text in place. Unrendered markdown is readable; a blank panel is not.
+      rendererLoading = false;
+    });
+}
+
+let mathLoading = false;
 function loadMath(): void {
   if (mathLoaded || mathLoading) return;
   mathLoading = true;
@@ -23,14 +65,21 @@ function loadMath(): void {
     import("katex/dist/katex.min.css"),
   ])
     .then(([katexExtension]) => {
-      marked.use(katexExtension.default({ throwOnError: false }));
-      mathLoaded = true;
-      mathWaiters.forEach((notify) => notify());
-      mathWaiters.clear();
+      // The extension attaches to `marked`, so it is useless until the renderer exists. Waiting
+      // here rather than ordering the two loads keeps them concurrent.
+      const attach = () => {
+        if (!renderer) return false;
+        renderer.use(katexExtension.default({ throwOnError: false }));
+        mathLoaded = true;
+        notify();
+        return true;
+      };
+      if (!attach()) {
+        const retry = () => { if (attach()) waiters.delete(retry); };
+        waiters.add(retry);
+      }
     })
-    .catch(() => {
-      // Leave the text rendered without math rather than failing the whole view.
-    });
+    .catch(() => { /* text renders without math rather than not at all */ });
 }
 
 // Cheap pre-check for the delimiters `marked-katex-extension` recognises. A wrong guess is
@@ -38,16 +87,18 @@ function loadMath(): void {
 // triggers the load — so this errs against downloading 270 KB for prose that mentions a dollar.
 const MATH_PATTERN = /\$\$[\s\S]+?\$\$|\$[^$\n]+\$|\\\(|\\\[/;
 
-/** Trigger the KaTeX load for text that needs it, and re-render when it lands. */
-function useMathReady(needsMath: boolean): void {
+/** Subscribe to whichever loads this text needs, and re-render as each arrives. */
+function useRendered(needsMath: boolean): boolean {
   const [, bump] = useState(0);
   useEffect(() => {
-    if (!needsMath || mathLoaded) return;
-    loadMath();
-    const notify = () => bump((n) => n + 1);
-    mathWaiters.add(notify);
-    return () => { mathWaiters.delete(notify); };
+    loadRenderer();
+    if (needsMath) loadMath();
+    if (renderer && (!needsMath || mathLoaded)) return;
+    const wake = () => bump((n) => n + 1);
+    waiters.add(wake);
+    return () => { waiters.delete(wake); };
   }, [needsMath]);
+  return renderer != null;
 }
 
 // `issues`, when passed, is used to render "#123" references as "#123 <title>" instead of a bare
@@ -57,17 +108,20 @@ function useMathReady(needsMath: boolean): void {
 // Memoised: parsing and sanitising is the most expensive thing a list row does, and the filter bar
 // re-renders every row on each keystroke.
 export const Markdown = memo(function Markdown({ text, inline = false, issues = [] }: { text: string; inline?: boolean; issues?: IssueIndexEntry[] }) {
-  useMathReady(MATH_PATTERN.test(text));
+  const ready = useRendered(MATH_PATTERN.test(text));
+
+  if (!ready) {
+    // The document's own source, as text. `plainTitle` drops the syntax that reads worst in a
+    // one-line slot — link and image brackets, code ticks, emphasis markers — which is exactly the
+    // case where the unrendered form would otherwise be conspicuous.
+    return inline
+      ? <span className="md md-inline">{plainTitle(text)}</span>
+      : <div className="md md-plain">{text}</div>;
+  }
 
   // Turn bare `#123` issue references into links, then parse markdown.
   const linked = linkifyIssueRefs(text, issues);
-  const rawHtml = inline ? marked.parseInline(linked) : marked.parse(linked);
-
-  // Sanitize the output HTML. We allow MathML tags which KaTeX generates.
-  const cleanHtml = DOMPurify.sanitize(rawHtml as string, {
-    ADD_TAGS: ['math', 'annotation', 'semantics', 'mrow', 'mi', 'mo', 'mn', 'msup', 'mspace', 'msqrt', 'mfrac'],
-    ADD_ATTR: ['target', 'display', 'xmlns'],
-  });
+  const cleanHtml = renderer!.sanitize(inline ? renderer!.parseInline(linked) : renderer!.parse(linked));
 
   return inline
     ? <span className="md md-inline" dangerouslySetInnerHTML={{ __html: cleanHtml }} />

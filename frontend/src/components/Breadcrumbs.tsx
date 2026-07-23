@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
-import type { Issue, IssueIndexEntry } from "../types";
-import { ancestorsOf, issueLabel, siblingsOf } from "../breadcrumbs";
+import type { IssueIndexEntry } from "../types";
+import { ancestorsOf, issueLabel, siblingsOf, type Nameable } from "../breadcrumbs";
 
 // The trail names the places *above* you, not where you are: every crumb is a link, and the page's
 // own heading is the last step. That keeps it honest (a crumb you can't navigate to isn't a step in
@@ -38,7 +38,10 @@ function ancestorCrumbs(chain: IssueIndexEntry[]) {
 
 // Ancestor-chain breadcrumbs for the issue detail view: Issues / grandparent / parent. Walks the
 // lightweight issue index rather than the full issue list — naming an ancestor needs nothing else.
-export function IssueBreadcrumbs({ issue, index }: { issue: Issue; index: IssueIndexEntry[] }) {
+//
+// Takes a `Nameable`, not an `Issue`: the trail is built from an id, a title and a parent, so the
+// detail page can draw it from its index entry before the issue itself has arrived.
+export function IssueBreadcrumbs({ issue, index }: { issue: Nameable; index: IssueIndexEntry[] }) {
   const byId = new Map(index.map((i) => [i.id, i]));
   const chain = ancestorsOf({ id: issue.id, title: issue.title, parent: issue.parent }, byId);
   return <Trail crumbs={[ROOT, ...ancestorCrumbs(chain)]} />;
@@ -59,7 +62,7 @@ export function ListBreadcrumbs({ parentId, index }: { parentId: number | null; 
 // Movement across one generation of the containment tree. Without it the only route from an issue
 // to the one beside it is up to the parent, down into a filtered list, and back — three navigations
 // to reach a neighbour. Every issue's parent is already in the index, so this costs no extra read.
-export function SiblingNav({ issue, index }: { issue: Issue; index: IssueIndexEntry[] }) {
+export function SiblingNav({ issue, index }: { issue: Nameable; index: IssueIndexEntry[] }) {
   const siblings = siblingsOf({ id: issue.id, title: issue.title, parent: issue.parent }, index);
   const pos = siblings.findIndex((s) => s.id === issue.id);
   // Nothing to move between: a top-level issue, or an only child.
