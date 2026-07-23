@@ -662,6 +662,12 @@ th.sortable.active { color: var(--accent); }
 
 /* Rendered markdown */
 .md > *:first-child { margin-top: 0; }
+/* A document still waiting for the markdown parser, shown as the text it is. Without this the
+   newlines collapse and a long description arrives as one run-on block, which then reflows
+   entirely a moment later — worse than either state on its own. `pre-wrap` keeps the paragraphs,
+   headings and list items where the author put them, so what changes when the parser lands is the
+   styling and not the shape. */
+.md-plain { white-space: pre-wrap; }
 .md > *:last-child { margin-bottom: 0; }
 .md p { margin: 0 0 8px; }
 .md h1, .md h2, .md h3, .md h4 { margin: 14px 0 8px; line-height: 1.25; }

@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { api, childrenQuery, graphQuery, issuePagePath, paths } from "./api";
 import { LIST_MAX_AGE, REFERENCE_MAX_AGE, cachedGet } from "./cache";
+import { preloadMarkdown } from "./components/Markdown";
 import "./styles.css";
 
 // Start the reads every view needs immediately, rather than after `/me` resolves and the first
@@ -56,3 +57,8 @@ createRoot(document.getElementById("root")!).render(
     <App />
   </React.StrictMode>
 );
+
+// The markdown parser renders every title and description, but nothing waits for it — so it is
+// fetched after the first paint rather than before it, and sooner than the first component that
+// happens to need it would ask.
+preloadMarkdown();

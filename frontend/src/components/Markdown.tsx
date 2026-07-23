@@ -35,6 +35,18 @@ const SANITIZE_OPTIONS = {
 };
 
 let rendererLoading = false;
+
+/** Start fetching the parser without waiting for something to render.
+ *
+ *  Called from `main.tsx` once the application has mounted. Left to the first `Markdown` to mount,
+ *  the fetch began only after the current view's own chunk had arrived and rendered — on the issue
+ *  detail that was half a second late, and the description sat there as unparsed text for all of
+ *  it. Deliberately not started before mount: it would then be competing for bandwidth with the
+ *  bundle that has to arrive for anything at all to appear. */
+export function preloadMarkdown(): void {
+  loadRenderer();
+}
+
 function loadRenderer(): void {
   if (renderer || rendererLoading) return;
   rendererLoading = true;
