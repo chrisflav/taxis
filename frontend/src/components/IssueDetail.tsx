@@ -11,6 +11,7 @@ import { Markdown } from "./Markdown";
 import { MultiSelect } from "./MultiSelect";
 import { AutoTextarea } from "./AutoTextarea";
 import { ActorName } from "./ActorName";
+import { DeadlinePresets } from "./DeadlinePresets";
 import { IssueBreadcrumbs, SiblingNav } from "./Breadcrumbs";
 import { diffWords } from "../diff";
 import { localInputToUnix, unixToLocalInput } from "../datetime";
@@ -957,7 +958,8 @@ function IssueSelectEditor({
   );
 }
 
-// Inline deadline editor: a datetime-local input with Save/Cancel, plus a Clear button.
+// Inline deadline editor: a datetime-local input with Save/Cancel, plus a Clear button and a row of
+// quick relative presets that fill the input without saving.
 function DeadlineEditor({
   initial, onSave, onClose, onError,
 }: {
@@ -975,6 +977,7 @@ function DeadlineEditor({
   return (
     <span className="inline-edit">
       <input type="datetime-local" value={val} onChange={(e) => setVal(e.target.value)} />
+      <DeadlinePresets onPick={setVal} />
       <span className="row" style={{ marginTop: 6 }}>
         <button className="primary" onClick={() => save(val)} disabled={busy}>Save</button>
         {initial != null && <button onClick={() => save("")} disabled={busy}>Clear</button>}
