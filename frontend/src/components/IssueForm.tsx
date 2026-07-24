@@ -3,6 +3,7 @@ import { LockIcon, LockedMark } from "./Icon";
 import type { Actor, Group, Issue, Label } from "../types";
 import { api, paths } from "../api";
 import { EMPTY, REFERENCE_MAX_AGE, useResource } from "../cache";
+import { isOpHeld, isQueuedLocally } from "../offline";
 import { MultiSelect } from "./MultiSelect";
 import { IssueMultiPicker, IssueSelectPicker } from "./IssuePicker";
 import { AutoTextarea } from "./AutoTextarea";
@@ -48,6 +49,10 @@ export function IssueForm({
   const allGroups = useResource<Group[]>(paths.groups, api.listGroups, REFERENCE_MAX_AGE).data ?? EMPTY;
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(!editing);
+  // Set when a creation went to the offline queue instead of to the server, which is neither a
+  // success to navigate away from nor an error to correct. "held" is the narrower case where the
+  // connection dropped mid-request and nobody can say whether the server got it.
+  const [queuedOffline, setQueuedOffline] = useState<null | "queued" | "held">(null);
 
   // What counts as "unmodified" for onDirtyChange: the loaded issue when editing, or blank fields
   // (with the pre-selected parent) when creating — a pre-filled parent alone isn't user input.
@@ -105,6 +110,22 @@ export function IssueForm({
       ? api.updateIssue(issueId!, body)
       : api.createIssue(body as Partial<Issue>);
     p.then((i) => {
+      // A creation that only reached the offline queue has no id — the server has not seen it and
+      // will not until the connection returns, so there is no issue page to go to. The form says
+      // so and steps back to where it was opened from; the top bar carries the pending count from
+      // there. (Which is also why nothing draws an optimistic row for it: an issue you cannot open
+      // is not an issue, and giving it a stand-in id that other queued writes could refer to is a
+      // whole identity-remapping problem this deliberately does not have.)
+      if (!editing && isQueuedLocally(i)) {
+        setQueuedOffline(isOpHeld(i.opId) ? "held" : "queued");
+        // `onDone` is deliberately *not* called. It means "here is the issue you just made", and
+        // its callers navigate to it — passing a stand-in id sent the reader to `#/issues/-1`, a
+        // page for an issue that does not exist. Nor is there anything to close: an embedded form
+        // that vanished would take the notice below with it, leaving a creation that queued
+        // silently. So the form stays, says what happened, and the reader dismisses it.
+        onDirtyChange?.(false);
+        return;
+      }
       const id = editing ? issueId! : (i as Issue).id;
       if (onDone) onDone(id);
       else window.location.hash = `#/issues/${id}`;
@@ -134,6 +155,24 @@ export function IssueForm({
     <form className={embedded ? "" : "panel"} onSubmit={submit} style={embedded ? undefined : { maxWidth: 680 }}>
       {!embedded && <h2>{editing ? `Edit issue #${issueId}` : "New issue"} {locked && <LockedMark />}</h2>}
       {error && <div className="error">{error}</div>}
+      {queuedOffline === "queued" && (
+        <div className="panel small notice">
+          <span>
+            No connection to the server. This issue is stored on this device and will be created
+            when the connection returns — it has no number until then, so there is no page for it
+            yet. The top bar counts what is still waiting.
+          </span>
+        </div>
+      )}
+      {queuedOffline === "held" && (
+        <div className="panel small notice">
+          <span>
+            The connection dropped while this was being sent, so there is no way to tell from here
+            whether the server received it. It is stored on this device rather than sent again,
+            which could file it twice. The top bar offers to send it or to discard it.
+          </span>
+        </div>
+      )}
       {!me && <div className="panel error">You must sign in to create or edit issues.</div>}
       {locked && (
         <div className="panel small notice">

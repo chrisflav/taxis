@@ -21,15 +21,59 @@ import type {
   ReviewState,
 } from "./types";
 import { invalidateCache } from "./cache";
+import { isNetworkError, isQueuedLocally, isOffline, noteReachable, noteUnreachable, queueWrite } from "./offline";
 
 const BASE = "/api";
 
+/**
+ * Every request the application makes goes through here, which is what makes this the one place
+ * offline editing has to be taught about.
+ *
+ * A *mutating* request that cannot be sent is handed to the offline queue and resolves as though
+ * it had been sent — the change is stored, it will go out on reconnect, and there is nothing for
+ * the caller to show an error about. Two things are deliberately narrow about that:
+ *
+ *   - Only writes. A read that fails keeps failing exactly as it did: the stale-while-revalidate
+ *     cache already has the last answer on screen, and queueing a question to ask later is not a
+ *     way of answering it now.
+ *   - Only a failure to reach the network. A 403, a 409, a 500 — anything the server said — is the
+ *     server answering, and goes on being an error.
+ *
+ * `queueWrite` returns null for a write the queue does not accept (see its comment), in which case
+ * nothing here changes and the request fails the way it always has.
+ */
 async function req<T>(path: string, opts: RequestInit = {}): Promise<T> {
-  const res = await fetch(BASE + path, {
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    ...opts,
-  });
+  const method = (opts.method ?? "GET").toUpperCase();
+  const mutating = method !== "GET" && method !== "HEAD";
+
+  if (mutating && isOffline()) {
+    const queued = queueWrite(method, path, opts.body);
+    if (queued) return queued as T;
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(BASE + path, {
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      ...opts,
+    });
+  } catch (e) {
+    if (mutating && isNetworkError(e)) {
+      noteUnreachable();
+      // Queued as *uncertain*: the request left, and a `fetch` rejection says only that no reply
+      // came back — not whether the server acted on it first. The queue holds back the two kinds
+      // where replaying a write it already has would make a second one.
+      const queued = queueWrite(method, path, opts.body, true);
+      if (queued) return queued as T;
+    }
+    throw e;
+  }
+  // The server answered, so there is a connection — the cheapest evidence there is, since it comes
+  // from a request that was being made anyway. This is what sends a queue left over from a dropped
+  // connection without anything ever polling to ask whether the connection is back.
+  noteReachable();
+
   const text = await res.text();
   const data = text ? JSON.parse(text) : null;
   if (!res.ok) {
@@ -127,8 +171,14 @@ export const paths = {
 };
 
 /** Anything that changes an issue invalidates every cached issue read: list variants are keyed by
-    their filters, and a detail response embeds labels, actors and events. */
+    their filters, and a detail response embeds labels, actors and events.
+
+    A write that only reached the offline queue changes nothing on the server, so there is nothing
+    to re-read — and dropping the cache would throw away the last copy of data that cannot be
+    fetched again until the connection returns. The queue invalidates these same prefixes itself,
+    once the write has actually been applied. */
 function issuesChanged<T>(result: T): T {
+  if (isQueuedLocally(result)) return result;
   invalidateCache("/issues");
   invalidateCache("/graph");
   return result;
@@ -136,6 +186,7 @@ function issuesChanged<T>(result: T): T {
 
 /** Drop one cached path after a write to it, so the next read goes back to the server. */
 const refreshed = (prefix: string) => <T,>(result: T): T => {
+  if (isQueuedLocally(result)) return result;
   invalidateCache(prefix);
   return result;
 };

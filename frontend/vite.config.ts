@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from "vite";
 
 // Assets are served from the same origin as the API in production. During development,
@@ -49,5 +50,13 @@ export default defineConfig({
   },
   preview: {
     port: process.env.ISSUES_PORT ? parseInt(process.env.ISSUES_PORT) : undefined,
+  },
+  // `src/offline.ts` is a state machine that decides whether somebody's unsent work is sent, sent
+  // twice, or kept aside — and unlike the views around it, none of that is visible by looking at
+  // the screen. jsdom because the module reads `localStorage` and the `online`/`offline` events at
+  // import time, which is part of what wants testing.
+  test: {
+    environment: "jsdom",
+    include: ["src/**/*.test.ts"],
   },
 });

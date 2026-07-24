@@ -764,6 +764,42 @@ th.sortable.active { color: var(--accent); }
   border-radius: 999px; font-size: 10px; line-height: 1; padding: 3px 5px; min-width: 14px; text-align: center;
 }
 
+/* Offline state — the top bar's account of what is not on the server yet. Present in the markup
+   only while there is something to say, so none of this is drawn on an ordinary page. */
+.offline-indicator { position: relative; display: inline-flex; }
+.offline-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--border); background: var(--panel-2); color: var(--muted);
+  border-radius: 999px; padding: 3px 10px; font-size: 12px; line-height: 16px; white-space: nowrap;
+}
+.offline-chip:hover { color: var(--text); }
+.offline-chip.is-offline {
+  color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--border));
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+}
+.offline-dot { width: 7px; height: 7px; border-radius: 999px; background: currentColor; flex: 0 0 auto; }
+.offline-menu {
+  position: absolute; z-index: 30; top: calc(100% + 6px); right: 0; width: 320px; max-width: 90vw;
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow-2); padding: 6px; max-height: 340px; overflow: auto;
+}
+.offline-menu-head { padding: 6px 8px 4px; }
+.offline-item {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+  padding: 5px 8px; border-top: 1px solid var(--border);
+}
+.offline-item:first-of-type { border-top: none; }
+.offline-item button { padding: 2px 8px; font-size: 12px; }
+
+/* A field showing a value that is queued rather than saved. */
+.pending-mark { margin-left: 6px; vertical-align: middle; }
+/* A comment written offline sits in the timeline as itself, but plainly not posted. */
+.comment-pending { border-style: dashed; background: var(--panel-2); }
+/* The local version of an issue that a collision left unapplied. */
+.conflict-panel { border-color: color-mix(in srgb, var(--danger) 40%, var(--border)); }
+.conflict-field { padding: 5px 0; border-top: 1px solid var(--border); }
+.conflict-field:first-of-type { border-top: none; }
+
 /* Notifications page */
 tr.notif-unread { background: color-mix(in srgb, var(--accent) 6%, transparent); }
 tr.notif-unread:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }

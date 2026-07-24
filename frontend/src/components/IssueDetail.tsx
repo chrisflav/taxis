@@ -5,6 +5,11 @@ import type {
 } from "../types";
 import { api, childrenQuery, issuePagePath, paths } from "../api";
 import { EMPTY, LIST_MAX_AGE, REFERENCE_MAX_AGE, useResource } from "../cache";
+import type { Conflict, QueuedOp } from "../offline";
+import {
+  applyPendingEdits, conflictFor, discardConflict, isHeld, isOffline, isQueuedLocally,
+  pendingCommentsFor, pendingDeleteFor, pendingFieldsFor, queuedBody, useOfflineState,
+} from "../offline";
 import { Modal, ConfirmModal, useConfirmClose } from "./Modal";
 import { LabelChip } from "./LabelChip";
 import { Markdown } from "./Markdown";
@@ -104,6 +109,11 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
     issuePagePath(childQuery), () => api.issuePage(childQuery), LIST_MAX_AGE);
   const children = childrenRes.data?.issues ?? EMPTY;
 
+  // What of this issue is not on the server yet — fields with a write still queued, a deletion on
+  // its way, a local version that collided with somebody else's edit. Subscribing here is also
+  // what repaints the page as the queue drains.
+  const offline = useOfflineState();
+
   const restricted = (detail?.issue.visibility.length ?? 0) > 0;
   const groups = useResource<Group[]>(
     editorsUsed || restricted ? paths.groups : null, api.listGroups, REFERENCE_MAX_AGE).data ?? EMPTY;
@@ -122,6 +132,18 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
   }, [detail]);
   useEffect(() => { learnIssueNames(children); }, [children]);
 
+  // Everything on screen was read before the queue drained, so once it has, read it again. The
+  // queue drops the affected cache keys itself, which is what makes the *next* read truthful; this
+  // is what makes that read happen now instead of the next time the reader navigates.
+  const lastSync = useRef(offline.syncCount);
+  useEffect(() => {
+    if (offline.syncCount === lastSync.current) return;
+    lastSync.current = offline.syncCount;
+    void load();
+    void childrenRes.reload();
+    // eslint-disable-next-line
+  }, [offline.syncCount]);
+
   const labelOpts = useMemo(() => allLabels.map((l) => ({ value: l.id, label: l.name })), [allLabels]);
   const labelById = useMemo(() => new Map(allLabels.map((l) => [l.id, l])), [allLabels]);
   const actorOpts = useMemo(() => allActors.map((a) => ({ value: a.id, label: a.displayName })), [allActors]);
@@ -137,12 +159,34 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
   // the ancestor chain, so the frame, the heading and the breadcrumbs are real from the first
   // paint and only the parts that genuinely need the response are placeheld.
   if (!detail) return <IssueSkeleton id={id} />;
-  const { issue } = detail;
+
+  // What the reader should see: the server's issue with every queued write to it folded in, so an
+  // edit made without a connection is on the page rather than the value it was meant to replace.
+  // Marked as pending beside each field it touched, which is what issue #420 asks for.
+  const issue = applyPendingEdits(detail.issue, offline.queue);
+  const pendingFields = pendingFieldsFor(id, offline.queue);
+  const deletePending = pendingDeleteFor(id, offline.queue);
+  const queuedComments = pendingCommentsFor(id, offline.queue);
+  // A local version that was not applied because the issue had moved on. The page below shows the
+  // server's version — the local one is kept aside, under its own label.
+  const conflict = conflictFor(id, offline.conflicts);
+
+  /** Re-read the issue after a write — unless the write only reached the offline queue, in which
+      case there is nothing new to read, and asking would drop the copy on screen in exchange for a
+      request that cannot succeed. The pending overlay is what updates the page instead. */
+  const afterWrite = (result: unknown): Promise<void> =>
+    (isQueuedLocally(result) ? Promise.resolve() : load());
 
   // Persist a patch to the issue and refresh. Returns the promise so inline editors can await it.
-  const patch = (body: Record<string, unknown>) => api.updateIssue(id, body).then(() => load());
+  const patch = (body: Record<string, unknown>) => api.updateIssue(id, body).then(afterWrite);
   const setState = (state: string) => { setActionError(null); patch({ state }).catch((e) => setActionError(String(e))); };
-  const del = () => api.deleteIssue(id).then(() => (window.location.hash = "#/issues"));
+  const del = () => api.deleteIssue(id).then((r) => {
+    setConfirmDelete(false);
+    // A deletion that only reached the queue has not happened yet. Staying on the issue — now
+    // marked as pending deletion — is more honest than sending the reader to a list that, having
+    // nothing new to read either, would still be listing it.
+    if (!isQueuedLocally(r)) window.location.hash = "#/issues";
+  });
 
   // Set this issue's state, and the state of the children the prompt listed — there is no bulk
   // endpoint, so a cascade is one request per child. `allSettled`, because a child that refuses the
@@ -163,13 +207,25 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
           }
         })
         .catch((e) => setActionError(String(e))))
-      // Children may have changed even where the issue itself refused, so refresh either way.
-      .then(() => { load(); childrenRes.reload(); });
+      // Children may have changed even where the issue itself refused, so refresh either way —
+      // except with no connection, where every one of those writes is on the queue and the only
+      // copy of the children is the one already on screen.
+      .then(() => { if (!isOffline()) { load(); childrenRes.reload(); } });
   };
 
   const groupName = (g: number) => groups.find((x) => x.id === g)?.name ?? `#${g}`;
   const actorOf = (aid: number) => allActors.find((a) => a.id === aid);
   const labelName = (l: number) => allLabels.find((x) => x.id === l)?.name ?? `#${l}`;
+
+  // Labels and assignees are drawn from the objects the detail response carries — except where a
+  // queued edit has changed which ids are set, in which case the ids are what is true and the
+  // names come from the reference lists every page already holds.
+  const shownLabels = pendingFields.has("labels")
+    ? issue.labels.map((l) => labelById.get(l)).filter((l): l is Label => l != null)
+    : detail.issueLabels;
+  const shownAssignees = pendingFields.has("assignees")
+    ? issue.assignees.map(actorOf).filter((a): a is Actor => a != null)
+    : detail.assignedActors;
 
   const canEdit = !!me;
   // When locked, the title, description, goal, parent and dependencies are frozen (labels,
@@ -214,10 +270,22 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
             value={issue.title}
             canEdit={editableUnlessLocked}
             inline
+            pending={pendingFields.has("title")}
             onSave={(v) => patch({ title: v })}
           />
           <span className={`badge ${issue.state}`}>{issue.state}</span>
+          {pendingFields.has("state") && <PendingMark />}
           {issue.locked && <LockedMark />}
+          {deletePending && (
+            <span className="badge failing" title="Queued while offline — this issue will be deleted when the connection returns.">
+              deletion pending
+            </span>
+          )}
+          {conflict && (
+            <span className="badge failing" title="A version of this issue edited on this device was not applied.">
+              local version conflict
+            </span>
+          )}
           <HistoryDropdown events={historyFor("title")} label="Title history" />
         </h2>
         {issue.creatorName && (
@@ -226,6 +294,8 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
           </div>
         )}
       </div>
+
+      {conflict && <ConflictPanel conflict={conflict} labelName={labelName} />}
 
       {/* Substance on the left, relations on the right. The four attachment panels that used to
           stack down the page each announcing "None attached" now sit in the rail as one line
@@ -241,6 +311,7 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
               value={issue.description ?? ""}
               canEdit={editableUnlessLocked}
               multiline
+              pending={pendingFields.has("description")}
               placeholder="No description"
               onSave={(v) => patch({ description: v })}
             />
@@ -257,6 +328,7 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
                   value={issue.goal ?? ""}
                   canEdit={editableUnlessLocked}
                   multiline
+                  pending={pendingFields.has("goal")}
                   placeholder="sorry — no goal stated yet"
                   placeholderClass="goal-sorry"
                   onSave={(v) => patch({ goal: v })}
@@ -282,6 +354,7 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
             actorOf={actorOf}
             labelName={labelName}
             groupName={groupName}
+            queuedComments={queuedComments}
             onChange={load}
             onError={setError}
           />
@@ -289,21 +362,21 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
 
         <aside className="issue-rail">
           <div className="panel">
-            <MetaRow label="Labels" canEdit={canEdit}
-              display={detail.issueLabels.length
-                ? detail.issueLabels.map((l) => <LabelChip key={l.id} label={l} />)
+            <MetaRow label="Labels" canEdit={canEdit} pending={pendingFields.has("labels")}
+              display={shownLabels.length
+                ? shownLabels.map((l) => <LabelChip key={l.id} label={l} />)
                 : <span className="rail-empty">None</span>}
               editor={(close) => <MultiEditor options={labelOpts} initial={issue.labels} placeholder="Add labels…"
                 onSave={(v) => patch({ labels: v })} onClose={close} onError={setError} />} />
 
-            <MetaRow label="Parent" canEdit={editableUnlessLocked}
+            <MetaRow label="Parent" canEdit={editableUnlessLocked} pending={pendingFields.has("parent")}
               display={issue.parent != null
                 ? <IssueRef id={issue.parent} />
                 : <span className="rail-empty">None</span>}
               editor={(close) => <IssueSelectEditor initial={issue.parent} exclude={notSelf}
                 onSave={(v) => patch({ parent: v })} onClose={close} onError={setError} />} />
 
-            <MetaRow label="Depends on" canEdit={editableUnlessLocked}
+            <MetaRow label="Depends on" canEdit={editableUnlessLocked} pending={pendingFields.has("dependencies")}
               display={issue.dependencies.length
                 ? issue.dependencies.map((p) => <IssueRef key={p} id={p} />)
                 : <span className="rail-empty">Nothing</span>}
@@ -311,14 +384,15 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
                 placeholder="Select dependencies…"
                 onSave={(v) => patch({ dependencies: v })} onClose={close} onError={setError} />} />
 
-            <MetaRow label="Assignees" canEdit={canEdit}
-              display={detail.assignedActors.length
-                ? detail.assignedActors.map((a) => <span key={a.id} className="chip"><ActorName name={a.displayName} bot={a.bot} /></span>)
+            <MetaRow label="Assignees" canEdit={canEdit} pending={pendingFields.has("assignees")}
+              display={shownAssignees.length
+                ? shownAssignees.map((a) => <span key={a.id} className="chip"><ActorName name={a.displayName} bot={a.bot} /></span>)
                 : <span className="rail-empty">Nobody</span>}
               editor={(close) => <MultiEditor options={actorOpts} initial={issue.assignees} placeholder="Assign actors…"
                 onSave={(v) => patch({ assignees: v })} onClose={close} onError={setError} />} />
 
             <MetaRow label="Visible to" canEdit={canEdit} onOpen={() => setEditorsUsed(true)}
+              pending={pendingFields.has("visibility")}
               display={issue.visibility.length
                 ? issue.visibility.map((g) => <span key={g} className="chip">{groupName(g)}</span>)
                 : <span className="rail-empty">Everyone</span>}
@@ -326,7 +400,7 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
                 initial={issue.visibility} placeholder="Everyone (public)"
                 onSave={(v) => patch({ visibility: v })} onClose={close} onError={setError} />} />
 
-            <MetaRow label="Deadline" canEdit={canEdit}
+            <MetaRow label="Deadline" canEdit={canEdit} pending={pendingFields.has("deadline")}
               display={issue.deadline != null
                 ? <span className={overdue ? "error" : undefined}>{fmtTime(issue.deadline)}{overdue ? " · overdue" : ""}</span>
                 : <span className="rail-empty">None</span>}
@@ -444,6 +518,7 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
                 </button>
                 <button onClick={() => { setActionError(null); patch({ locked: !issue.locked }).catch((e) => setActionError(String(e))); }}>
                   {issue.locked ? "Unlock editing" : "Lock editing"}
+                  {pendingFields.has("locked") && <PendingMark />}
                 </button>
               </div>
               <div className="rail-danger">
@@ -521,7 +596,7 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
               initialParent={issue.id}
               onCancel={addChildClose.requestClose}
               onDirtyChange={setAddChildDirty}
-              onDone={() => { setAddingChild(false); childrenRes.reload(); }}
+              onDone={() => { setAddingChild(false); if (!isOffline()) childrenRes.reload(); }}
             />
           </Modal>
         )}
@@ -843,10 +918,72 @@ function ChildrenPanel({
   );
 }
 
+// "This value is on your device and not on the server yet." The same mark wherever a field has a
+// write waiting on the offline queue, so one glance over a page says what has and has not landed.
+function PendingMark({ what = "This change" }: { what?: string }) {
+  return (
+    <span className="badge pending pending-mark"
+      title={`${what} is stored on this device and will be sent when the connection returns.`}>
+      pending
+    </span>
+  );
+}
+
+/** A queued value, as a line of text. Ids stay ids: naming every label, actor and group a discarded
+    local version happened to set would mean holding data this panel has no other use for. */
+function localValueText(value: unknown, labelName: (id: number) => string, field: string): string {
+  if (value == null || value === "") return "none";
+  if (Array.isArray(value)) {
+    if (value.length === 0) return "none";
+    return field === "labels" ? value.map((v) => labelName(Number(v))).join(", ") : value.join(", ");
+  }
+  if (typeof value === "boolean") return value ? "yes" : "no";
+  if (field === "deadline" && typeof value === "number") return fmtTime(value);
+  return String(value);
+}
+
+// The local version of an issue that was never applied.
+//
+// This is the second half of what issue #420 asks for: on a collision the remote version wins and
+// is what the page shows, and the local one is kept — visibly, under its own label — rather than
+// being either forced through or thrown away. There is no "re-apply": doing that safely means
+// deciding what to do about the remote edit that caused the collision, which is a decision this
+// panel cannot make for the reader. What it can do is show them exactly what they wrote, so they
+// can put back the parts that still apply, and then discard it.
+function ConflictPanel({ conflict, labelName }: { conflict: Conflict; labelName: (id: number) => string }) {
+  const why = conflict.reason === "missing"
+    ? "The issue no longer exists on the server."
+    : conflict.reason === "rejected"
+      ? `The server refused the change: ${conflict.message ?? "no reason given"}.`
+      : conflict.reason === "foreign"
+        ? "It was written on this device by a different account, so it was not sent under yours."
+        : "The issue was changed on the server while this device was offline.";
+  return (
+    <div className="panel conflict-panel">
+      <h3 className="panel-title">
+        <span className="badge failing">local version conflict</span>
+        <span className="spacer" />
+        <button onClick={() => discardConflict(conflict.opId)}>Discard local version</button>
+      </h3>
+      <div className="small muted" style={{ marginBottom: 8 }}>
+        {why} What the page shows is the server's version; the edit below was made on this device
+        and was <strong>not</strong> applied.
+      </div>
+      {Object.entries(conflict.local).map(([field, value]) => (
+        <div key={field} className="conflict-field">
+          <span className="meta-label muted small">{field}</span>
+          <div className="small">{localValueText(value, labelName, field)}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // An inline-editable text value: renders the value (as markdown), and — for editors — a pencil that
 // swaps the block for an input/textarea with Save/Cancel, leaving the rest of the page in place.
 function InlineText({
   value, canEdit, onSave, inline = false, multiline = false, placeholder, placeholderClass,
+  pending = false,
 }: {
   value: string;
   canEdit: boolean;
@@ -856,6 +993,8 @@ function InlineText({
   placeholder?: string;
   /** Lets a caller style its own empty state — the goal's is `sorry`, not grey filler text. */
   placeholderClass?: string;
+  /** Whether what is being shown is a queued edit rather than what the server holds. */
+  pending?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
@@ -890,6 +1029,7 @@ function InlineText({
   return (
     <span className={inline ? "editable editable-inline" : "editable"}>
       {body}
+      {pending && <PendingMark />}
       {canEdit && <button className="edit-pencil" title="Edit" onClick={begin}>✎</button>}
     </span>
   );
@@ -897,7 +1037,7 @@ function InlineText({
 
 // A labelled metadata row with inline editing: shows the value plus a pencil that reveals `editor`.
 function MetaRow({
-  label, canEdit, display, editor, onOpen,
+  label, canEdit, display, editor, onOpen, pending = false,
 }: {
   label: string;
   canEdit: boolean;
@@ -906,11 +1046,13 @@ function MetaRow({
   /** Called when the editor is revealed. What an editor needs and the page does not — the group
       list, the plugin kinds — is read then rather than on every page load. */
   onOpen?: () => void;
+  /** Whether this row is showing a queued edit rather than what the server holds. */
+  pending?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   return (
     <div className="meta-row">
-      <span className="meta-label muted small">{label}</span>
+      <span className="meta-label muted small">{label}{pending && <PendingMark what={label} />}</span>
       {editing ? (
         <span className="meta-value">{editor(() => setEditing(false))}</span>
       ) : (
@@ -1180,13 +1322,15 @@ function joinChange(noun: string, added: ReactNode[], removed: ReactNode[]): Rea
 // box to add a comment for signed-in users. Title/description/comment edits stay as edit-history
 // dropdowns next to their text rather than appearing here.
 function Timeline({
-  detail, me, actorOf, labelName, groupName, onChange, onError,
+  detail, me, actorOf, labelName, groupName, queuedComments, onChange, onError,
 }: {
   detail: Detail;
   me: Actor | null;
   actorOf: (id: number) => Actor | undefined;
   labelName: (id: number) => string;
   groupName: (id: number) => string;
+  /** Comments written on this issue that are still on the offline queue. */
+  queuedComments: QueuedOp[];
   onChange: () => void;
   onError: (e: string) => void;
 }) {
@@ -1230,7 +1374,9 @@ function Timeline({
     if (!text && review !== "approve") return;
     setBusy(true);
     api.addComment(detail.issue.id, text, review)
-      .then(() => { setBody(""); onChange(); })
+      // A queued comment has nothing to re-read: it appears below the timeline, marked as not
+      // posted, and joins the real ones when the queue drains.
+      .then((r) => { setBody(""); if (!isQueuedLocally(r)) onChange(); })
       .catch((e2) => onError(String(e2)))
       .finally(() => setBusy(false));
   };
@@ -1244,6 +1390,25 @@ function Timeline({
       {items.length === 0 && <div className="rail-empty">No activity yet.</div>}
       <div className="timeline-list">
         {items.map((it) => <div key={it.key} className="timeline-entry">{it.node}</div>)}
+        {/* Written here, held here. Last, because they are the newest thing on the issue, and
+            visibly apart from the posted ones, because nobody else can see them yet — with the
+            exception of one whose request was cut off mid-flight, where "nobody else can see it"
+            is exactly what cannot be promised. */}
+        {queuedComments.map((op) => (
+          <div key={op.opId} className="timeline-entry">
+            <div className="comment-card comment-pending">
+              <div className="row" style={{ justifyContent: "space-between" }}>
+                <span className="small muted">
+                  {isHeld(op)
+                    ? "Written on this device · the connection dropped while sending, so it may or may not have been posted"
+                    : "Written on this device · not posted yet"}
+                </span>
+                <span className="badge pending">pending</span>
+              </div>
+              <div style={{ marginTop: 4 }}><Markdown text={String(queuedBody(op).body ?? "")} /></div>
+            </div>
+          </div>
+        ))}
       </div>
 
       {me ? (
@@ -1294,7 +1459,7 @@ function CommentItem({
     if (!text && c.review !== "approve") return;
     setBusy(true);
     api.updateComment(c.id, text)
-      .then(() => { setEditing(false); onChange(); })
+      .then((r) => { setEditing(false); if (!isQueuedLocally(r)) onChange(); })
       .catch((e) => onError(String(e)))
       .finally(() => setBusy(false));
   };
@@ -1338,7 +1503,7 @@ function CommentItem({
           confirmLabel="Delete"
           danger
           onConfirm={() => api.deleteComment(c.id)
-            .then(() => { setConfirmDel(false); onChange(); })
+            .then((r) => { setConfirmDel(false); if (!isQueuedLocally(r)) onChange(); })
             .catch((e) => { setConfirmDel(false); onError(String(e)); })}
           onCancel={() => setConfirmDel(false)}
         />

@@ -2,9 +2,11 @@ import { Suspense, lazy, useEffect, useRef, useState } from "react";
 import type { Actor, Session } from "./types";
 import { api, paths } from "./api";
 import { cachedGet, invalidateCache } from "./cache";
+import { setCurrentActor } from "./offline";
 import { IssueList } from "./components/IssueList";
 import { LoginBar } from "./components/Login";
 import { NotificationBell } from "./components/NotificationBell";
+import { OfflineIndicator } from "./components/OfflineIndicator";
 import { ThemeToggle } from "./components/ThemeToggle";
 import {
   AdminSkeleton, GraphSkeleton, IssueFormSkeleton, IssueSkeleton, LabelsSkeleton,
@@ -91,6 +93,11 @@ export function App() {
     const identity = me?.id ?? null;
     if (lastIdentity.current !== undefined && lastIdentity.current !== identity) invalidateCache();
     lastIdentity.current = identity;
+    // The offline queue is scoped to whoever made the writes in it, for the same reason the cache
+    // is thrown away here: a browser outlives a session. This is also what releases a queue left
+    // over from a previous session — it waits for the answer to this request rather than sending
+    // somebody's work under whatever account happens to be signed in now.
+    setCurrentActor(identity);
   }, [me?.id, meLoaded]);
 
   // e.g. "#/issues/3/edit" -> ["issues", "3", "edit"]; a trailing "?..." (view-state query params,
@@ -175,6 +182,9 @@ export function App() {
             <a className={navClass("labels")} aria-current={navCurrent("labels")} href="#/labels">Labels</a>
           </nav>
           <div className="spacer" />
+          {/* Renders nothing at all while there is a connection and nothing queued, which is the
+              ordinary case — it is here to say what is *not* on the server yet. */}
+          <OfflineIndicator />
           {meLoaded && <NotificationBell me={me} active={top === "notifications"} />}
           <ThemeToggle />
           {meLoaded && <LoginBar me={me} auth={auth} onChange={refreshMe} />}
