@@ -1,14 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import type { IssueIndexEntry } from "./types";
-import { fuzzyMatch } from "./fuzzy";
+import { useIssueSearch } from "./issueNames";
 import { caretClientCoords } from "./caretCoords";
 
 // Drives a "#123"-style issue-reference autocomplete on a plain `<input>` or `<textarea>`: typing
-// `#` followed by text opens a fuzzy-matched popover of issues to insert, replacing the partial
-// token with `#<id> ` at the caret. `T` pins the hook to the concrete element type so its `elRef`
-// can be attached directly (input vs textarea aren't assignable to one shared ref type).
+// `#` followed by text opens a popover of issues to insert, replacing the partial token with
+// `#<id> ` at the caret. `T` pins the hook to the concrete element type so its `elRef` can be
+// attached directly (input vs textarea aren't assignable to one shared ref type).
+//
+// The matching happens on the server. It used to be a fuzzy match against an array of every issue
+// in the tracker, which is a strange price to pay for a popover that shows eight rows — and one
+// that stopped working past the point where holding every issue stopped being reasonable.
 export function useIssueRefAutocomplete<T extends HTMLInputElement | HTMLTextAreaElement>(
-  issues: IssueIndexEntry[],
   value: string,
   onChange: (v: string) => void,
 ) {
@@ -49,7 +52,9 @@ export function useIssueRefAutocomplete<T extends HTMLInputElement | HTMLTextAre
     return () => document.removeEventListener("mousedown", onDocMouseDown);
   }, [query]);
 
-  const options = query == null ? [] : issues.filter((i) => fuzzyMatch(query, `${i.id} ${i.title}`)).slice(0, 8);
+  // Only searched while the popover is open, and only for what has been typed after the `#`.
+  const { options: matches } = useIssueSearch(query ?? "", query != null);
+  const options = query == null ? [] : matches.slice(0, 8);
 
   const choose = (issue: IssueIndexEntry) => {
     const el = elRef.current;

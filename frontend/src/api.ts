@@ -16,6 +16,7 @@ import type {
   Notification,
   Plugins,
   RepoGraphData,
+  Session,
   ReviewRequest,
   ReviewState,
 } from "./types";
@@ -91,15 +92,31 @@ export function issuePagePath(query: IssuePageQuery): string {
   return "/issues/page" + qs({ ...query });
 }
 
-/** The filter the graph view reads with: every issue, since an edge may point at one the current
-    filters hide, but without the descriptions it never draws. Shared with the prefetch for the
-    same reason as `childrenQuery`. */
-export const graphQuery: IssueFilters = { summary: true };
+/** How the naming index is asked for. Never unfiltered from a page: the whole index is 140 KB
+ *  gzipped on a ten-thousand-issue tracker, and every page that read it wanted either a handful of
+ *  issues it could already name by number or whatever somebody had just typed into a picker. */
+export interface IssueIndexQuery {
+  /** Name exactly these issues. */
+  ids?: number[];
+  /** Search titles by substring, or an issue by its number. */
+  q?: string;
+  limit?: number;
+}
+
+export function issueIndexPath(query: IssueIndexQuery = {}): string {
+  return "/issues/index" + qs({
+    ids: query.ids?.length ? [...query.ids].sort((a, b) => a - b).join(",") : undefined,
+    q: query.q,
+    limit: query.limit,
+  });
+}
 
 /** Request paths, doubling as cache keys for `useResource`. */
 export const paths = {
   issues: issuesPath,
-  issueIndex: "/issues/index",
+  issueIndex: issueIndexPath,
+  ancestors: (id: number) => `/issues/${id}/ancestors`,
+  session: "/session",
   issue: (id: number) => `/issues/${id}`,
   labels: "/labels",
   actors: "/actors",
@@ -107,7 +124,6 @@ export const paths = {
   plugins: "/plugins",
   graph: "/graph",
   repoGraph: (external: boolean) => "/repo-graph" + (external ? "?external=1" : ""),
-  health: "/health",
 };
 
 /** Anything that changes an issue invalidates every cached issue read: list variants are keyed by
@@ -125,11 +141,13 @@ const refreshed = (prefix: string) => <T,>(result: T): T => {
 };
 
 export const api = {
-  health: () => req<{ status: string; version: string; centralPasswordEnabled?: boolean; googleEnabled?: boolean; githubEnabled?: boolean }>("/health"),
   googleLoginUrl: BASE + "/auth/google/login",
   githubLoginUrl: BASE + "/auth/github/login",
 
   me: () => req<Actor>("/me"),
+  /** Who's signed in and which sign-in methods exist, in one request. Succeeds signed out, with a
+      null actor — which is what the sign-in buttons are drawn from. */
+  session: () => req<Session>(paths.session),
   devLogin: (email: string, displayName: string) =>
     req<{ token: string; actor: Actor }>("/auth/dev-login", {
       method: "POST",
@@ -147,9 +165,12 @@ export const api = {
   listIssues: (filters: IssueFilters = {}) => req<Issue[]>(issuesPath(filters)),
   /** One page of the issue list. See `IssueListRow` for why this is not `listIssues`. */
   issuePage: (query: IssuePageQuery) => req<IssuePage>(issuePagePath(query)),
-  /** Every visible issue reduced to `{id, title, parent}` — enough to render an ancestor chain or
-      populate an issue picker, without pulling rows the view will never show. */
-  issueIndex: () => req<IssueIndexEntry[]>(paths.issueIndex),
+  /** Issues reduced to `{id, title, parent}` — enough to name one in a breadcrumb, a picker or a
+      `#123` reference. Always asked a question (`ids` or `q`): see `IssueIndexQuery`. */
+  issueIndex: (query: IssueIndexQuery = {}) => req<IssueIndexEntry[]>(issueIndexPath(query)),
+  /** The containment path above an issue, root first, excluding the issue itself. The detail
+      response carries its own; this is for a view that needs one for an issue it is not reading. */
+  issueAncestors: (id: number) => req<IssueIndexEntry[]>(paths.ancestors(id)),
   getIssue: (id: number) => req<IssueDetail>(`/issues/${id}`),
   createIssue: (body: Partial<Issue>) =>
     req<Issue>("/issues", { method: "POST", body: JSON.stringify(body) }).then(issuesChanged),

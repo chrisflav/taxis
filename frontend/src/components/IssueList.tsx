@@ -2,7 +2,7 @@ import {
   Suspense, lazy, memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState,
 } from "react";
 import { LockedMark } from "./Icon";
-import type { Actor, IssueListRow, IssueIndexEntry, Label } from "../types";
+import type { Actor, IssueListRow, Label } from "../types";
 import { api, paths, type IssuePageQuery } from "../api";
 import { EMPTY, REFERENCE_MAX_AGE, useResource } from "../cache";
 import {
@@ -10,6 +10,7 @@ import {
   loadStoredViewState, VIEW_STATE_STORAGE_KEY, type IssueFilterState,
 } from "../filters";
 import { useIssueFeed } from "../useIssueFeed";
+import { learnIssueNames } from "../issueNames";
 import { PageHeader } from "./PageHeader";
 import { LabelChip } from "./LabelChip";
 import { Markdown } from "./Markdown";
@@ -229,12 +230,13 @@ export function IssueList({ me }: { me: Actor | null }) {
   const feed = useIssueFeed(query, filters.q, effectiveView === "list");
   const labelsRes = useResource<Label[]>(paths.labels, api.listLabels, REFERENCE_MAX_AGE);
   const actorsRes = useResource<Actor[]>(paths.actors, api.listActors, REFERENCE_MAX_AGE);
-  const indexRes = useResource<IssueIndexEntry[]>(paths.issueIndex, api.issueIndex, REFERENCE_MAX_AGE);
 
   const issues = feed.rows;
   const labels = labelsRes.data ?? EMPTY;
   const actors = actorsRes.data ?? EMPTY;
-  const issueIndex = indexRes.data ?? EMPTY;
+  // Every row names an issue, so the rows themselves settle most of what the page has to look up:
+  // a `#123` in a title, the parent a breadcrumb needs, the chip on a chosen filter.
+  useEffect(() => { learnIssueNames(issues); }, [issues]);
   const loading = feed.loading;
   const error = feed.error ?? labelsRes.error ?? actorsRes.error;
   const load = feed.reload;
@@ -313,6 +315,16 @@ export function IssueList({ me }: { me: Actor | null }) {
   // Reset to the first page whenever the filter set or sort changes.
   useEffect(() => { pager.setPage(0); }, [JSON.stringify(filters), sort.key, sort.dir]);
 
+  // Tell the feed how many rows the table actually wants: the page being shown, plus a page of
+  // slack so moving forward is instant. Everything past that is left where it is — the list used
+  // to pull five thousand rows into a table that shows twenty-five, which on a slow link meant a
+  // minute and a half of downloading behind a page the reader had already finished with.
+  //
+  // Rows dropped by the *local* filters are not compensated for here. What is not held is reached
+  // by typing, which the server answers over the whole tracker (see `shouldAskServer`).
+  const rowsNeeded = (pager.page + 2) * pager.size;
+  useEffect(() => { feed.ensure(rowsNeeded); }, [feed.ensure, rowsNeeded]);
+
   // Keep the URL in sync with the current filters/view (replacing, not pushing, so every keystroke
   // doesn't grow browser history) so it survives navigating away and back, and can be linked to
   // directly (e.g. an issue's "Children" breadcrumb links to "#/issues?parents=<id>").
@@ -332,7 +344,7 @@ export function IssueList({ me }: { me: Actor | null }) {
 
   return (
     <div>
-      <ListBreadcrumbs parentId={singleParent} index={issueIndex} />
+      <ListBreadcrumbs parentId={singleParent} />
       <PageHeader
         title={singleParent != null ? "Children" : "Issues"}
         description={singleParent != null
@@ -352,13 +364,12 @@ export function IssueList({ me }: { me: Actor | null }) {
         }
       />
 
-      <Filters value={filters} onChange={setFilters} labels={labels} actors={actors} index={issueIndex} />
+      <Filters value={filters} onChange={setFilters} labels={labels} actors={actors} />
 
       {me && selected.size > 0 && (
         <BulkBar
           selectedIds={selected}
           issues={issues}
-          index={issueIndex}
           labels={labels}
           actors={actors}
           onClear={() => setSelected(new Set())}
@@ -369,14 +380,14 @@ export function IssueList({ me }: { me: Actor | null }) {
       {error && <div className="panel error">{error}</div>}
       {/* What is actually in hand. A list that stopped at the cap looks exactly like a list that
           reached the end, and the difference decides whether searching it is conclusive. */}
-      {(feed.streaming || feed.capped || feed.searching) && (
+      {(feed.streaming || feed.searching || (!feed.complete && !feed.loading)) && (
         <div className="feed-status small muted" role="status">
           {feed.searching
             ? "Searching the rest of the tracker…"
             : feed.streaming
               ? `Loaded ${feed.rows.length.toLocaleString()}${feed.total != null ? ` of ${feed.total.toLocaleString()}` : ""}…`
               : `Showing the ${feed.rows.length.toLocaleString()} most recently updated of `
-                + `${(feed.total ?? feed.rows.length).toLocaleString()}. Type to search the rest.`}
+                + `${(feed.total ?? feed.rows.length).toLocaleString()}. Page forward for more, or type to search the rest.`}
         </div>
       )}
       {/* The table is not gated on the rows arriving. Its header, its sort controls and which

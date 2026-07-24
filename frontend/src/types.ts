@@ -178,6 +178,17 @@ export interface ApiTokenCreated {
   secret: string;
 }
 
+/** Where an issue sits among the issues sharing its parent, and the two either side of it.
+ *  Sent with the issue rather than derived by the client, which is what it used to do — out of a
+ *  naming index of the whole tracker, to answer a question about three issues. */
+export interface SiblingNav {
+  /** 1-based position among the siblings; 0 when the issue has no parent. */
+  position: number;
+  count: number;
+  prev: IssueIndexEntry | null;
+  next: IssueIndexEntry | null;
+}
+
 export interface IssueDetail {
   issue: Issue;
   assignedActors: Actor[];
@@ -188,11 +199,38 @@ export interface IssueDetail {
   events: Event[];
   participating: boolean;
   reviewRequests: ReviewRequest[];
+  /** The containment path above this issue, root first, excluding the issue itself. */
+  ancestors: IssueIndexEntry[];
+  siblings: SiblingNav;
+}
+
+/** One node of the graph view. Both edge relations ride on the node — `dependencies` are the edges
+ *  in dependency mode, `parent` in hierarchy mode — so the graph is one read whichever mode it is
+ *  in, and there is no separate edge list saying the same thing a second time. */
+export interface GraphNode {
+  id: number;
+  title: string;
+  state: IssueState;
+  locked: boolean;
+  labels: number[];
+  parent: number | null;
+  dependencies: number[];
+  assignees: number[];
+  deadline: number | null;
 }
 
 export interface GraphData {
-  nodes: { id: number; title: string; state: IssueState; labels: number[] }[];
-  edges: { issue: number; dependsOn: number }[];
+  nodes: GraphNode[];
+}
+
+/** Who you are and how you could sign in — one answer to what the top bar needs, where `/me` and
+ *  `/health` used to be two requests. `actor` is null when nobody is signed in, which is an answer
+ *  and not an error. */
+export interface Session {
+  actor: Actor | null;
+  centralPasswordEnabled: boolean;
+  googleEnabled: boolean;
+  githubEnabled: boolean;
 }
 
 export interface FieldSpec {

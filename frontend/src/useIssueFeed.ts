@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { IssueListRow } from "./types";
-import { api, type IssuePageQuery } from "./api";
+import { api, issuePagePath, type IssuePageQuery } from "./api";
+import { cachedGet } from "./cache";
 
 /**
  * The issue list's rows, pulled a page at a time and accumulated locally.
@@ -8,19 +9,25 @@ import { api, type IssuePageQuery } from "./api";
  * The list used to read every matching issue in one response, which is a fixed idea of what a
  * tracker costs to open — 341 KB gzipped at ten thousand issues, before a row could be drawn. Here
  * the first page arrives at a size that does not depend on how big the tracker is, the table draws
- * it, and the rest follows in the background.
+ * it, and further pages are fetched when something actually wants them.
  *
- * Searching stays local. Typing filters the rows already held, with no request at all, which is
- * both instant and the whole reason for accumulating them. A server search only exists to reach
- * what is *not* held — see `shouldAskServer` for the four conditions that have to hold before one
- * is sent, all of which exist to keep that rare.
+ * That last part is the difference between this and a background loader. Pulling to the cap on
+ * arrival cost 25 requests and 179 KB on a ten-thousand-issue tracker, all of it after the page
+ * was already drawn and readable, and all of it competing for a slow link with the route's own
+ * code, the markdown parser and the fonts. Almost none of it was ever looked at: the table shows
+ * twenty-five rows at a time. So the consumer says how many rows it needs (`ensure`), typically
+ * one page ahead of what it is showing, and the feed fetches to there and stops.
+ *
+ * Searching stays local where it can. Typing filters the rows already held, with no request at
+ * all; a server search reaches what is *not* held — see `shouldAskServer` for the conditions that
+ * have to hold before one is sent, all of which exist to keep that rare.
  */
 
 /** Rows per request. Large enough that a tracker of a few hundred arrives in one or two, small
     enough that the first one paints promptly on a slow link — about 7 KB gzipped. */
 export const PAGE_SIZE = 200;
 
-/** How many rows to accumulate before the background loader stops.
+/** How many rows to accumulate before the feed stops fetching at all.
  *
  *  Past this the tracker is large enough that holding all of it costs more than it saves: the
  *  filtering it enables is over a set nobody scrolls, and the memory and parse time are real. The
@@ -30,6 +37,14 @@ export const FEED_CAP = 5000;
 
 /** How long typing has to stop before the tail is searched. */
 const SEARCH_DEBOUNCE_MS = 350;
+
+/** Where the first page's path is left for the next page load.
+ *
+ *  `index.html` fires the list's read before the bundle arrives, and the query depends on filters
+ *  and a sort that only this code knows how to build. Rather than reimplement that derivation in
+ *  the page — where it would drift — the derivation writes down its answer and the page replays
+ *  it. A stale entry costs one page fetched under a name nobody asks for; nothing breaks. */
+export const LIST_QUERY_STORAGE_KEY = "taxis:list-query";
 
 export interface IssueFeed {
   /** Every row held, in server order. */
@@ -45,11 +60,15 @@ export interface IssueFeed {
   capped: boolean;
   /** Nothing to show yet. A background page does not count. */
   loading: boolean;
-  /** More pages are still arriving. */
+  /** A further page is on its way. */
   streaming: boolean;
   searching: boolean;
   error: string | null;
   reload: () => void;
+  /** Ask for at least `n` rows to be held, fetching pages until there are (or the result set ends).
+      What the list is about to show, plus a page of slack, so paging forward is instant without
+      pulling rows nobody asked for. */
+  ensure: (n: number) => void;
 }
 
 /** Whether the tail is worth asking the server about.
@@ -93,65 +112,97 @@ export function useIssueFeed(query: IssuePageQuery, search: string, enabled = tr
   const [error, setError] = useState<string | null>(null);
   const [serverMatched, setServerMatched] = useState<Set<number>>(() => new Set());
   const [nonce, setNonce] = useState(0);
+  /** How many rows have been asked for. Only ever raised, and reset with the filters. */
+  const [want, setWant] = useState(PAGE_SIZE);
 
   // Ids held, so a page or a search result can be merged without rescanning the array.
   const held = useRef<Set<number>>(new Set());
   // Queries already put to the server for this filter set, and how many rows each returned.
   const asked = useRef<Map<string, number>>(new Map());
+  // Where the next page resumes, and whether there is one.
+  const cursor = useRef<string | undefined>(undefined);
+  const exhausted = useRef(false);
+  const fetching = useRef(false);
   // Bumped on every restart; an in-flight response carrying a stale generation is discarded.
   const generation = useRef(0);
 
   const reload = useCallback(() => setNonce((n) => n + 1), []);
+  const ensure = useCallback((n: number) => setWant((w) => (n > w ? n : w)), []);
 
-  // Pull pages until the result set ends or the cap is reached, painting each as it lands.
+  // Start over: new filters, or an explicit reload.
   useEffect(() => {
-    const gen = ++generation.current;
-    if (!enabled) { setLoading(false); setStreaming(false); return; }
+    generation.current++;
     held.current = new Set();
     asked.current = new Map();
+    cursor.current = undefined;
+    exhausted.current = false;
+    fetching.current = false;
     setRows(EMPTY_ROWS);
     setServerMatched(new Set());
     setTotal(null);
     setComplete(false);
     setCapped(false);
-    setLoading(true);
-    setStreaming(true);
     setError(null);
-
-    (async () => {
-      let cursor: string | undefined;
-      let count = 0;
-      try {
-        for (;;) {
-          const page = await api.issuePage({ ...query, limit: PAGE_SIZE, cursor });
-          if (generation.current !== gen) return;
-          const fresh = page.issues.filter((r) => !held.current.has(r.id));
-          fresh.forEach((r) => held.current.add(r.id));
-          count += fresh.length;
-          setRows((prev) => (prev === EMPTY_ROWS ? fresh : prev.concat(fresh)));
-          if (page.total != null) setTotal(page.total);
-          setLoading(false);
-          if (!page.nextCursor) { setComplete(true); break; }
-          // A page that added nothing means the cursor is not advancing. That should be
-          // impossible, and when it was possible — an order whose cursor the server ignored — this
-          // loop asked for the same page several thousand times before anyone noticed. Termination
-          // should not rest on the server and the client agreeing about the order.
-          if (fresh.length === 0) { setComplete(true); break; }
-          if (count >= FEED_CAP) { setCapped(true); break; }
-          cursor = page.nextCursor;
-        }
-      } catch (e) {
-        if (generation.current === gen) { setError(String(e)); setLoading(false); }
-      } finally {
-        if (generation.current === gen) setStreaming(false);
-      }
-    })();
-
-    return () => { generation.current++; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    setWant(PAGE_SIZE);
+    setLoading(enabled);
+    setStreaming(false);
   }, [key, nonce, enabled]);
 
-  // Reach the rows the cap left behind, once typing has stopped.
+  // Pull one page whenever fewer rows are held than have been asked for. Re-running as `rows`
+  // grows is what makes this a loop; stopping when the demand is met is what makes it a short one.
+  useEffect(() => {
+    if (!enabled) { setLoading(false); setStreaming(false); return; }
+    if (fetching.current || exhausted.current) return;
+    if (rows.length >= want || rows.length >= FEED_CAP) { setStreaming(false); return; }
+
+    const gen = generation.current;
+    fetching.current = true;
+    setStreaming(true);
+    const first = cursor.current == null;
+    const path = issuePagePath({ ...query, limit: PAGE_SIZE });
+    if (first) {
+      try {
+        localStorage.setItem(LIST_QUERY_STORAGE_KEY, path);
+      } catch { /* private mode: the page falls back to the default query */ }
+    }
+    // The first page goes through the cache so it can adopt the request `index.html` already
+    // started — which is the difference between the rows arriving with the bundle and arriving a
+    // round trip after it. Later pages are plain reads: nothing preloads a cursor.
+    const pending = first
+      ? cachedGet(path, () => api.issuePage({ ...query, limit: PAGE_SIZE }))
+      : api.issuePage({ ...query, limit: PAGE_SIZE, cursor: cursor.current });
+    pending
+      .then((page) => {
+        if (generation.current !== gen) return;
+        const fresh = page.issues.filter((r) => !held.current.has(r.id));
+        fresh.forEach((r) => held.current.add(r.id));
+        setRows((prev) => (prev === EMPTY_ROWS ? fresh : prev.concat(fresh)));
+        if (page.total != null) setTotal(page.total);
+        // A page that added nothing means the cursor is not advancing. That should be impossible,
+        // and when it was possible — an order whose cursor the server ignored — this loop asked for
+        // the same page several thousand times before anyone noticed. Termination should not rest
+        // on the server and the client agreeing about the order.
+        if (!page.nextCursor || fresh.length === 0) {
+          exhausted.current = true;
+          setComplete(true);
+        } else {
+          cursor.current = page.nextCursor;
+          if (held.current.size >= FEED_CAP) { exhausted.current = true; setCapped(true); }
+        }
+      })
+      .catch((e) => { if (generation.current === gen) setError(String(e)); })
+      .finally(() => {
+        if (generation.current !== gen) return;
+        fetching.current = false;
+        setLoading(false);
+        setStreaming(false);
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, nonce, enabled, want, rows]);
+
+  // Reach the rows the feed has not pulled, once typing has stopped. This is what makes fetching
+  // on demand safe rather than a way to lose rows: what is not held is one request away, and the
+  // request only happens when a query is specific enough to be worth it.
   useEffect(() => {
     const q = search.trim();
     if (!enabled || !shouldAskServer(q, complete, asked.current)) return;
@@ -174,5 +225,7 @@ export function useIssueFeed(query: IssuePageQuery, search: string, enabled = tr
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search, key, complete, enabled]);
 
-  return { rows, serverMatched, total, complete, capped, loading, streaming, searching, error, reload };
+  return {
+    rows, serverMatched, total, complete, capped, loading, streaming, searching, error, reload, ensure,
+  };
 }

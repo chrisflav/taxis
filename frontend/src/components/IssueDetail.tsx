@@ -1,6 +1,6 @@
-import { Suspense, lazy, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type {
-  Actor, Artifact, Check, Comment, Event, Group, Issue, IssueDetail as Detail, IssueIndexEntry,
+  Actor, Artifact, Check, Comment, Event, Group, Issue, IssueDetail as Detail,
   IssueListRow, IssuePage, IssueState, Label, Plugins, ReviewState,
 } from "../types";
 import { api, childrenQuery, issuePagePath, paths } from "../api";
@@ -9,7 +9,6 @@ import { Modal, ConfirmModal, useConfirmClose } from "./Modal";
 import { LabelChip } from "./LabelChip";
 import { Markdown } from "./Markdown";
 import { MultiSelect } from "./MultiSelect";
-import { SearchableSelect } from "./SearchableSelect";
 import { AutoTextarea } from "./AutoTextarea";
 import { ActorName } from "./ActorName";
 import { IssueBreadcrumbs, SiblingNav } from "./Breadcrumbs";
@@ -17,7 +16,9 @@ import { diffWords } from "../diff";
 import { localInputToUnix, unixToLocalInput } from "../datetime";
 import { useIssueRefAutocomplete } from "../useIssueRefAutocomplete";
 import { IssueRefMenu } from "./IssueRefMenu";
-import { breadcrumbOptions, plainTitle } from "../breadcrumbs";
+import { plainTitle } from "../breadcrumbs";
+import { learnIssueNames, useIssueName, useKnownIssueName } from "../issueNames";
+import { IssueMultiPicker, IssueSelectPicker } from "./IssuePicker";
 import { fuzzyMatch } from "../fuzzy";
 import { ClockIcon, LockedMark, TrashIcon } from "./Icon";
 
@@ -66,15 +67,21 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
   const detail = detailRes.data ?? null;
   const load = detailRes.reload;
 
-  // Reference data, read through the shared cache: these are the same four responses every other
-  // view wants, so after the first page of a session they cost nothing. The naming index replaces
-  // what used to be a full `listIssues()` here — the ancestor chain, the parent/dependency pickers
-  // and the `#123` autocomplete all only ever needed an issue's id, title and parent.
-  const plugins = useResource<Plugins>(paths.plugins, api.plugins, REFERENCE_MAX_AGE).data ?? null;
-  const groups = useResource<Group[]>(paths.groups, api.listGroups, REFERENCE_MAX_AGE).data ?? EMPTY;
+  // Reference data, read through the shared cache: the same responses every other view wants, so
+  // after the first page of a session they cost nothing.
+  //
+  // The naming index is gone from here entirely. The ancestor chain and the sibling links arrive
+  // with the issue, the pickers search the tracker instead of holding it, and a `#123` in the prose
+  // asks for that issue by number — so what used to be 140 KB of every issue's name, on the
+  // critical path of every issue page, is now nothing at all.
   const allLabels = useResource<Label[]>(paths.labels, api.listLabels, REFERENCE_MAX_AGE).data ?? EMPTY;
   const allActors = useResource<Actor[]>(paths.actors, api.listActors, REFERENCE_MAX_AGE).data ?? EMPTY;
-  const issueIndex = useResource<IssueIndexEntry[]>(paths.issueIndex, api.issueIndex, REFERENCE_MAX_AGE).data ?? EMPTY;
+  // Plugin kinds describe the attachment dialogues and groups describe the visibility editor:
+  // neither is on the page until somebody opens one, so neither is read until then. The exception
+  // is an issue that is actually restricted, whose rail names the groups it is restricted to.
+  const [editorsUsed, setEditorsUsed] = useState(false);
+  const plugins = useResource<Plugins>(
+    editorsUsed ? paths.plugins : null, api.plugins, REFERENCE_MAX_AGE).data ?? null;
 
   // This issue's children, read as rows rather than taken from the naming index: the index carries
   // no state or labels, and a container's children are worth showing with the same badges the list
@@ -89,13 +96,29 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
     issuePagePath(childQuery), () => api.issuePage(childQuery), LIST_MAX_AGE);
   const children = childrenRes.data?.issues ?? EMPTY;
 
+  const restricted = (detail?.issue.visibility.length ?? 0) > 0;
+  const groups = useResource<Group[]>(
+    editorsUsed || restricted ? paths.groups : null, api.listGroups, REFERENCE_MAX_AGE).data ?? EMPTY;
+
+  // Every response this page reads names issues — its own ancestors and siblings, the children it
+  // lists — so anything else that has to name one (a `#123` in the description, the parent chip)
+  // is usually answered without a request of its own.
+  useEffect(() => {
+    if (!detail) return;
+    learnIssueNames([
+      { id: detail.issue.id, title: detail.issue.title, parent: detail.issue.parent },
+      ...detail.ancestors,
+      ...(detail.siblings?.prev ? [detail.siblings.prev] : []),
+      ...(detail.siblings?.next ? [detail.siblings.next] : []),
+    ]);
+  }, [detail]);
+  useEffect(() => { learnIssueNames(children); }, [children]);
+
   const labelOpts = useMemo(() => allLabels.map((l) => ({ value: l.id, label: l.name })), [allLabels]);
   const labelById = useMemo(() => new Map(allLabels.map((l) => [l.id, l])), [allLabels]);
   const actorOpts = useMemo(() => allActors.map((a) => ({ value: a.id, label: a.displayName })), [allActors]);
-  const issueOpts = useMemo(
-    () => breadcrumbOptions(issueIndex).filter((o) => o.value !== id),
-    [issueIndex, id],
-  );
+  // An issue may not be its own parent or its own dependency.
+  const notSelf = useCallback((other: number) => other === id, [id]);
 
   if (error) return <div className="panel error">{error}</div>;
   // A failed *first* load has nothing to fall back on. A failed revalidation of an issue already on
@@ -105,7 +128,7 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
   // The id is in the URL and the naming index (prefetched, and usually warm) carries the title and
   // the ancestor chain, so the frame, the heading and the breadcrumbs are real from the first
   // paint and only the parts that genuinely need the response are placeheld.
-  if (!detail) return <IssueSkeleton id={id} index={issueIndex} />;
+  if (!detail) return <IssueSkeleton id={id} />;
   const { issue } = detail;
 
   // Persist a patch to the issue and refresh. Returns the promise so inline editors can await it.
@@ -137,8 +160,8 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
   return (
     <div>
       <div className="crumb-bar">
-        <IssueBreadcrumbs issue={issue} index={issueIndex} />
-        <SiblingNav issue={issue} index={issueIndex} />
+        <IssueBreadcrumbs ancestors={detail.ancestors ?? EMPTY} />
+        <SiblingNav nav={detail.siblings} />
       </div>
 
       <div className="page-head">
@@ -177,7 +200,6 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
               multiline
               placeholder="No description"
               onSave={(v) => patch({ description: v })}
-              issues={issueIndex}
             />
 
             <h3 className="field-heading" style={{ marginTop: 20 }}>
@@ -195,7 +217,6 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
                   placeholder="sorry — no goal stated yet"
                   placeholderClass="goal-sorry"
                   onSave={(v) => patch({ goal: v })}
-                  issues={issueIndex}
                 />
               </div>
             </div>
@@ -209,7 +230,7 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
             loading={childrenRes.loading}
             labelById={labelById}
             canEdit={canEdit}
-            onAdd={() => setAddingChild(true)}
+            onAdd={() => { setEditorsUsed(true); setAddingChild(true); }}
           />
 
           <Timeline
@@ -218,7 +239,6 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
             actorOf={actorOf}
             labelName={labelName}
             groupName={groupName}
-            index={issueIndex}
             onChange={load}
             onError={setError}
           />
@@ -235,16 +255,17 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
 
             <MetaRow label="Parent" canEdit={editableUnlessLocked}
               display={issue.parent != null
-                ? <IssueRef id={issue.parent} index={issueIndex} />
+                ? <IssueRef id={issue.parent} />
                 : <span className="rail-empty">None</span>}
-              editor={(close) => <SelectEditor options={issueOpts} initial={issue.parent}
+              editor={(close) => <IssueSelectEditor initial={issue.parent} exclude={notSelf}
                 onSave={(v) => patch({ parent: v })} onClose={close} onError={setError} />} />
 
             <MetaRow label="Depends on" canEdit={editableUnlessLocked}
               display={issue.dependencies.length
-                ? issue.dependencies.map((p) => <IssueRef key={p} id={p} index={issueIndex} />)
+                ? issue.dependencies.map((p) => <IssueRef key={p} id={p} />)
                 : <span className="rail-empty">Nothing</span>}
-              editor={(close) => <MultiEditor options={issueOpts} initial={issue.dependencies} placeholder="Select dependencies…"
+              editor={(close) => <IssueMultiEditor initial={issue.dependencies} exclude={notSelf}
+                placeholder="Select dependencies…"
                 onSave={(v) => patch({ dependencies: v })} onClose={close} onError={setError} />} />
 
             <MetaRow label="Assignees" canEdit={canEdit}
@@ -254,7 +275,7 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
               editor={(close) => <MultiEditor options={actorOpts} initial={issue.assignees} placeholder="Assign actors…"
                 onSave={(v) => patch({ assignees: v })} onClose={close} onError={setError} />} />
 
-            <MetaRow label="Visible to" canEdit={canEdit}
+            <MetaRow label="Visible to" canEdit={canEdit} onOpen={() => setEditorsUsed(true)}
               display={issue.visibility.length
                 ? issue.visibility.map((g) => <span key={g} className="chip">{groupName(g)}</span>)
                 : <span className="rail-empty">Everyone</span>}
@@ -275,7 +296,7 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
               <h3 className="panel-title">
                 Artifacts <span className="count">{detail.attachedArtifacts.length || ""}</span>
                 <span className="spacer" />
-                {me && <button className="ghost" onClick={() => setAddArtifact(true)}>Add</button>}
+                {me && <button className="ghost" onClick={() => { setEditorsUsed(true); setAddArtifact(true); }}>Add</button>}
               </h3>
               {detail.attachedArtifacts.map((a) => (
                 <div key={a.id} className="attach-row">
@@ -288,7 +309,7 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
                   {me && (
                     <span className="attach-actions">
                       <button className="ghost" title="Edit artifact" aria-label="Edit artifact"
-                        onClick={() => setEditArtifact(a)}>✎</button>
+                        onClick={() => { setEditorsUsed(true); setEditArtifact(a); }}>✎</button>
                       <button className="ghost" title="Remove artifact" aria-label="Remove artifact"
                         onClick={() => setDelArtifact(a)}>×</button>
                     </span>
@@ -302,7 +323,7 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
               <h3 className="panel-title">
                 Checks <span className="count">{detail.attachedChecks.length || ""}</span>
                 <span className="spacer" />
-                {me && <button className="ghost" onClick={() => setAddCheck(true)}>Add</button>}
+                {me && <button className="ghost" onClick={() => { setEditorsUsed(true); setAddCheck(true); }}>Add</button>}
               </h3>
               {detail.attachedChecks.map((c) => (
                 <div key={c.id} className="attach-row">
@@ -315,7 +336,7 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
                     <span className="attach-actions">
                       <button className="ghost" title="Run this check now" onClick={() => api.runCheck(c.id).then(load)}>Run</button>
                       <button className="ghost" title="Edit check" aria-label="Edit check"
-                        onClick={() => setEditCheck(c)}>✎</button>
+                        onClick={() => { setEditorsUsed(true); setEditCheck(c); }}>✎</button>
                       <button className="ghost" title="Remove check" aria-label="Remove check"
                         onClick={() => setDelCheck(c)}>×</button>
                     </span>
@@ -333,7 +354,7 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
               <h3 className="panel-title">
                 Reviewers <span className="count">{detail.reviewRequests.length || ""}</span>
                 <span className="spacer" />
-                {me && <button className="ghost" onClick={() => setRequestingReview(true)}>Request</button>}
+                {me && <button className="ghost" onClick={() => { setEditorsUsed(true); setRequestingReview(true); }}>Request</button>}
               </h3>
               {detail.reviewRequests.map((rr) => (
                 <div key={rr.id} className="attach-row">
@@ -512,31 +533,31 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
 
 // The issue page before its response has arrived.
 //
-// The structure of an issue page is the same for every issue, and the naming index — prefetched
-// before React mounts, and cached across navigations — already holds this one's title and its
-// place in the tree. So the frame, the breadcrumbs, the sibling nav and the heading are all real
-// on the first paint, and only the slots that genuinely need the response are placeheld. What used
-// to happen here was a bare "Loading…", followed by the entire page appearing at once.
+// The structure of an issue page is the same for every issue, so the frame, the heading and the
+// layout are all real on the first paint and only the slots that genuinely need the response are
+// placeheld. What used to happen here was a bare "Loading…", followed by the entire page appearing
+// at once.
+//
+// The title comes from the naming store when the issue is already named there — which it is
+// whenever you arrived from a list, a graph, a breadcrumb or a `#123` link, i.e. nearly always.
+// Where it isn't, the heading is a placeholder rather than a request: the response carrying the
+// real title is already in flight.
 //
 // The panels are laid out in the same grid as the real page, so nothing jumps when it fills in.
-function IssueSkeleton({ id, index }: { id: number; index: IssueIndexEntry[] }) {
-  const entry = index.find((i) => i.id === id);
-  // Enough to name the issue and place it in the tree; the title is empty until the index arrives,
-  // which only costs the heading, not the frame around it.
-  const nameable = entry ?? { id, title: "", parent: null };
+function IssueSkeleton({ id }: { id: number }) {
+  const entry = useKnownIssueName(id);
   const bar = (width: string) => <span className="skeleton-line" style={{ width }} />;
 
   return (
     <div aria-busy="true">
       <div className="crumb-bar">
-        <IssueBreadcrumbs issue={nameable} index={index} />
-        <SiblingNav issue={nameable} index={index} />
+        <IssueBreadcrumbs ancestors={EMPTY} />
       </div>
 
       <div className="page-head">
         <h2 className="issue-title">
           <span className="issue-number">#{id}</span>
-          {entry ? <Markdown text={entry.title} inline /> : <span style={{ flex: 1 }}>{bar("24ch")}</span>}
+          {entry?.title ? <Markdown text={entry.title} inline /> : <span style={{ flex: 1 }}>{bar("24ch")}</span>}
         </h2>
       </div>
 
@@ -580,8 +601,10 @@ function IssueSkeleton({ id, index }: { id: number; index: IssueIndexEntry[] }) 
 
 // A link to another issue that says which issue it is. A bare "#18" makes you visit it to find out
 // what it was, which is the round trip this page is trying to stop making.
-function IssueRef({ id, index }: { id: number; index: IssueIndexEntry[] }) {
-  const entry = index.find((i) => i.id === id);
+function IssueRef({ id }: { id: number }) {
+  // Asked for by number, and batched with every other name this page needs — the parent chip and
+  // six dependency chips are one request between them, not seven and not a copy of the tracker.
+  const entry = useIssueName(id);
   const title = entry ? plainTitle(entry.title) : "";
   return (
     <a className="issue-ref" href={`#/issues/${id}`} title={title || undefined}>
@@ -738,7 +761,7 @@ function ChildrenPanel({
 // An inline-editable text value: renders the value (as markdown), and — for editors — a pencil that
 // swaps the block for an input/textarea with Save/Cancel, leaving the rest of the page in place.
 function InlineText({
-  value, canEdit, onSave, inline = false, multiline = false, placeholder, placeholderClass, issues = [],
+  value, canEdit, onSave, inline = false, multiline = false, placeholder, placeholderClass,
 }: {
   value: string;
   canEdit: boolean;
@@ -748,7 +771,6 @@ function InlineText({
   placeholder?: string;
   /** Lets a caller style its own empty state — the goal's is `sorry`, not grey filler text. */
   placeholderClass?: string;
-  issues?: IssueIndexEntry[];
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
@@ -778,7 +800,7 @@ function InlineText({
   }
 
   const body = value
-    ? <Markdown text={value} inline={inline} issues={issues} />
+    ? <Markdown text={value} inline={inline} />
     : <span className={placeholderClass ?? "muted"}>{placeholder ?? "empty"}</span>;
   return (
     <span className={inline ? "editable editable-inline" : "editable"}>
@@ -790,12 +812,15 @@ function InlineText({
 
 // A labelled metadata row with inline editing: shows the value plus a pencil that reveals `editor`.
 function MetaRow({
-  label, canEdit, display, editor,
+  label, canEdit, display, editor, onOpen,
 }: {
   label: string;
   canEdit: boolean;
   display: ReactNode;
   editor: (close: () => void) => ReactNode;
+  /** Called when the editor is revealed. What an editor needs and the page does not — the group
+      list, the plugin kinds — is read then rather than on every page load. */
+  onOpen?: () => void;
 }) {
   const [editing, setEditing] = useState(false);
   return (
@@ -806,7 +831,8 @@ function MetaRow({
       ) : (
         <span className="meta-value">
           {display}
-          {canEdit && <button className="edit-pencil" title={`Edit ${label.toLowerCase()}`} onClick={() => setEditing(true)}>✎</button>}
+          {canEdit && <button className="edit-pencil" title={`Edit ${label.toLowerCase()}`}
+            onClick={() => { onOpen?.(); setEditing(true); }}>✎</button>}
         </span>
       )}
     </div>
@@ -841,12 +867,41 @@ function MultiEditor({
   );
 }
 
-// Inline single-select editor (parent) with a "none" option and Save/Cancel.
-function SelectEditor({
-  options, initial, onSave, onClose, onError,
+// The same two editors over an issue picker, which searches the tracker rather than being handed
+// every issue in it. Separate components rather than a prop on the ones above, because what they
+// take is a *query*, not an option list.
+function IssueMultiEditor({
+  initial, placeholder, exclude, onSave, onClose, onError,
 }: {
-  options: { value: number; label: string }[];
+  initial: number[];
+  placeholder?: string;
+  exclude?: (id: number) => boolean;
+  onSave: (v: number[]) => Promise<unknown>;
+  onClose: () => void;
+  onError: (e: string) => void;
+}) {
+  const [sel, setSel] = useState<number[]>(initial);
+  const [busy, setBusy] = useState(false);
+  const save = () => {
+    setBusy(true);
+    onSave(sel).then(onClose).catch((e) => onError(String(e))).finally(() => setBusy(false));
+  };
+  return (
+    <span className="inline-edit">
+      <IssueMultiPicker selected={sel} onChange={setSel} placeholder={placeholder} exclude={exclude} />
+      <span className="row" style={{ marginTop: 6 }}>
+        <button className="primary" onClick={save} disabled={busy}>Save</button>
+        <button onClick={onClose} disabled={busy}>Cancel</button>
+      </span>
+    </span>
+  );
+}
+
+function IssueSelectEditor({
+  initial, exclude, onSave, onClose, onError,
+}: {
   initial: number | null;
+  exclude?: (id: number) => boolean;
   onSave: (v: number | null) => Promise<unknown>;
   onClose: () => void;
   onError: (e: string) => void;
@@ -859,7 +914,7 @@ function SelectEditor({
   };
   return (
     <span className="inline-edit">
-      <SearchableSelect options={options} value={val} onChange={setVal} />
+      <IssueSelectPicker value={val} onChange={setVal} exclude={exclude} />
       <span className="row" style={{ marginTop: 6 }}>
         <button className="primary" onClick={save} disabled={busy}>Save</button>
         <button onClick={onClose} disabled={busy}>Cancel</button>
@@ -1038,14 +1093,13 @@ function joinChange(noun: string, added: ReactNode[], removed: ReactNode[]): Rea
 // box to add a comment for signed-in users. Title/description/comment edits stay as edit-history
 // dropdowns next to their text rather than appearing here.
 function Timeline({
-  detail, me, actorOf, labelName, groupName, index, onChange, onError,
+  detail, me, actorOf, labelName, groupName, onChange, onError,
 }: {
   detail: Detail;
   me: Actor | null;
   actorOf: (id: number) => Actor | undefined;
   labelName: (id: number) => string;
   groupName: (id: number) => string;
-  index: IssueIndexEntry[];
   onChange: () => void;
   onError: (e: string) => void;
 }) {
@@ -1054,7 +1108,7 @@ function Timeline({
   const comments = detail.comments ?? [];
   const events = detail.events ?? [];
   const ctx: EventCtx = { actorOf, labelName, groupName };
-  const bodyAc = useIssueRefAutocomplete<HTMLTextAreaElement>(index, body, setBody);
+  const bodyAc = useIssueRefAutocomplete<HTMLTextAreaElement>(body, setBody);
 
   const canModify = (authorId: number | null) => !!me && (me.admin || me.id === authorId);
 
@@ -1070,7 +1124,6 @@ function Timeline({
           history={events.filter((e) => e.kind === "comment_edited" && e.data.commentId === c.id)}
           bot={actorOf(c.authorId ?? -1)?.bot}
           canModify={canModify(c.authorId)}
-          issues={index}
           onChange={onChange}
           onError={onError}
         />
@@ -1116,7 +1169,7 @@ function Timeline({
               onKeyDown={bodyAc.onKeyDown}
               placeholder="Add a comment… (Markdown & LaTeX supported, type # to link an issue)"
             />
-            <IssueRefMenu options={bodyAc.options} issues={index} onChoose={bodyAc.choose} pos={bodyAc.menuPos} menuRef={bodyAc.menuRef} />
+            <IssueRefMenu options={bodyAc.options} onChoose={bodyAc.choose} pos={bodyAc.menuPos} menuRef={bodyAc.menuRef} />
           </div>
           <div className="row" style={{ justifyContent: "flex-end", marginTop: 8 }}>
             <span className="muted small" style={{ marginRight: "auto" }}>Optionally post as a review:</span>
@@ -1135,13 +1188,12 @@ function Timeline({
 }
 
 function CommentItem({
-  comment: c, history, bot, canModify, issues, onChange, onError,
+  comment: c, history, bot, canModify, onChange, onError,
 }: {
   comment: Comment;
   history: Event[];
   bot?: boolean;
   canModify: boolean;
-  issues: IssueIndexEntry[];
   onChange: () => void;
   onError: (e: string) => void;
 }) {
@@ -1190,7 +1242,7 @@ function CommentItem({
           </div>
         </div>
       ) : (
-        c.body.trim() && <div style={{ marginTop: 4 }}><Markdown text={c.body} issues={issues} /></div>
+        c.body.trim() && <div style={{ marginTop: 4 }}><Markdown text={c.body} /></div>
       )}
       {confirmDel && (
         <ConfirmModal

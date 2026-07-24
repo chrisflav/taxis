@@ -2,10 +2,11 @@ import { useEffect, useMemo, useState } from "react";
 import { LockedMark } from "./Icon";
 import { PageHeader } from "./PageHeader";
 import { PAGE_META } from "../pages";
-import type { Actor, Issue, Label } from "../types";
-import { api, graphQuery, paths } from "../api";
+import type { Actor, GraphData, GraphNode as GraphIssue, Label } from "../types";
+import { api, paths } from "../api";
 import { EMPTY, LIST_MAX_AGE, REFERENCE_MAX_AGE, useResource } from "../cache";
 import { emptyFilters, filtersFromParams, filtersToParams, matchesFilters, type IssueFilterState } from "../filters";
+import { learnIssueNames } from "../issueNames";
 import { Filters } from "./Filters";
 import { GraphCanvas, GraphPlaceholder, type GraphDirection, type GraphNode } from "./GraphCanvas";
 import { LabelChip } from "./LabelChip";
@@ -21,7 +22,7 @@ export type GraphMode = "dependencies" | "hierarchy";
 export type { GraphDirection };
 
 interface IssueNode extends GraphNode {
-  issue: Issue;
+  issue: GraphIssue;
 }
 
 // Same view-state persistence as IssueList: "open" is the default on a genuinely first-ever visit,
@@ -54,18 +55,23 @@ export function GraphView() {
   const [showLabels, setShowLabels] = useState(false);
   const [showAssignees, setShowAssignees] = useState(false);
   // The graph needs every issue, not a filtered slice: an edge may point at something the current
-  // filters hide, and the generation of a node is defined by its full parent chain. It does not
-  // render descriptions though, so it asks for summary rows.
-  const issuesRes = useResource<Issue[]>(
-    paths.issues(graphQuery), () => api.listIssues(graphQuery), LIST_MAX_AGE);
+  // filters hide, and the generation of a node is defined by its full parent chain. That makes the
+  // *shape* of a node the thing worth minimising, since whatever it costs is paid once per issue in
+  // the tracker — so this reads `/graph`, whose nodes carry what a card draws and what the filter
+  // bar narrows by, rather than `/issues?summary=1`, which carried creators, timestamps, visibility
+  // groups and attachment counts that no graph has ever drawn.
+  const graphRes = useResource<GraphData>(paths.graph, api.graph, LIST_MAX_AGE);
   const labelsRes = useResource<Label[]>(paths.labels, api.listLabels, REFERENCE_MAX_AGE);
   const actorsRes = useResource<Actor[]>(paths.actors, api.listActors, REFERENCE_MAX_AGE);
 
-  const issues = issuesRes.data ?? EMPTY;
+  const issues = graphRes.data?.nodes ?? EMPTY;
   const labels = labelsRes.data ?? EMPTY;
   const actors = actorsRes.data ?? EMPTY;
-  const loading = issuesRes.loading;
-  const error = issuesRes.error ?? labelsRes.error ?? actorsRes.error;
+  const loading = graphRes.loading;
+  const error = graphRes.error ?? labelsRes.error ?? actorsRes.error;
+  // The nodes name every issue in the tracker, so anything else on the page that has to name one
+  // — a `#123` in a title, a chosen filter's chip — is answered without a request.
+  useEffect(() => { learnIssueNames(issues); }, [issues]);
 
   useEffect(() => {
     const params = filtersToParams(filters);
@@ -127,8 +133,7 @@ export function GraphView() {
   return (
     <div>
       <PageHeader {...PAGE_META.graph} />
-      {/* The rows already carry id/title/parent, so the pickers need no extra request. */}
-      <Filters value={filters} onChange={setFilters} labels={labels} actors={actors} index={issues} />
+      <Filters value={filters} onChange={setFilters} labels={labels} actors={actors} />
       <div className="row" style={{ marginBottom: 12, justifyContent: "space-between" }}>
         <div className="row">
           <div className="segmented">

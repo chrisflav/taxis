@@ -1,7 +1,7 @@
-import { memo, useEffect, useState } from "react";
-import type { IssueIndexEntry } from "../types";
-import { linkifyIssueRefs } from "../issueLinks";
+import { memo, useEffect, useMemo, useState } from "react";
+import { containsMath, issueRefIds, linkifyIssueRefs } from "../issueLinks";
 import { plainTitle } from "../breadcrumbs";
+import { useIssueNames } from "../issueNames";
 
 // Markdown rendering, loaded on demand.
 //
@@ -36,6 +36,27 @@ const SANITIZE_OPTIONS = {
 
 let rendererLoading = false;
 
+/** Run `fn` once the page has fired its `load` event, and never a moment before it.
+ *
+ *  "Never before" is the whole point, and it is subtle. Every import in this file is a module
+ *  fetch, and Firefox counts a module fetch that is *in flight when the page would otherwise fire
+ *  `load`* against the load event: the tab keeps saying it is loading until that fetch resolves.
+ *  Start `import("marked")` a second before load on a link where marked takes forty seconds to
+ *  arrive, and the browser sits on the load event — and its throbber — for those forty seconds,
+ *  over a page that has been finished and readable the whole time. (Chromium does not do this,
+ *  which is why it only showed up in one browser.)
+ *
+ *  So this waits for `load` and then starts the fetch strictly after it, where it cannot be
+ *  counted against it. There is deliberately no timeout fallback: an earlier version fell back to
+ *  fetching after five seconds if `load` had not fired, which is exactly the thing that must not
+ *  happen — it started the import *before* load and pinned the event open. If `load` genuinely
+ *  never fires, the parser genuinely never loads, and the text stays as its own readable source,
+ *  which is the fallback the rest of this file is built around anyway. */
+function afterPageLoad(fn: () => void): void {
+  if (document.readyState === "complete") fn();
+  else window.addEventListener("load", fn, { once: true });
+}
+
 /** Start fetching the parser without waiting for something to render.
  *
  *  Called from `main.tsx` once the application has mounted. Left to the first `Markdown` to mount,
@@ -44,7 +65,7 @@ let rendererLoading = false;
  *  it. Deliberately not started before mount: it would then be competing for bandwidth with the
  *  bundle that has to arrive for anything at all to appear. */
 export function preloadMarkdown(): void {
-  loadRenderer();
+  afterPageLoad(loadRenderer);
 }
 
 function loadRenderer(): void {
@@ -94,17 +115,12 @@ function loadMath(): void {
     .catch(() => { /* text renders without math rather than not at all */ });
 }
 
-// Cheap pre-check for the delimiters `marked-katex-extension` recognises. A wrong guess is
-// harmless — an unnecessary import, or math that stays plain until something else on the page
-// triggers the load — so this errs against downloading 270 KB for prose that mentions a dollar.
-const MATH_PATTERN = /\$\$[\s\S]+?\$\$|\$[^$\n]+\$|\\\(|\\\[/;
-
 /** Subscribe to whichever loads this text needs, and re-render as each arrives. */
 function useRendered(needsMath: boolean): boolean {
   const [, bump] = useState(0);
   useEffect(() => {
-    loadRenderer();
-    if (needsMath) loadMath();
+    afterPageLoad(loadRenderer);
+    if (needsMath) afterPageLoad(loadMath);
     if (renderer && (!needsMath || mathLoaded)) return;
     const wake = () => bump((n) => n + 1);
     waiters.add(wake);
@@ -113,14 +129,17 @@ function useRendered(needsMath: boolean): boolean {
   return renderer != null;
 }
 
-// `issues`, when passed, is used to render "#123" references as "#123 <title>" instead of a bare
-// number — omit it where the referenced issue's title isn't worth the lookup (e.g. list rows,
-// which already show the issue's own title next to its number).
+// "#123" references are rendered as "#123 <title>" once the title is known. Which issues those are
+// is read out of the text itself, and their names are asked for by id — a page's whole prose costs
+// one small request, where this used to be handed an index of every issue in the tracker.
 //
 // Memoised: parsing and sanitising is the most expensive thing a list row does, and the filter bar
 // re-renders every row on each keystroke.
-export const Markdown = memo(function Markdown({ text, inline = false, issues = [] }: { text: string; inline?: boolean; issues?: IssueIndexEntry[] }) {
-  const ready = useRendered(MATH_PATTERN.test(text));
+export const Markdown = memo(function Markdown({ text, inline = false }: { text: string; inline?: boolean }) {
+  const ready = useRendered(containsMath(text));
+  // Nothing is fetched for text with no references in it, which is nearly every title.
+  const refs = useMemo(() => issueRefIds(text), [text]);
+  const names = useIssueNames(refs);
 
   if (!ready) {
     // The document's own source, as text. `plainTitle` drops the syntax that reads worst in a
@@ -132,7 +151,7 @@ export const Markdown = memo(function Markdown({ text, inline = false, issues = 
   }
 
   // Turn bare `#123` issue references into links, then parse markdown.
-  const linked = linkifyIssueRefs(text, issues);
+  const linked = linkifyIssueRefs(text, names);
   const cleanHtml = renderer!.sanitize(inline ? renderer!.parseInline(linked) : renderer!.parse(linked));
 
   return inline

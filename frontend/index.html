@@ -21,6 +21,64 @@
         }
       })();
     </script>
+    <script>
+      // Ask for the page's data before the application exists.
+      //
+      // Every request the app makes is issued by code inside the bundle, so none of them could
+      // start until the bundle had arrived, been parsed and run — on a 50 kbit/s link that is six
+      // seconds of a twelve-second load during which the connection is busy with JavaScript and
+      // the server has been told nothing about what page is being opened. These are the same URLs
+      // `main.tsx` asks for; firing them here overlaps them with the download of the code that
+      // will render them, and `cache.ts` adopts whatever is already in flight (`__taxisPreload`).
+      //
+      // Deliberately only the requests whose URL is knowable without the application's own logic.
+      // A guessed URL is not a free bet: on a link this slow, prefetching the wrong list query
+      // costs the reader real seconds. The list's query is not guessed — it is replayed from the
+      // one the app last used, which the app records for exactly this purpose.
+      (function () {
+        var preload = (window.__taxisPreload = {});
+        function get(path) {
+          if (preload[path]) return;
+          preload[path] = fetch(path, {
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+          }).then(function (res) {
+            return res.text().then(function (text) {
+              var data = text ? JSON.parse(text) : null;
+              if (!res.ok) throw new Error((data && data.error) || res.statusText);
+              return data;
+            });
+          }).catch(function (e) {
+            // Leave no poisoned entry behind: the application re-requests normally.
+            delete preload[path];
+            throw e;
+          });
+        }
+        // Who is signed in, and the reference data every view names things with.
+        get("/api/session");
+        get("/api/labels");
+        get("/api/actors");
+        var hash = window.location.hash || "";
+        var issue = hash.match(/^#\/issues\/(\d+)/);
+        if (issue) {
+          // `CHILDREN_PAGE_SIZE` in api.ts. A fixed query, so there is nothing to get wrong.
+          get("/api/issues/" + issue[1]);
+          get("/api/issues/page?parent=" + issue[1] + "&limit=100");
+        } else if (hash.indexOf("#/graph") === 0) {
+          get("/api/graph");
+        } else if (hash.indexOf("#/repos") === 0) {
+          get("/api/repo-graph");
+        } else if (hash.indexOf("#/labels") !== 0) {
+          // The issue list. Its query depends on filters and a sort that live in the app and in
+          // localStorage, so rather than reimplement that here — and drift from it — the app
+          // writes down the path it last read, and this replays it. Worst case after a filter
+          // change: one page fetched that the app then asks for under a different name.
+          var last = null;
+          try { last = localStorage.getItem("taxis:list-query"); } catch (e) { /* private mode */ }
+          get("/api" + (last || "/issues/page?state=open&sort=id&limit=200"));
+        }
+      })();
+    </script>
   </head>
   <body>
     <!-- The page frame, drawn before a byte of JavaScript has run.

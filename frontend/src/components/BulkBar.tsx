@@ -1,22 +1,19 @@
-import { useMemo, useState } from "react";
-import type { Actor, IssueListRow, IssueIndexEntry, Label } from "../types";
+import { useCallback, useState } from "react";
+import type { Actor, IssueListRow, Label } from "../types";
 import { api } from "../api";
 import { MultiSelect } from "./MultiSelect";
-import { SearchableSelect } from "./SearchableSelect";
-import { breadcrumbOptions } from "../breadcrumbs";
+import { IssueSelectPicker } from "./IssuePicker";
 
 type BulkAction = "add-labels" | "remove-labels" | "set-parent" | "assign";
 
 // A toolbar that appears once at least one issue is checked in the list, applying one bulk
 // change (labels, parent, or assignees) to every selected issue at once.
 export function BulkBar({
-  selectedIds, issues, index, labels, actors, onClear, onApplied,
+  selectedIds, issues, labels, actors, onClear, onApplied,
 }: {
   selectedIds: Set<number>;
   /** The rows currently listed — the source of each selected issue's existing labels/assignees. */
   issues: IssueListRow[];
-  /** Every issue, for the parent picker: a parent may well be outside the current filter. */
-  index: IssueIndexEntry[];
   labels: Label[];
   actors: Actor[];
   onClear: () => void;
@@ -30,10 +27,9 @@ export function BulkBar({
   const [error, setError] = useState<string | null>(null);
 
   const selectedIssues = issues.filter((i) => selectedIds.has(i.id));
-  const issueOpts = useMemo(
-    () => breadcrumbOptions(index).filter((o) => !selectedIds.has(o.value)),
-    [index, selectedIds],
-  );
+  // The parent picker searches the whole tracker — a parent may well be outside the current
+  // filter — but must not offer one of the issues being moved as its own parent.
+  const excludeSelected = useCallback((id: number) => selectedIds.has(id), [selectedIds]);
 
   const apply = () => {
     setBusy(true);
@@ -69,7 +65,7 @@ export function BulkBar({
         {(action === "add-labels" || action === "remove-labels") && (
           <MultiSelect options={labels.map((l) => ({ value: l.id, label: l.name }))} selected={labelSel} onChange={setLabelSel} placeholder="Choose labels…" />
         )}
-        {action === "set-parent" && <SearchableSelect options={issueOpts} value={parentSel} onChange={setParentSel} />}
+        {action === "set-parent" && <IssueSelectPicker value={parentSel} onChange={setParentSel} exclude={excludeSelected} />}
         {action === "assign" && (
           <MultiSelect options={actors.map((a) => ({ value: a.id, label: a.displayName }))} selected={assigneeSel} onChange={setAssigneeSel} placeholder="Choose actors…" />
         )}

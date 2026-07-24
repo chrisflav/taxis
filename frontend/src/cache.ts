@@ -36,6 +36,20 @@ export function peekCached<T>(key: string): T | undefined {
   return hit ? (hit.data as T) : undefined;
 }
 
+/** A request the page started before any of this code existed.
+ *
+ *  `index.html` fires the reads a route needs from an inline script, so they overlap the download
+ *  of the bundle instead of waiting for it. Taking one over here is what connects the two: the
+ *  first caller for that key gets the response that has been on its way since the first round
+ *  trip. Each is claimed once — a second read of the same key is a genuine re-read. */
+function claimPreloaded<T>(key: string): Promise<T> | undefined {
+  const store = (window as unknown as { __taxisPreload?: Record<string, Promise<unknown>> }).__taxisPreload;
+  const hit = store?.["/api" + key];
+  if (!hit) return undefined;
+  delete store!["/api" + key];
+  return hit as Promise<T>;
+}
+
 /**
  * Fetch `key`, reusing the stored value when it is younger than `maxAgeMs` and collapsing
  * concurrent calls for the same key into a single request.
@@ -47,7 +61,7 @@ export function cachedGet<T>(key: string, fetcher: () => Promise<T>, maxAgeMs = 
   const pending = inflight.get(key);
   if (pending) return pending as Promise<T>;
 
-  const request = fetcher()
+  const request = (claimPreloaded<T>(key) ?? fetcher())
     .then((data) => {
       entries.set(key, { data, at: Date.now() });
       return data;

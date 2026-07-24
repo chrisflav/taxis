@@ -1,12 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { LockIcon, LockedMark } from "./Icon";
-import type { Actor, Group, Issue, IssueIndexEntry, Label } from "../types";
+import type { Actor, Group, Issue, Label } from "../types";
 import { api, paths } from "../api";
 import { EMPTY, REFERENCE_MAX_AGE, useResource } from "../cache";
 import { MultiSelect } from "./MultiSelect";
-import { SearchableSelect } from "./SearchableSelect";
+import { IssueMultiPicker, IssueSelectPicker } from "./IssuePicker";
 import { AutoTextarea } from "./AutoTextarea";
-import { breadcrumbOptions } from "../breadcrumbs";
 import { localInputToUnix, unixToLocalInput } from "../datetime";
 import { useIssueRefAutocomplete } from "../useIssueRefAutocomplete";
 import { IssueRefMenu } from "./IssueRefMenu";
@@ -46,7 +45,6 @@ export function IssueForm({
   const allLabels = useResource<Label[]>(paths.labels, api.listLabels, REFERENCE_MAX_AGE).data ?? EMPTY;
   const allActors = useResource<Actor[]>(paths.actors, api.listActors, REFERENCE_MAX_AGE).data ?? EMPTY;
   const allGroups = useResource<Group[]>(paths.groups, api.listGroups, REFERENCE_MAX_AGE).data ?? EMPTY;
-  const allIssues = useResource<IssueIndexEntry[]>(paths.issueIndex, api.issueIndex, REFERENCE_MAX_AGE).data ?? EMPTY;
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(!editing);
 
@@ -121,14 +119,15 @@ export function IssueForm({
 
   const labelOpts = allLabels.map((l) => ({ value: l.id, label: l.name }));
   const actorOpts = allActors.map((a) => ({ value: a.id, label: a.displayName }));
-  const issueOpts = breadcrumbOptions(allIssues).filter((o) => o.value !== issueId);
+  // An issue cannot be its own parent or its own dependency.
+  const notSelf = (other: number) => other === issueId;
   // A user may only restrict visibility to groups they belong to (admins: any group).
   const visibleGroups = me?.admin ? allGroups : allGroups.filter((g) => me?.groups.includes(g.id));
 
   // "#123" issue-reference autocomplete for the title, description and goal fields.
-  const titleAc = useIssueRefAutocomplete<HTMLInputElement>(allIssues, title, setTitle);
-  const descAc = useIssueRefAutocomplete<HTMLTextAreaElement>(allIssues, description, setDescription);
-  const goalAc = useIssueRefAutocomplete<HTMLTextAreaElement>(allIssues, goal, setGoal);
+  const titleAc = useIssueRefAutocomplete<HTMLInputElement>(title, setTitle);
+  const descAc = useIssueRefAutocomplete<HTMLTextAreaElement>(description, setDescription);
+  const goalAc = useIssueRefAutocomplete<HTMLTextAreaElement>(goal, setGoal);
 
   return (
     <form className={embedded ? "" : "panel"} onSubmit={submit} style={embedded ? undefined : { maxWidth: 680 }}>
@@ -155,7 +154,7 @@ export function IssueForm({
           autoFocus
           disabled={locked}
         />
-        <IssueRefMenu options={titleAc.options} issues={allIssues} onChoose={titleAc.choose} pos={titleAc.menuPos} menuRef={titleAc.menuRef} />
+        <IssueRefMenu options={titleAc.options} onChoose={titleAc.choose} pos={titleAc.menuPos} menuRef={titleAc.menuRef} />
       </div>
       <label>Description</label>
       <div className="issue-ref-field">
@@ -166,7 +165,7 @@ export function IssueForm({
           onKeyDown={descAc.onKeyDown}
           disabled={locked}
         />
-        <IssueRefMenu options={descAc.options} issues={allIssues} onChoose={descAc.choose} pos={descAc.menuPos} menuRef={descAc.menuRef} />
+        <IssueRefMenu options={descAc.options} onChoose={descAc.choose} pos={descAc.menuPos} menuRef={descAc.menuRef} />
       </div>
       <div className="muted small">
         Markdown and LaTeX math (KaTeX, e.g. <code>$x^2$</code>) supported. Type <code>#</code> to link another issue.
@@ -180,7 +179,7 @@ export function IssueForm({
           onKeyDown={goalAc.onKeyDown}
           disabled={locked}
         />
-        <IssueRefMenu options={goalAc.options} issues={allIssues} onChoose={goalAc.choose} pos={goalAc.menuPos} menuRef={goalAc.menuRef} />
+        <IssueRefMenu options={goalAc.options} onChoose={goalAc.choose} pos={goalAc.menuPos} menuRef={goalAc.menuRef} />
       </div>
       <div className="muted small">
         A short condition that must be fulfilled to complete this issue.
@@ -191,13 +190,13 @@ export function IssueForm({
       {locked ? (
         <div className="row field-disabled">{parent != null ? <span className="chip">#{parent}</span> : <span className="muted small">none</span>}</div>
       ) : (
-        <SearchableSelect options={issueOpts} value={parent} onChange={setParent} />
+        <IssueSelectPicker value={parent} onChange={setParent} exclude={notSelf} />
       )}
       <label>Depends on (dependencies)</label>
       {locked ? (
         <div className="row field-disabled">{dependencies.length ? dependencies.map((p) => <span key={p} className="chip">#{p}</span>) : <span className="muted small">none</span>}</div>
       ) : (
-        <MultiSelect options={issueOpts} selected={dependencies} onChange={setDependencies} placeholder="Select dependencies…" />
+        <IssueMultiPicker selected={dependencies} onChange={setDependencies} placeholder="Select dependencies…" exclude={notSelf} />
       )}
       <label>Assignees</label>
       <MultiSelect options={actorOpts} selected={assignees} onChange={setAssignees} placeholder="Assign actors…" />

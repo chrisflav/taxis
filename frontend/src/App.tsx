@@ -1,7 +1,7 @@
 import { Suspense, lazy, useEffect, useRef, useState } from "react";
-import type { Actor } from "./types";
-import { api } from "./api";
-import { invalidateCache } from "./cache";
+import type { Actor, Session } from "./types";
+import { api, paths } from "./api";
+import { cachedGet, invalidateCache } from "./cache";
 import { IssueList } from "./components/IssueList";
 import { LoginBar } from "./components/Login";
 import { NotificationBell } from "./components/NotificationBell";
@@ -58,16 +58,29 @@ function useHashRoute(): string {
 export function App() {
   const route = useHashRoute();
   const [me, setMe] = useState<Actor | null>(null);
+  const [auth, setAuth] = useState<Session | null>(null);
   const [meLoaded, setMeLoaded] = useState(false);
   // Arriving anywhere with a "?notif=N" query (e.g. from a notification row's link) surfaces a
   // banner that stays up across navigation — to a different issue, the issue list, anywhere —
   // until the user explicitly dismisses it or resolves it, not just while on that one page.
   const [activeNotifId, setActiveNotifId] = useState<number | null>(null);
 
-  const refreshMe = () =>
-    api.me().then(setMe).catch(() => setMe(null)).finally(() => setMeLoaded(true));
+  // One request answers both halves of the top bar: who you are, and — when you are nobody — which
+  // sign-in buttons exist.
+  //
+  // `maxAge` is the difference between the two callers. On mount, the answer fetched moments ago
+  // by the page itself is the answer — asking again is a second request for a fact that cannot
+  // have changed in the time it took the bundle to arrive, which on a slow link is exactly when a
+  // spare round trip is least affordable. After a sign-in or sign-out it is precisely what has
+  // changed, so that path insists on a fresh read.
+  const loadSession = (maxAgeMs: number) =>
+    cachedGet(paths.session, api.session, maxAgeMs)
+      .then((s) => { setAuth(s); setMe(s.actor); })
+      .catch(() => { setMe(null); })
+      .finally(() => setMeLoaded(true));
+  const refreshMe = () => loadSession(0);
 
-  useEffect(() => { refreshMe(); }, []);
+  useEffect(() => { loadSession(60_000); }, []);
 
   // Cached responses are scoped to whoever was signed in when they were fetched — issue reads are
   // visibility-filtered per actor — so a sign-in or sign-out throws the whole cache away rather
@@ -164,7 +177,7 @@ export function App() {
           <div className="spacer" />
           {meLoaded && <NotificationBell me={me} active={top === "notifications"} />}
           <ThemeToggle />
-          {meLoaded && <LoginBar me={me} onChange={refreshMe} />}
+          {meLoaded && <LoginBar me={me} auth={auth} onChange={refreshMe} />}
         </div>
       </header>
       {activeNotifId != null && (
