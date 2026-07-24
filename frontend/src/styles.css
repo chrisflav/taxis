@@ -382,6 +382,9 @@ th.sortable.active { color: var(--accent); }
   height: 76vh; overflow: hidden; touch-action: none; cursor: grab;
 }
 .graph-viewport:active { cursor: grabbing; }
+/* The viewport standing in for a graph that has not arrived: same frame, same height, so
+   nothing moves when it does. */
+.graph-viewport-empty { display: grid; place-items: center; cursor: default; }
 .graph-viewport:fullscreen { height: 100vh; width: 100vw; background: var(--bg); }
 .graph-world { position: absolute; top: 0; left: 0; transform-origin: 0 0; will-change: transform; }
 
@@ -469,6 +472,35 @@ th.sortable.active { color: var(--accent); }
 }
 .issue-title .issue-number { font-family: var(--mono); font-weight: 500; color: var(--faint); }
 .page-byline { margin-top: 6px; font-size: 12.5px; color: var(--faint); }
+
+/* ---------------------------------------------------------------------------------------------
+   Placeholders
+   ---------------------------------------------------------------------------------------------
+
+   Shown where a value is still in flight. The page's structure never waits on the network — the
+   frame, the headings and anything derivable from the URL and the naming index are drawn straight
+   away — so what is left to indicate is which individual slots are not filled in yet. A bar the
+   size of the text that will replace it says that better than the word "Loading", and it does not
+   move the layout when the answer arrives. */
+.skeleton-line {
+  display: block;
+  height: 0.75em;
+  margin: 0.42em 0;
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+  animation: skeleton-pulse 1.4s ease-in-out infinite;
+}
+.skeleton-line:first-child { margin-top: 0; }
+
+/* How much of a long list is in hand, said quietly under the filter bar. */
+.feed-status { margin: 0 0 8px; }
+@keyframes skeleton-pulse {
+  50% { opacity: 0.45; }
+}
+/* A pulsing page is a poor trade for anyone who asked the system to stop animating things. */
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-line { animation: none; }
+}
 
 /* ---------------------------------------------------------------------------------------------
    Issue detail: substance on the left, relations on the right
@@ -630,6 +662,12 @@ th.sortable.active { color: var(--accent); }
 
 /* Rendered markdown */
 .md > *:first-child { margin-top: 0; }
+/* A document still waiting for the markdown parser, shown as the text it is. Without this the
+   newlines collapse and a long description arrives as one run-on block, which then reflows
+   entirely a moment later — worse than either state on its own. `pre-wrap` keeps the paragraphs,
+   headings and list items where the author put them, so what changes when the parser lands is the
+   styling and not the shape. */
+.md-plain { white-space: pre-wrap; }
 .md > *:last-child { margin-bottom: 0; }
 .md p { margin: 0 0 8px; }
 .md h1, .md h2, .md h3, .md h4 { margin: 14px 0 8px; line-height: 1.25; }

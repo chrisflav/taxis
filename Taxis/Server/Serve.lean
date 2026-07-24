@@ -80,35 +80,85 @@ def pickEncoded (p : System.FilePath) (accept : Option String) : IO (Option (Sys
 def cacheControlFor (segs : List String) : String :=
   if segs.head? == some "assets" then "public, max-age=31536000, immutable" else "no-cache"
 
+/-- Whether a path names one of the content-hashed build outputs.
+
+    Their names change whenever their contents do, which is what makes both the immutable
+    `Cache-Control` above and the in-memory cache below safe: a deploy writes new names, and the
+    old entries are simply never asked for again. -/
+def isImmutableAsset (segs : List String) : Bool := segs.head? == some "assets"
+
+/-- Bytes of the content-hashed assets, kept after the first request for each.
+
+    Every request for the application's JavaScript used to be a read of the file off disk, for
+    files whose contents cannot change under a name that stays the same. The bound on this is the
+    build output, which is a few hundred kilobytes; `index.html` is deliberately not in it, because
+    that name *does* get new contents on a deploy. -/
+initialize assetCache : IO.Ref (Std.HashMap String ByteArray) ← IO.mkRef {}
+
+/-- Read `p`, going through `assetCache` when the file is one of the immutable build outputs. -/
+def readStatic (p : System.FilePath) (cacheable : Bool) : IO ByteArray := do
+  let key := p.toString
+  if cacheable then
+    if let some hit := (← assetCache.get)[key]? then
+      return hit
+  let content ← IO.FS.readBinFile p
+  if cacheable then
+    assetCache.modify (·.insert key content)
+  return content
+
+/-- A validator for a static file, from what a `stat` already tells us: its size and the time it
+    was last written.
+
+    Derived from the metadata rather than from a hash of the contents so that a revalidation can be
+    answered without reading the file at all — which is the point of answering one. It identifies
+    the exact representation, the `.br` or `.gz` sibling included, since each has its own size and
+    mtime and `Vary: Accept-Encoding` is what tells a shared cache they are different things. -/
+def fileEtag (md : IO.FS.Metadata) : String :=
+  s!"\"{md.byteSize}-{md.modified.sec}.{md.modified.nsec}\""
+
 /-- Serve a static file from the configured frontend directory, falling back to `index.html`
-    for client-side routes (SPA). Rejects path-traversal attempts. -/
-def serveStatic (ctx : AppContext) (segs : List String) (acceptEncoding : Option String) :
-    Async (Response Body.Full) := do
+    for client-side routes (SPA). Rejects path-traversal attempts.
+
+    Every response carries an `ETag`, including `index.html` — which is `no-cache`, so a browser
+    revalidates it on every single load, and without a validator the server had no way to answer
+    that with anything but the whole file again. -/
+def serveStatic (ctx : AppContext) (segs : List String) (acceptEncoding : Option String)
+    (ifNoneMatch : Option String) : Async (Response Body.Full) := do
   if segs.any (fun s => s == "..") then
     return ← Response.notFound.text "not found"
   let rel := if segs.isEmpty then "index.html" else "/".intercalate segs
-  let serveFile (p : System.FilePath) (ct : String) (cacheControl : String) :
+  let serveFile (p : System.FilePath) (ct : String) (cacheControl : String) (cacheable : Bool) :
       Async (Response Body.Full) := do
+    -- The bytes actually sent may be a pre-compressed sibling, and it is that file's validator and
+    -- length the client is being given.
+    let encoded ← (pickEncoded p acceptEncoding : IO (Option (System.FilePath × String)))
+    let servedPath := (encoded.map Prod.fst).getD p
+    let coding := encoded.map Prod.snd
+    let tag := fileEtag (← (servedPath.metadata : IO IO.FS.Metadata))
     -- `Vary` goes on every response, compressed or not, so a shared cache never hands a
     -- `Content-Encoding: br` body to a client that didn't ask for one.
     let base := Response.ok
       |>.header! "Content-Type" ct
       |>.header! "Cache-Control" cacheControl
       |>.header! "Vary" "Accept-Encoding"
-    match ← (pickEncoded p acceptEncoding : IO (Option (System.FilePath × String))) with
-    | some (encodedPath, coding) =>
-      let content ← (IO.FS.readBinFile encodedPath : IO ByteArray)
-      (base.header! "Content-Encoding" coding).fromBytes content
-    | none =>
-      let content ← (IO.FS.readBinFile p : IO ByteArray)
-      base.fromBytes content
+      |>.header! "ETag" tag
+    let withCoding := match coding with
+      | some c => base.header! "Content-Encoding" c
+      | none => base
+    if ifNoneMatch == some tag then
+      (Response.withStatus .notModified
+        |>.header! "Cache-Control" cacheControl
+        |>.header! "Vary" "Accept-Encoding"
+        |>.header! "ETag" tag).fromBytes ByteArray.empty
+    else
+      withCoding.fromBytes (← (readStatic servedPath cacheable : IO ByteArray))
   let path := ctx.config.frontendDir / rel
   if (← (path.pathExists : IO Bool)) && !(← (path.isDir : IO Bool)) then
-    serveFile path (contentTypeOf rel) (cacheControlFor segs)
+    serveFile path (contentTypeOf rel) (cacheControlFor segs) (isImmutableAsset segs)
   else
     let index := ctx.config.frontendDir / "index.html"
     if ← (index.pathExists : IO Bool) then
-      serveFile index "text/html; charset=utf-8" "no-cache"
+      serveFile index "text/html; charset=utf-8" "no-cache" false
     else
       Response.notFound.text s!"frontend not built (expected assets in {ctx.config.frontendDir})"
 
@@ -138,18 +188,23 @@ instance : Handler AppHandler where
       -- almost every navigation, and is by far the largest thing the API returns.
       if req.line.method == .get && apiResp.status == .ok then
         let payload := apiResp.body.compress
+        -- The validator identifies the resource, so it is taken over the JSON itself rather than
+        -- over whichever encoding this particular client gets. `Vary: Accept-Encoding` on the
+        -- response is what keeps that honest for a shared cache.
         let tag := etagOf payload
         if headerValue req "If-None-Match" == some tag then
           notModifiedResponse tag
         else
+          let acceptsGzip :=
+            (acceptedEncodings (headerValue req "Accept-Encoding")).contains "gzip"
           buildResponseWith
             { apiResp with headers := apiResp.headers ++ #[("ETag", tag), ("Cache-Control", "no-cache")] }
-            payload
+            payload acceptsGzip
       else buildResponse apiResp
     | none =>
       match segs with
       | ["docs"] => Response.ok.html OpenApi.docsHtml
-      | _ => serveStatic h.ctx segs (headerValue req "Accept-Encoding")
+      | _ => serveStatic h.ctx segs (headerValue req "Accept-Encoding") (headerValue req "If-None-Match")
   onFailure _ err := do
     IO.eprintln s!"[issues] connection error: {err}"
 

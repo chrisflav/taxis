@@ -14,8 +14,14 @@ import Taxis.Import
 # Resource handlers and the routing table
 
 One handler per REST operation plus `dispatch`, which maps `(method, path)` to a handler.
-Handlers run in `ApiM` (`IO` + typed error channel); database access goes through
-`AppContext.withDb`, which serialises access under the connection mutex.
+Handlers run in `ApiM` (`IO` + typed error channel).
+
+Database access goes through one of two accessors, and which one is a correctness question rather
+than a preference. `AppContext.dbM` takes the write connection's mutex, serialising against every
+other write. `AppContext.readM` takes one of several read-only connections, so unrelated reads
+proceed at the same time instead of queueing — and rejects anything that writes, because those
+connections are opened read-only. A handler that reads and then writes uses `readM` for the lookup
+and `dbM` for the change.
 -/
 
 open Std.Http Lean
@@ -25,14 +31,14 @@ namespace Taxis.Server
 /-! ## Actors -/
 
 def listActorsH (ctx : AppContext) : ApiM ApiResponse := do
-  ok (toJson (← ctx.dbM Db.listActors))
+  ok (toJson (← ctx.readM Db.listActors))
 
 def createActorH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
   let input ← parseBody ActorInput req.body
   created (toJson (← ctx.dbM (Db.createActor · input)))
 
 def getActorH (ctx : AppContext) (id : Int64) : ApiM ApiResponse := do
-  match ← ctx.dbM (Db.getActor · ⟨id⟩) with
+  match ← ctx.readM (Db.getActor · ⟨id⟩) with
   | some a => ok (toJson a)
   | none => fail (.notFound s!"actor {id} not found")
 
@@ -50,14 +56,14 @@ def deleteActorH (ctx : AppContext) (id : Int64) : ApiM ApiResponse := do
 /-! ## Groups -/
 
 def listGroupsH (ctx : AppContext) : ApiM ApiResponse := do
-  ok (toJson (← ctx.dbM Db.listGroups))
+  ok (toJson (← ctx.readM Db.listGroups))
 
 def createGroupH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
   let input ← parseBody GroupInput req.body
   created (toJson (← ctx.dbM (Db.createGroup · input)))
 
 def getGroupH (ctx : AppContext) (id : Int64) : ApiM ApiResponse := do
-  match ← ctx.dbM (Db.getGroup · ⟨id⟩) with
+  match ← ctx.readM (Db.getGroup · ⟨id⟩) with
   | some g => ok (toJson g)
   | none => fail (.notFound s!"group {id} not found")
 
@@ -75,14 +81,14 @@ def deleteGroupH (ctx : AppContext) (id : Int64) : ApiM ApiResponse := do
 /-! ## Labels -/
 
 def listLabelsH (ctx : AppContext) : ApiM ApiResponse := do
-  ok (toJson (← ctx.dbM Db.listLabels))
+  ok (toJson (← ctx.readM Db.listLabels))
 
 def createLabelH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
   let input ← parseBody LabelInput req.body
   created (toJson (← ctx.dbM (Db.createLabel · input)))
 
 def getLabelH (ctx : AppContext) (id : Int64) : ApiM ApiResponse := do
-  match ← ctx.dbM (Db.getLabel · ⟨id⟩) with
+  match ← ctx.readM (Db.getLabel · ⟨id⟩) with
   | some l => ok (toJson l)
   | none => fail (.notFound s!"label {id} not found")
 
@@ -99,13 +105,19 @@ def deleteLabelH (ctx : AppContext) (id : Int64) : ApiM ApiResponse := do
 
 /-! ## Issues -/
 
-/-- Visibility filter: an issue is visible if it is public (no visibility groups) or the actor
-    shares one of its groups. No inheritance from parents in this version. -/
-def visibleTo (actor : Option Actor) (issue : Issue) : Bool :=
-  issue.visibility.isEmpty ||
+/-- Visibility filter, over the groups alone: visible if the set is empty (public) or the actor
+    belongs to one of them. No inheritance from parents in this version. Stated over the groups
+    rather than over an `Issue` so the naming index, which carries nothing else, can be filtered by
+    the same rule as the issues themselves. -/
+def visibleToGroups (actor : Option Actor) (visibility : Array GroupId) : Bool :=
+  visibility.isEmpty ||
     (match actor with
      | none => false
-     | some a => issue.visibility.any (fun g => a.groups.contains g))
+     | some a => visibility.any (fun g => a.groups.contains g))
+
+/-- Whether `actor` may see `issue`. -/
+def visibleTo (actor : Option Actor) (issue : Issue) : Bool :=
+  visibleToGroups actor issue.visibility
 
 /-- Remove keys from a JSON object, leaving anything else untouched. -/
 private def dropKeys (keys : List String) : Json → Json
@@ -125,22 +137,71 @@ def listIssuesH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
   let parent := (req.query "parent").bind (·.toInt?) |>.map (fun n => (⟨Int64.ofInt n⟩ : IssueId))
   let limit := (req.query "limit").bind (·.toNat?)
   let offset := (req.query "offset").bind (·.toNat?) |>.getD 0
-  let issues ← ctx.dbM (fun db => Db.listIssues db state labelId q assignee parent limit offset)
+  let issues ← ctx.readM (fun db => Db.listIssues db state labelId q assignee parent limit offset)
   let visible := issues.filter (visibleTo req.actor)
   if req.query "summary" == some "1" then
     ok (Json.arr (visible.map (fun i => dropKeys summaryDroppedFields (toJson i))))
   else
     ok (toJson visible)
 
-/-- The lightweight issue index: only what the breadcrumb trail and the issue-picker dropdowns
-    need to name an issue (`id`, `title`, `parent`). Views that filter server-side no longer hold
-    every issue, but still have to render an ancestor chain or offer any issue as a parent — this
-    is what they read instead of pulling the whole list back. -/
+/-- One page of the issue list.
+
+    Separate from `GET /issues` rather than a mode of it: that endpoint returns a bare array and is
+    what the MCP tools, the OpenAPI spec and any script anyone has written read, and none of them
+    should have to learn a new response shape to keep working. This one answers
+    `{issues, nextCursor, total}` and is free to carry only what a list row draws.
+
+    Paging happens over `(updated_at, id)` rather than by offset, and the visibility filter runs in
+    SQL rather than over the result — see the note in `Db.listIssuePage` for why both are necessary
+    rather than merely tidier. -/
+def issuePageH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
+  let state := (req.query "state").bind IssueState.ofString?
+  let labelId := (req.query "label").bind (·.toInt?) |>.map (fun n => (⟨Int64.ofInt n⟩ : LabelId))
+  let assignee := (req.query "assignee").bind (·.toInt?) |>.map (fun n => (⟨Int64.ofInt n⟩ : ActorId))
+  let parent := (req.query "parent").bind (·.toInt?) |>.map (fun n => (⟨Int64.ofInt n⟩ : IssueId))
+  -- `?parent=none` asks for the roots of the containment tree, which no issue-id value can express.
+  let topLevelOnly := req.query "parent" == some "none"
+  let q := (req.query "q").filter (!·.trimAscii.isEmpty)
+  let sort := (req.query "sort").bind Db.IssueSort.ofString? |>.getD .updated
+  -- Bounded so one request cannot ask for the whole tracker and undo the point of paging.
+  let limit := min 500 ((req.query "limit").bind (·.toNat?) |>.getD 100)
+  let cursor := (req.query "cursor").bind Db.IssueCursor.decode?
+  let groups := req.actor.map (·.groups)
+  let page ← ctx.readM (fun db =>
+    Db.listIssuePage db state labelId q assignee parent topLevelOnly groups sort limit cursor
+      cursor.isNone)
+  ok (Json.mkObj [
+    ("issues", toJson page.rows),
+    ("nextCursor", match page.nextCursor with | some c => Json.str c.encode | none => Json.null),
+    ("total", match page.total with | some t => toJson t | none => Json.null),
+    ("stateCounts", match page.stateCounts with | some c => toJson c | none => Json.null)])
+
+/-- The default and maximum number of matches a search of the index returns. A picker shows a
+    dozen rows and nobody scrolls a thousand; past this the answer is "type more", not "send
+    more". -/
+private def indexSearchLimit : Nat := 50
+private def indexSearchMaxLimit : Nat := 200
+
+/-- The lightweight issue index: what it takes to *name* an issue (`id`, `title`, `parent`), for
+    the breadcrumb trails, the pickers and the `#123` references that need nothing else.
+
+    `?ids=1,2,3` names a known handful; `?q=…` searches the tracker for a picker; unfiltered it
+    still returns everything, which is a deliberate walk rather than a page load. Nothing on the
+    critical path of a page reads it unfiltered — that is what made it the largest thing a page
+    load transferred, at 140 KB gzipped on a ten-thousand-issue tracker, on every route. -/
 def issueIndexH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
-  let issues ← ctx.dbM (fun db => Db.listIssues db none none none none)
-  let rows := (issues.filter (visibleTo req.actor)).map fun i =>
-    Json.mkObj [("id", toJson i.id), ("title", toJson i.title), ("parent", toJson i.parent)]
-  ok (Json.arr rows)
+  let ids := (req.query "ids").map fun s =>
+    ((s.splitOn ",").filterMap (fun p => p.trimAscii.toString.toInt?)).toArray.map
+      (fun n => (⟨Int64.ofInt n⟩ : IssueId))
+  let q := (req.query "q").filter (!·.trimAscii.isEmpty)
+  -- A search is capped whether or not the caller thought to ask for a cap; an unfiltered read is
+  -- not, because that is a client walking the tracker deliberately rather than drawing a page.
+  let limit := match (req.query "limit").bind (·.toNat?), q with
+    | some n, _ => some (min indexSearchMaxLimit n)
+    | none, some _ => some indexSearchLimit
+    | none, none => none
+  let entries ← ctx.readM (Db.listIssueIndex · (req.actor.map (·.groups)) ids q limit)
+  ok (toJson entries)
 
 /-- A non-admin actor may only restrict visibility to groups they belong to. -/
 private def ensureVisibilityAllowed (actor : Actor) (vis : Array GroupId) : ApiM Unit := do
@@ -162,11 +223,17 @@ def toArtifactView (a : Artifact) : IO ArtifactView := do
     | none => pure { label := a.payload.compress }
   pure { id := a.id, kind := a.kind, payload := a.payload, display }
 
-/-- Assemble the expanded detail view of an issue. -/
-private def loadDetail (db : Db.Conn) (id : IssueId) (actorId : Option ActorId) : IO (Option IssueDetail) := do
+/-- Assemble the expanded detail view of an issue.
+
+    The ancestor chain and the sibling neighbours are part of the response because the page draws
+    them: leaving them out is what made every issue page fetch a naming index of the entire
+    tracker, and both are bounded — a chain is a handful of rows and the neighbours are two. -/
+private def loadDetail (db : Db.Conn) (id : IssueId) (actor : Option Actor) : IO (Option IssueDetail) := do
   match ← Db.getIssue db id with
   | none => pure none
   | some issue =>
+    let actorId := actor.map (·.id)
+    let groups := actor.map (·.groups)
     let assignedActors ← issue.assignees.filterMapM (Db.getActor db ·)
     let issueLabels ← issue.labels.filterMapM (Db.getLabel db ·)
     let attachedArtifacts ← (← Db.issueArtifacts db id).mapM toArtifactView
@@ -177,22 +244,33 @@ private def loadDetail (db : Db.Conn) (id : IssueId) (actorId : Option ActorId) 
       | some a => Db.isParticipant db id a
       | none => pure false
     let reviewRequests ← Db.issueReviewRequests db id
-    pure (some { issue, assignedActors, issueLabels, attachedArtifacts, attachedChecks, comments, events, participating, reviewRequests })
+    let ancestors ← Db.issueAncestors db id groups
+    let siblings ← Db.issueSiblings db id issue.parent groups
+    pure (some { issue, assignedActors, issueLabels, attachedArtifacts, attachedChecks, comments,
+                 events, participating, reviewRequests, ancestors, siblings })
 
 def getIssueH (ctx : AppContext) (id : Int64) (actor : Option Actor) : ApiM ApiResponse := do
-  match ← ctx.dbM (loadDetail · ⟨id⟩ (actor.map (·.id))) with
+  match ← ctx.readM (loadDetail · ⟨id⟩ actor) with
   | some d =>
     -- Hide non-visible issues as if they did not exist.
     if visibleTo actor d.issue then ok (toJson d)
     else fail (.notFound s!"issue {id} not found")
   | none => fail (.notFound s!"issue {id} not found")
 
+/-- The containment path above an issue, root first, excluding the issue itself.
+
+    Its own route as well as a field on the detail response, because the issue list needs it for an
+    issue it is not otherwise reading: filtered to one parent's children, the trail names the chain
+    down to that parent. -/
+def issueAncestorsH (ctx : AppContext) (id : Int64) (actor : Option Actor) : ApiM ApiResponse := do
+  ok (toJson (← ctx.readM (Db.issueAncestors · ⟨id⟩ (actor.map (·.groups)))))
+
 /-- Issue #3: an issue may not be marked completed while it has non-passing checks, unless an
     admin bypasses it. -/
 private def ensureChecksAllowCompletion (ctx : AppContext) (id : Int64) (req : Req) : ApiM Unit := do
   let isAdmin := req.actor.map (·.admin) |>.getD false
   unless isAdmin do
-    let checks ← ctx.dbM (Db.issueChecks · ⟨id⟩)
+    let checks ← ctx.readM (Db.issueChecks · ⟨id⟩)
     let failing := checks.filter (·.status != .passing)
     unless failing.isEmpty do
       let kinds := ", ".intercalate (failing.toList.map (·.kind))
@@ -217,7 +295,7 @@ def deleteIssueH (ctx : AppContext) (id : Int64) : ApiM ApiResponse := do
 /-- The recorded history (audit trail) of an issue, oldest first. Only returned for a visible
     issue, so hidden issues do not leak their activity. -/
 def listEventsH (ctx : AppContext) (id : Int64) (actor : Option Actor) : ApiM ApiResponse := do
-  match ← ctx.dbM (fun db => do pure (← Db.getIssue db ⟨id⟩, ← Db.issueEvents db ⟨id⟩)) with
+  match ← ctx.readM (fun db => do pure (← Db.getIssue db ⟨id⟩, ← Db.issueEvents db ⟨id⟩)) with
   | (some issue, events) =>
     if visibleTo actor issue then ok (toJson events)
     else fail (.notFound s!"issue {id} not found")
@@ -291,7 +369,7 @@ def deleteArtifactH (ctx : AppContext) (id : Int64) (req : Req) : ApiM ApiRespon
 /-! ## Checks -/
 
 def listChecksH (ctx : AppContext) (issueId : Int64) : ApiM ApiResponse := do
-  ok (toJson (← ctx.dbM (Db.issueChecks · ⟨issueId⟩)))
+  ok (toJson (← ctx.readM (Db.issueChecks · ⟨issueId⟩)))
 
 def createCheckH (ctx : AppContext) (issueId : Int64) (req : Req) : ApiM ApiResponse := do
   let input ← parseBody CheckInput req.body
@@ -363,20 +441,18 @@ def runCheckH (ctx : AppContext) (id : Int64) : ApiM ApiResponse := do
 
 /-! ## Graph -/
 
+/-- Every visible issue as a graph node, with both edge relations carried on the nodes themselves.
+
+    The graph view read `GET /issues?summary=1` instead of this, which is how it came to transfer
+    340 KB gzipped at ten thousand issues to draw cards that show a number, a title, a state and
+    optionally a label and an assignee. A node here carries that and the two relations the layout
+    needs, and nothing else.
+
+    The separate edge list is gone with it: `dependencies` on a node says the same thing, and
+    saying it twice is bytes on a payload whose whole problem was its size. -/
 def graphH (ctx : AppContext) (actor : Option Actor) : ApiM ApiResponse := do
-  let (issues, edges) ← ctx.dbM (fun db => do
-    let issues ← Db.listIssues db none none none none
-    let edges ← Db.allDependencyEdges db
-    pure (issues, edges))
-  let visible := issues.filter (visibleTo actor)
-  let visibleIds : Std.HashSet Int64 := visible.foldl (fun s i => s.insert i.id.val) {}
-  let nodes := visible.map fun i =>
-    Json.mkObj [("id", toJson i.id), ("title", i.title), ("state", toJson i.state), ("labels", toJson i.labels)]
-  -- Edges are dependency edges: `issue` depends on `dependsOn`.
-  let edgeJson := (edges.filter fun (iss, dep) =>
-      visibleIds.contains iss.val && visibleIds.contains dep.val).map fun (iss, dep) =>
-    Json.mkObj [("issue", toJson iss), ("dependsOn", toJson dep)]
-  ok (Json.mkObj [("nodes", Json.arr nodes), ("edges", Json.arr edgeJson)])
+  let nodes ← ctx.readM (Db.graphNodes · (actor.map (·.groups)))
+  ok (Json.mkObj [("nodes", toJson nodes)])
 
 /-! ## Repository graph -/
 
@@ -385,7 +461,7 @@ def graphH (ctx : AppContext) (actor : Option Actor) : ApiM ApiResponse := do
     (see `Taxis.Repo.build`). `?external=1` additionally shows dependencies on repositories that
     nobody has attached. -/
 def repoGraphH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
-  let (issues, artifacts) ← ctx.dbM (fun db => do
+  let (issues, artifacts) ← ctx.readM (fun db => do
     let issues ← Db.listIssues db none none none none
     let artifacts ← Db.artifactsOfKind db "repository"
     pure (issues, artifacts))
@@ -485,7 +561,7 @@ def importGdocH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
 /-! ## Comments -/
 
 def listCommentsH (ctx : AppContext) (issueId : Int64) : ApiM ApiResponse := do
-  ok (toJson (← ctx.dbM (Db.issueComments · ⟨issueId⟩)))
+  ok (toJson (← ctx.readM (Db.issueComments · ⟨issueId⟩)))
 
 def createCommentH (ctx : AppContext) (issueId : Int64) (req : Req) : ApiM ApiResponse := do
   let input ← parseBody CommentInput req.body
@@ -576,13 +652,13 @@ def listNotificationsH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
     let sortAsc := req.query "sort" == some "created_asc"
     let limit := (req.query "limit").bind (·.toNat?)
     let offset := (req.query "offset").bind (·.toNat?) |>.getD 0
-    ok (toJson (← ctx.dbM (fun db =>
+    ok (toJson (← ctx.readM (fun db =>
       Db.listNotifications db a.id readFilter kind doneFilter parentId labelId q sortAsc limit offset)))
 
 def unreadNotificationCountH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
   match req.actor with
   | none => fail (.unauthorized "authentication required")
-  | some a => ok (Json.mkObj [("count", toJson (← ctx.dbM (Db.unreadNotificationCount · a.id)))])
+  | some a => ok (Json.mkObj [("count", toJson (← ctx.readM (Db.unreadNotificationCount · a.id)))])
 
 def markNotificationReadH (ctx : AppContext) (id : Int64) (req : Req) : ApiM ApiResponse := do
   match req.actor with
@@ -650,7 +726,7 @@ def cancelReviewRequestH (ctx : AppContext) (id : Int64) (req : Req) : ApiM ApiR
 def listTokensH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
   match req.actor with
   | none => fail (.unauthorized "authentication required")
-  | some a => ok (toJson (← ctx.dbM (Db.listTokens · a.id)))
+  | some a => ok (toJson (← ctx.readM (Db.listTokens · a.id)))
 
 def createTokenH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
   match req.actor with
@@ -676,9 +752,9 @@ def deleteTokenH (ctx : AppContext) (id : Int64) (req : Req) : ApiM ApiResponse 
 /-- Admin-only: list the API tokens belonging to another actor. -/
 def listActorTokensH (ctx : AppContext) (id : Int64) (req : Req) : ApiM ApiResponse := do
   unless (req.actor.map (·.admin) |>.getD false) do fail (.forbidden "admin privileges required")
-  match ← ctx.dbM (Db.getActor · ⟨id⟩) with
+  match ← ctx.readM (Db.getActor · ⟨id⟩) with
   | none => fail (.notFound s!"actor {id} not found")
-  | some a => ok (toJson (← ctx.dbM (Db.listTokens · a.id)))
+  | some a => ok (toJson (← ctx.readM (Db.listTokens · a.id)))
 
 /-- Admin-only: mint an API token on behalf of another actor (e.g. a bot). The secret is returned
     exactly once, here. -/
@@ -863,6 +939,7 @@ def dispatch (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
   | .post, ["repo-graph", "refresh"] => repoGraphRefreshH
 
   | .get, ["me"] => meH req
+  | .get, ["session"] => sessionH ctx req
   | .get, ["auth", "google", "login"] => googleLoginH ctx
   | .get, ["auth", "google", "callback"] => googleCallbackH ctx req
   | .get, ["auth", "github", "login"] => githubLoginH ctx
@@ -893,10 +970,12 @@ def dispatch (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
 
   | .get, ["issues"] => listIssuesH ctx req
   | .post, ["issues"] => createIssueH ctx req
-  -- Must precede the `["issues", id]` route: that pattern also matches "index", and would then
-  -- fail parsing it as an id rather than falling through to here.
+  -- Must precede the `["issues", id]` route: that pattern also matches "index" and "page", and
+  -- would then fail parsing them as an id rather than falling through to here.
   | .get, ["issues", "index"] => issueIndexH ctx req
+  | .get, ["issues", "page"] => issuePageH ctx req
   | .get, ["issues", id] => getIssueH ctx (← Req.parseId id) req.actor
+  | .get, ["issues", id, "ancestors"] => issueAncestorsH ctx (← Req.parseId id) req.actor
   | .patch, ["issues", id] => updateIssueH ctx (← Req.parseId id) req
   | .delete, ["issues", id] => deleteIssueH ctx (← Req.parseId id)
   | .get, ["issues", id, "events"] => listEventsH ctx (← Req.parseId id) req.actor

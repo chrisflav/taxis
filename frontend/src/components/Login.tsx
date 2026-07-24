@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import type { Actor } from "../types";
+import type { Actor, Session } from "../types";
 import { api } from "../api";
 import { ActorName } from "./ActorName";
 import { Modal } from "./Modal";
@@ -51,21 +51,17 @@ function AccountMenu({ me, onChange }: { me: Actor; onChange: () => void }) {
   );
 }
 
-export function LoginBar({ me, onChange }: { me: Actor | null; onChange: () => void }) {
-  const [centralPasswordEnabled, setCentralPasswordEnabled] = useState(false);
-  const [googleEnabled, setGoogleEnabled] = useState(false);
-  const [githubEnabled, setGithubEnabled] = useState(false);
+// Which sign-in methods exist is server configuration, and it arrives with the answer to "who is
+// signed in" — the same request, because they are the same question about the same corner of the
+// bar. This used to be a second request to `/health` on every page load.
+export function LoginBar({ me, auth, onChange }: { me: Actor | null; auth: Session | null; onChange: () => void }) {
   const [showPasswordForm, setShowPasswordForm] = useState(false);
 
-  useEffect(() => {
-    api.health().then(h => {
-      setCentralPasswordEnabled(!!h.centralPasswordEnabled);
-      setGoogleEnabled(!!h.googleEnabled);
-      setGithubEnabled(!!h.githubEnabled);
-    }).catch(console.error);
-  }, []);
-
   if (me) return <AccountMenu me={me} onChange={onChange} />;
+
+  const googleEnabled = !!auth?.googleEnabled;
+  const githubEnabled = !!auth?.githubEnabled;
+  const centralPasswordEnabled = !!auth?.centralPasswordEnabled;
 
   return (
     <div className="row">

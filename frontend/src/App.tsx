@@ -1,13 +1,15 @@
 import { Suspense, lazy, useEffect, useRef, useState } from "react";
-import type { Actor } from "./types";
-import { api } from "./api";
-import { invalidateCache } from "./cache";
+import type { Actor, Session } from "./types";
+import { api, paths } from "./api";
+import { cachedGet, invalidateCache } from "./cache";
 import { IssueList } from "./components/IssueList";
-import { IssueDetail } from "./components/IssueDetail";
-import { IssueForm } from "./components/IssueForm";
 import { LoginBar } from "./components/Login";
 import { NotificationBell } from "./components/NotificationBell";
 import { ThemeToggle } from "./components/ThemeToggle";
+import {
+  AdminSkeleton, GraphSkeleton, IssueFormSkeleton, IssueSkeleton, LabelsSkeleton,
+  NotificationsSkeleton, ReposSkeleton, TokensSkeleton,
+} from "./components/PageSkeleton";
 
 // Views away from the issue list load on demand: the graphs in particular pull in their own
 // layout and canvas code, which nobody browsing issues should have to download first.
@@ -18,6 +20,15 @@ const Admin = lazy(() => import("./components/Admin").then((m) => ({ default: m.
 const TokensPage = lazy(() => import("./components/Tokens").then((m) => ({ default: m.TokensPage })));
 const NotificationsPage = lazy(() =>
   import("./components/NotificationsPage").then((m) => ({ default: m.NotificationsPage })));
+// Also opened as a modal from the issue list and the detail view, both of which load it lazily —
+// so this route must too, or the static import here would pull it back into the entry chunk and
+// undo the split for all three.
+const IssueForm = lazy(() => import("./components/IssueForm").then((m) => ({ default: m.IssueForm })));
+// The detail view is a third of the application's code — the timeline, the inline editors, the
+// history diffs and the attachment plumbing — and it was the one route still loaded up front. Its
+// data is prefetched from the URL before React mounts, so the chunk arrives alongside the response
+// it will render rather than after it.
+const IssueDetail = lazy(() => import("./components/IssueDetail").then((m) => ({ default: m.IssueDetail })));
 
 // The same mark as the favicon, so the tab and the page agree on what this is. Drawn here rather
 // than loaded from /icon.svg: it is smaller inline than the request would be.
@@ -47,16 +58,29 @@ function useHashRoute(): string {
 export function App() {
   const route = useHashRoute();
   const [me, setMe] = useState<Actor | null>(null);
+  const [auth, setAuth] = useState<Session | null>(null);
   const [meLoaded, setMeLoaded] = useState(false);
   // Arriving anywhere with a "?notif=N" query (e.g. from a notification row's link) surfaces a
   // banner that stays up across navigation — to a different issue, the issue list, anywhere —
   // until the user explicitly dismisses it or resolves it, not just while on that one page.
   const [activeNotifId, setActiveNotifId] = useState<number | null>(null);
 
-  const refreshMe = () =>
-    api.me().then(setMe).catch(() => setMe(null)).finally(() => setMeLoaded(true));
+  // One request answers both halves of the top bar: who you are, and — when you are nobody — which
+  // sign-in buttons exist.
+  //
+  // `maxAge` is the difference between the two callers. On mount, the answer fetched moments ago
+  // by the page itself is the answer — asking again is a second request for a fact that cannot
+  // have changed in the time it took the bundle to arrive, which on a slow link is exactly when a
+  // spare round trip is least affordable. After a sign-in or sign-out it is precisely what has
+  // changed, so that path insists on a fresh read.
+  const loadSession = (maxAgeMs: number) =>
+    cachedGet(paths.session, api.session, maxAgeMs)
+      .then((s) => { setAuth(s); setMe(s.actor); })
+      .catch(() => { setMe(null); })
+      .finally(() => setMeLoaded(true));
+  const refreshMe = () => loadSession(0);
 
-  useEffect(() => { refreshMe(); }, []);
+  useEffect(() => { loadSession(60_000); }, []);
 
   // Cached responses are scoped to whoever was signed in when they were fetched — issue reads are
   // visibility-filtered per actor — so a sign-in or sign-out throws the whole cache away rather
@@ -114,6 +138,22 @@ export function App() {
   else if (top === "issues" && segments[1]) view = <IssueDetail id={Number(segments[1])} me={me} />;
   else view = <IssueList me={me} />;
 
+  // What stands in for a view while its chunk is downloading. Every view above except the issue
+  // list and the issue detail is loaded on demand, so this fallback is what a reader sees for the
+  // whole of that download — and a bare "Loading…" there is exactly why those pages appeared to
+  // arrive all at once, however carefully the view itself filled in afterwards. The skeletons draw
+  // the page's real heading and its layout, so only the data is ever actually missing.
+  let fallback;
+  if (top === "graph") fallback = <GraphSkeleton />;
+  else if (top === "repos") fallback = <ReposSkeleton />;
+  else if (top === "labels") fallback = <LabelsSkeleton />;
+  else if (top === "notifications") fallback = <NotificationsSkeleton />;
+  else if (top === "tokens") fallback = <TokensSkeleton />;
+  else if (top === "admin") fallback = <AdminSkeleton />;
+  else if (top === "issues" && segments[1] === "new") fallback = <IssueFormSkeleton />;
+  else if (top === "issues" && segments[1]) fallback = <IssueSkeleton id={Number(segments[1])} />;
+  else fallback = null;
+
   return (
     <>
       {/* The bar carries only the surfaces you move between while working. Everything that belongs
@@ -137,7 +177,7 @@ export function App() {
           <div className="spacer" />
           {meLoaded && <NotificationBell me={me} active={top === "notifications"} />}
           <ThemeToggle />
-          {meLoaded && <LoginBar me={me} onChange={refreshMe} />}
+          {meLoaded && <LoginBar me={me} auth={auth} onChange={refreshMe} />}
         </div>
       </header>
       {activeNotifId != null && (
@@ -151,11 +191,17 @@ export function App() {
         </div>
       )}
       {/* Keying on the auth identity remounts the view whenever the user signs in or out, so it
-          re-fetches and never shows data from the previous session. */}
+          re-fetches and never shows data from the previous session.
+
+          The view is *not* gated on `/me` having answered. Nothing it reads needs the answer —
+          every request carries the session cookie, and the server resolves the actor from it — so
+          waiting only meant staring at "Loading…" for a round trip before the page was even asked
+          for. Until `/me` lands the view renders as a signed-out reader would see it, which costs
+          the edit affordances a moment's delay and buys the whole page appearing at once. */}
       <main key={me ? `actor-${me.id}` : "anon"}>
-        {meLoaded
-          ? <Suspense fallback={<div className="muted" style={{ padding: 20 }}>Loading…</div>}>{view}</Suspense>
-          : <div className="muted" style={{ padding: 20 }}>Loading…</div>}
+        {/* Keyed on the route so switching pages swaps to that page's skeleton rather than
+            holding the previous page on screen until the new one is ready. */}
+        <Suspense key={top} fallback={fallback}>{view}</Suspense>
       </main>
     </>
   );

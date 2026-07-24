@@ -1,7 +1,12 @@
 name: CI
 
 on:
+  # Only the default branch on push. A push to any other branch that has an open pull request would
+  # otherwise run CI twice — once for the push and once for the PR — for the same commits. Branch
+  # work is covered by `pull_request`; this leaves `push` to catch what lands on `master` directly
+  # (a merge, or a commit pushed straight to it).
   push:
+    branches: [master]
   pull_request:
   workflow_dispatch:
 
@@ -10,6 +15,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      # The server links zlib for API response compression (bindings/gzip.c), so the headers have
+      # to be present before `lake build`. Present on the current runner image, but named here
+      # rather than relied on: an image change would otherwise break the build with a link error
+      # that says nothing about why.
+      - name: Install zlib headers
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zlib1g-dev
       - uses: leanprover/lean-action@v1
         with:
           test: true
@@ -27,3 +38,36 @@ jobs:
         working-directory: frontend
       - run: npm run build
         working-directory: frontend
+
+  # What it costs to open each page, against generated trackers of several sizes — the developer's
+  # own database has fifty issues in it and will never answer that question.
+  #
+  # The gate is `bench/budgets.json`, and it covers only the two figures that are exactly
+  # reproducible: how many API calls a page makes, and how many bytes they come to. Server timings
+  # are printed and never enforced, because a shared runner cannot measure them reliably and a
+  # benchmark that fails for reasons nobody controls is one everybody learns to ignore.
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # The server links zlib for API response compression (bindings/gzip.c), so the headers have
+      # to be present before `lake build`. Present on the current runner image, but named here
+      # rather than relied on: an image change would otherwise break the build with a link error
+      # that says nothing about why.
+      - name: Install zlib headers
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zlib1g-dev
+      - uses: leanprover/lean-action@v1
+        with:
+          # The library and the two executables the harness drives; not the test executable.
+          build-args: "taxis bench-seed"
+          test: false
+          lint: false
+      - name: Benchmark page loads and enforce budgets
+        run: bench/run.py --check --json bench-results.json
+      - uses: actions/upload-artifact@v4
+        # Kept even when the budgets fail — the numbers are what says whether to fix the change or
+        # raise the ceiling.
+        if: always()
+        with:
+          name: bench-results
+          path: bench-results.json

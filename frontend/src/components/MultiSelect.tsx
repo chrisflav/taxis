@@ -11,22 +11,40 @@ export interface Option {
 }
 
 // A compact multi-select: shows selected values as removable chips and a checklist popover with a
-// fuzzy search box (auto-focused on open) for narrowing long option lists.
+// search box (auto-focused on open) for narrowing long option lists.
+//
+// Two modes. Given a fixed `options` array (labels, actors, groups — reference data small enough to
+// hold), it filters that array itself, fuzzily. Given `onQueryChange` it does not filter at all:
+// the options *are* the answer to the current query, which is how the issue pickers search a
+// tracker they no longer hold a copy of.
 export function MultiSelect({
   options,
   selected,
   onChange,
   placeholder = "Select…",
+  onQueryChange,
+  onOpenChange,
+  loading = false,
+  emptyLabel,
 }: {
   options: Option[];
   selected: number[];
   onChange: (next: number[]) => void;
   placeholder?: string;
+  /** Set for a searched list: the caller answers the query and this stops filtering locally. */
+  onQueryChange?: (q: string) => void;
+  /** Whether the menu is showing. A searched list uses this to search only while it is open —
+      otherwise every picker on the page queries the server for a menu nobody has looked at. */
+  onOpenChange?: (open: boolean) => void;
+  loading?: boolean;
+  /** What an empty option list means, when the caller knows better than "No options". */
+  emptyLabel?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const ref = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const searched = onQueryChange != null;
 
   useEffect(() => {
     const onDoc = (e: MouseEvent) => {
@@ -37,15 +55,18 @@ export function MultiSelect({
   }, []);
 
   useEffect(() => {
-    if (open) { setQuery(""); searchRef.current?.focus(); }
+    onOpenChange?.(open);
+    if (open) { setQuery(""); onQueryChange?.(""); searchRef.current?.focus(); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
+  const setSearch = (q: string) => { setQuery(q); onQueryChange?.(q); };
   const toggle = (v: number) =>
     onChange(selected.includes(v) ? selected.filter((x) => x !== v) : [...selected, v]);
   const optionOf = (v: number) => options.find((o) => o.value === v);
-  const labelOf = (v: number) => optionOf(v)?.label ?? String(v);
+  const labelOf = (v: number) => optionOf(v)?.label ?? `#${v}`;
   const chipLabelOf = (v: number) => optionOf(v)?.chipLabel ?? labelOf(v);
-  const visible = options.filter((o) => fuzzyMatch(query, o.label));
+  const visible = searched ? options : options.filter((o) => fuzzyMatch(query, o.label));
 
   return (
     <div className="multiselect" ref={ref}>
@@ -71,14 +92,14 @@ export function MultiSelect({
       </div>
       {open && (
         <div className="ms-menu">
-          {options.length > 0 && (
+          {(searched || options.length > 0) && (
             <input
               ref={searchRef}
               className="ms-search"
               placeholder="Search…"
               value={query}
               onClick={(e) => e.stopPropagation()}
-              onChange={(e) => setQuery(e.target.value)}
+              onChange={(e) => setSearch(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Escape") setOpen(false); }}
             />
           )}
@@ -88,8 +109,12 @@ export function MultiSelect({
               {o.label}
             </label>
           ))}
-          {options.length === 0 && <div className="muted small" style={{ padding: 8 }}>No options</div>}
-          {options.length > 0 && visible.length === 0 && <div className="muted small" style={{ padding: 8 }}>No matches</div>}
+          {loading && visible.length === 0 && <div className="muted small" style={{ padding: 8 }}>Searching…</div>}
+          {!loading && visible.length === 0 && (
+            <div className="muted small" style={{ padding: 8 }}>
+              {emptyLabel ?? (searched || options.length === 0 ? "No options" : "No matches")}
+            </div>
+          )}
         </div>
       )}
     </div>

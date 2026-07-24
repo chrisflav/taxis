@@ -59,8 +59,9 @@ taxis is an extensible issue tracker built in Lean 4, with a REST API backend an
 
 ## Build & run
 
-Prerequisites: [`elan`](https://github.com/leanprover/elan) (Lean toolchain manager) and
-Node.js 22+.
+Prerequisites: [`elan`](https://github.com/leanprover/elan) (Lean toolchain manager), Node.js 22+,
+and zlib's development headers (`zlib1g-dev` on Debian/Ubuntu, `zlib-devel` on Fedora, already
+present in the macOS SDK) — the server compresses its own API responses, through `bindings/gzip.c`.
 
 ```bash
 # Backend
@@ -205,6 +206,12 @@ served at **`/docs`**, backed by the OpenAPI spec at `GET /api/openapi.json`.
 - `GET|POST /labels`, `GET|PATCH|DELETE /labels/:id`
 - `GET /issues` (filters: `state`, `label` = label id, `q`, `assignee`; paging: `limit`, `offset`),
   `POST /issues`, `GET|PATCH|DELETE /issues/:id`, `GET /issues/:id/events`
+- `GET /issues/page` — one page of list rows, cursor-paged; what the issue list reads
+- `GET /issues/index` — issues as `{id, title, parent}`, i.e. what it takes to *name* one.
+  `?ids=1,2,3` names a known handful, `?q=…` searches titles (or an issue number) for a picker;
+  unfiltered it returns every visible issue, which grows with the tracker and is not what any page
+  should ask for
+- `GET /issues/:id/ancestors` — the containment path above an issue, root first
 - `POST /issues/:id/artifacts`, `DELETE /artifacts/:id`
 - `GET|POST /issues/:id/checks`, `POST /checks/:id/run`, `DELETE /checks/:id`
 - `GET|POST /issues/:id/comments`, `PATCH|DELETE /comments/:id`
@@ -212,7 +219,8 @@ served at **`/docs`**, backed by the OpenAPI spec at `GET /api/openapi.json`.
 - `POST /import/github`, `POST /import/gdoc`
 - Auth: `GET /auth/google/login`, `GET /auth/google/callback`, `GET /auth/github/login`,
   `GET /auth/github/callback`, `POST /auth/logout`, `POST /auth/dev-login`,
-  `POST /auth/password-login`, `GET /me`
+  `POST /auth/password-login`, `GET /me`, `GET /session` (the current actor — `null` when signed
+  out — plus which sign-in methods are configured; one request for what the top bar needs)
 
 ## MCP
 

@@ -14,10 +14,17 @@ export function NotificationBell({ me, active = false }: { me: Actor | null; act
     if (me) api.unreadNotificationCount().then((r) => setUnreadCount(r.count)).catch(() => {});
   };
   useEffect(refreshCount, [me?.id]);
+  // Polled only while the tab is being looked at. A background tab asking every thirty seconds
+  // whether anything happened is a round trip per poll for the life of the tab — on a slow or
+  // metered link that is the only traffic left once the page has loaded, and it never stops.
+  // Coming back to the tab asks immediately, so the count is current when it is visible.
   useEffect(() => {
     if (!me) return;
-    const t = setInterval(refreshCount, POLL_MS);
-    return () => clearInterval(t);
+    const poll = () => { if (document.visibilityState === "visible") refreshCount(); };
+    const onVisible = () => { if (document.visibilityState === "visible") refreshCount(); };
+    const t = setInterval(poll, POLL_MS);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { clearInterval(t); document.removeEventListener("visibilitychange", onVisible); };
     // eslint-disable-next-line
   }, [me?.id]);
 

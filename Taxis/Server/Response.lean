@@ -1,5 +1,6 @@
 import Std.Http
 import Taxis.Json
+import Taxis.Compress
 
 /-!
 # API responses and errors
@@ -87,11 +88,20 @@ private def withCors (b : Response.Builder) : Response.Builder :=
 
 /-- Build the wire response from an already-serialised body, adding CORS headers and any
     response-specific headers. Taking the payload as an argument lets a caller that already
-    needed it (to derive an `ETag`) avoid serialising the JSON twice. -/
-def buildResponseWith (r : ApiResponse) (payload : String) : Async (Response Body.Full) :=
-  let base := withCors (Response.withStatus r.status)
+    needed it (to derive an `ETag`) avoid serialising the JSON twice.
+
+    Compressed when the client accepts gzip and the body is big enough to be worth it — see
+    `gzipIfWorthwhile`, which decides both. `Vary: Accept-Encoding` goes on the response either
+    way, so a shared cache never hands a gzipped body to a client that did not ask for one. -/
+def buildResponseWith (r : ApiResponse) (payload : String) (acceptsGzip : Bool := false) :
+    Async (Response Body.Full) :=
+  let base := withCors (Response.withStatus r.status) |>.header! "Vary" "Accept-Encoding"
   let builder := r.headers.foldl (fun b (k, v) => b.header! k v) base
-  builder.json payload
+  match gzipIfWorthwhile payload acceptsGzip with
+  | some compressed =>
+    (builder.header! "Content-Type" "application/json"
+      |>.header! "Content-Encoding" "gzip").fromBytes compressed
+  | none => builder.json payload
 
 /-- Build the wire response, adding CORS headers and any response-specific headers. -/
 def buildResponse (r : ApiResponse) : Async (Response Body.Full) :=

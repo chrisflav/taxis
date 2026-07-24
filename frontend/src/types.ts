@@ -74,6 +74,42 @@ export interface Issue {
   updatedAt: number;
 }
 
+/** One row of the issue list, as `GET /issues/page` returns it.
+ *
+ *  Deliberately not an `Issue`. A list row carries what the table draws and what its filters narrow
+ *  by, and nothing else — no description, goal, creator, creation time or visibility groups, none of
+ *  which any column renders. Attachments and children are counts because the only thing drawn is how
+ *  many; dependencies keep their ids because the "depends on" filter tests membership. */
+export interface IssueListRow {
+  id: number;
+  title: string;
+  state: IssueState;
+  locked: boolean;
+  parent: number | null;
+  deadline: number | null;
+  updatedAt: number;
+  labels: number[];
+  assignees: number[];
+  dependencies: number[];
+  artifactCount: number;
+  checkCount: number;
+  /** How many issues are filed under this one, so the tree can offer to unfold a node without
+      having read the level below it. */
+  childCount: number;
+}
+
+/** One page of the issue list. `nextCursor` is null at the end of the result set; `total` is only
+ *  computed for the first page of a query. */
+export interface IssuePage {
+  issues: IssueListRow[];
+  nextCursor: string | null;
+  total: number | null;
+  /** The total broken down by state. Lets a caller show how much of a set is finished without
+      holding all of it — the children panel counts progress over every child while displaying one
+      page of them. */
+  stateCounts: { open: number; closed: number; completed: number } | null;
+}
+
 export interface Comment {
   id: number;
   issueId: number;
@@ -142,6 +178,17 @@ export interface ApiTokenCreated {
   secret: string;
 }
 
+/** Where an issue sits among the issues sharing its parent, and the two either side of it.
+ *  Sent with the issue rather than derived by the client, which is what it used to do — out of a
+ *  naming index of the whole tracker, to answer a question about three issues. */
+export interface SiblingNav {
+  /** 1-based position among the siblings; 0 when the issue has no parent. */
+  position: number;
+  count: number;
+  prev: IssueIndexEntry | null;
+  next: IssueIndexEntry | null;
+}
+
 export interface IssueDetail {
   issue: Issue;
   assignedActors: Actor[];
@@ -152,11 +199,38 @@ export interface IssueDetail {
   events: Event[];
   participating: boolean;
   reviewRequests: ReviewRequest[];
+  /** The containment path above this issue, root first, excluding the issue itself. */
+  ancestors: IssueIndexEntry[];
+  siblings: SiblingNav;
+}
+
+/** One node of the graph view. Both edge relations ride on the node — `dependencies` are the edges
+ *  in dependency mode, `parent` in hierarchy mode — so the graph is one read whichever mode it is
+ *  in, and there is no separate edge list saying the same thing a second time. */
+export interface GraphNode {
+  id: number;
+  title: string;
+  state: IssueState;
+  locked: boolean;
+  labels: number[];
+  parent: number | null;
+  dependencies: number[];
+  assignees: number[];
+  deadline: number | null;
 }
 
 export interface GraphData {
-  nodes: { id: number; title: string; state: IssueState; labels: number[] }[];
-  edges: { issue: number; dependsOn: number }[];
+  nodes: GraphNode[];
+}
+
+/** Who you are and how you could sign in — one answer to what the top bar needs, where `/me` and
+ *  `/health` used to be two requests. `actor` is null when nobody is signed in, which is an answer
+ *  and not an error. */
+export interface Session {
+  actor: Actor | null;
+  centralPasswordEnabled: boolean;
+  googleEnabled: boolean;
+  githubEnabled: boolean;
 }
 
 export interface FieldSpec {

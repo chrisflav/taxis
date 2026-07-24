@@ -1,0 +1,51 @@
+{
+  "_comment": [
+    "Ceilings for bench/run.py --check, enforced in CI.",
+    "requests: the exact number of API calls a route makes on a cold open. A change here is a view",
+    "  starting or stopping a call, which should always be deliberate.",
+    "gzip_bytes: a ceiling, not a measurement, set about 30% above what the route costs today.",
+    "  Headroom is deliberate: zlib versions differ slightly in output size between machines, and a",
+    "  benchmark that fails on that teaches people to ignore it. Regressions worth catching are far",
+    "  larger than 30%.",
+    "Update these in the same commit as any change that moves them, with the reason in the message.",
+    "feed_requests: how many pages the list pulls after its first. The list asks for the rows it is",
+    "  about to draw plus a page of slack, so this is 1 at every size -- it used to be 25 at ten",
+    "  thousand issues, pulling 179 KB nobody had asked to see. A jump means either that demand",
+    "  calculation changed or paging stopped making progress (it once looped 2,824 times against a",
+    "  cursor the server was ignoring).",
+    "Note how little of this grows with the tracker now: only #/graph, which genuinely draws every",
+    "  issue. The other three cost about the same at ten thousand issues as at a hundred, because",
+    "  none of them reads anything whose size is the size of the tracker any more."
+  ],
+  "requests": {
+    "#/issues": 4,
+    "#/issues/{id}": 5,
+    "#/graph": 4,
+    "#/labels": 3
+  },
+  "gzip_bytes": {
+    "100": {
+      "#/issues": 4500,
+      "#/issues/{id}": 3000,
+      "#/graph": 5200,
+      "#/labels": 1700
+    },
+    "1000": {
+      "#/issues": 10700,
+      "#/issues/{id}": 3100,
+      "#/graph": 31900,
+      "#/labels": 1700
+    },
+    "10000": {
+      "#/issues": 11000,
+      "#/issues/{id}": 4400,
+      "#/graph": 303600,
+      "#/labels": 1700
+    }
+  },
+  "feed_requests": {
+    "100": 1,
+    "1000": 1,
+    "10000": 1
+  }
+}

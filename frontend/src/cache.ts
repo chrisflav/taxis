@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 // A small stale-while-revalidate cache over the API.
 //
@@ -7,6 +7,12 @@ import { useCallback, useEffect, useState } from "react";
 // Here the last response for a key is kept, so a revisit paints immediately and the network fetch
 // only updates what's already on screen. Responses carry an `ETag` and `Cache-Control: no-cache`,
 // so a revalidation the browser turns into a `304` costs a round trip but no payload.
+//
+// In memory only, and deliberately. Mirroring it into `sessionStorage` made a reload behave unlike
+// a load: a fresh page came up with every issue the tab had ever opened already in hand, which is
+// not what loading a page should mean. A page load now fetches what that page needs and nothing
+// else; the cache exists to make *navigation within* the session cheap, which is where the repeat
+// reads actually are.
 
 interface Entry {
   data: unknown;
@@ -30,6 +36,20 @@ export function peekCached<T>(key: string): T | undefined {
   return hit ? (hit.data as T) : undefined;
 }
 
+/** A request the page started before any of this code existed.
+ *
+ *  `index.html` fires the reads a route needs from an inline script, so they overlap the download
+ *  of the bundle instead of waiting for it. Taking one over here is what connects the two: the
+ *  first caller for that key gets the response that has been on its way since the first round
+ *  trip. Each is claimed once — a second read of the same key is a genuine re-read. */
+function claimPreloaded<T>(key: string): Promise<T> | undefined {
+  const store = (window as unknown as { __taxisPreload?: Record<string, Promise<unknown>> }).__taxisPreload;
+  const hit = store?.["/api" + key];
+  if (!hit) return undefined;
+  delete store!["/api" + key];
+  return hit as Promise<T>;
+}
+
 /**
  * Fetch `key`, reusing the stored value when it is younger than `maxAgeMs` and collapsing
  * concurrent calls for the same key into a single request.
@@ -41,7 +61,7 @@ export function cachedGet<T>(key: string, fetcher: () => Promise<T>, maxAgeMs = 
   const pending = inflight.get(key);
   if (pending) return pending as Promise<T>;
 
-  const request = fetcher()
+  const request = (claimPreloaded<T>(key) ?? fetcher())
     .then((data) => {
       entries.set(key, { data, at: Date.now() });
       return data;
@@ -56,12 +76,8 @@ export function cachedGet<T>(key: string, fetcher: () => Promise<T>, maxAgeMs = 
  * with it (so `invalidateCache("/issues")` covers the list, its filtered variants and details).
  */
 export function invalidateCache(prefix?: string): void {
-  if (prefix == null) {
-    entries.clear();
-    return;
-  }
   for (const key of [...entries.keys()]) {
-    if (key.startsWith(prefix)) entries.delete(key);
+    if (prefix == null || key.startsWith(prefix)) entries.delete(key);
   }
 }
 
@@ -75,8 +91,10 @@ export interface Resource<T> {
   /** True only when there is nothing to show yet; a background revalidation does not count. */
   loading: boolean;
   error: string | null;
-  /** Discard this key's cached value and fetch it again. */
-  reload: () => void;
+  /** Discard this key's cached value and fetch it again, leaving the current value on screen until
+      the new one lands. Resolves once it has been applied, so a caller that must not act before
+      then — an inline editor closing onto the text it just saved — can await it. */
+  reload: () => Promise<void>;
 }
 
 /**
@@ -94,40 +112,56 @@ export function useResource<T>(
   const [data, setData] = useState<T | undefined>(() => (key == null ? undefined : peekCached<T>(key)));
   const [loading, setLoading] = useState(key != null && peekCached<T>(key) === undefined);
   const [error, setError] = useState<string | null>(null);
-  const [nonce, setNonce] = useState(0);
 
-  useEffect(() => {
-    if (key == null) {
-      setData(undefined);
-      setLoading(false);
-      return;
+  // Held in a ref so `reload` can call the current closure without being rebuilt on every render.
+  const fetcherRef = useRef(fetcher);
+  fetcherRef.current = fetcher;
+  // Guards every state write, so a response that arrives after the key changed — or after the
+  // component went away — is dropped rather than painted over the newer view.
+  const live = useRef(true);
+
+  /** Fetch `k` and apply the result. `keepPrevious` decides what is on screen while that happens:
+      a key change has nothing to do with the value being replaced, so it shows that key's cached
+      value (or nothing); a reload of the *same* key keeps what is already rendered, which is what
+      stops an inline save blanking the page it just edited. */
+  const run = useCallback((k: string, maxAge: number, keepPrevious: boolean): Promise<void> => {
+    if (!keepPrevious) {
+      const cached = peekCached<T>(k);
+      setData(cached);
+      setLoading(cached === undefined);
     }
-    let cancelled = false;
-    const cached = peekCached<T>(key);
-    setData(cached);
-    setLoading(cached === undefined);
-    cachedGet(key, fetcher, maxAgeMs)
+    return cachedGet(k, () => fetcherRef.current(), maxAge)
       .then((fresh) => {
-        if (cancelled) return;
+        if (!live.current) return;
         setData(fresh);
         setError(null);
       })
       .catch((e) => {
-        if (!cancelled) setError(String(e));
+        if (live.current) setError(String(e));
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (live.current) setLoading(false);
       });
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, nonce, maxAgeMs]);
+  }, []);
 
-  const reload = useCallback(() => {
-    if (key != null) invalidateCache(key);
-    setNonce((n) => n + 1);
-  }, [key]);
+  useEffect(() => {
+    live.current = true;
+    if (key == null) {
+      setData(undefined);
+      setLoading(false);
+    } else {
+      void run(key, maxAgeMs, false);
+    }
+    return () => {
+      live.current = false;
+    };
+  }, [key, maxAgeMs, run]);
+
+  const reload = useCallback((): Promise<void> => {
+    if (key == null) return Promise.resolve();
+    invalidateCache(key);
+    return run(key, 0, true);
+  }, [key, run]);
 
   return { data, loading, error, reload };
 }

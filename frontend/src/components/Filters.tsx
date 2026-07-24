@@ -1,30 +1,27 @@
 import { memo, useMemo } from "react";
-import type { Actor, IssueIndexEntry, Label } from "../types";
+import type { Actor, Label } from "../types";
 import type { IssueFilterState } from "../filters";
 import { STATES } from "../api";
 import { MultiSelect } from "./MultiSelect";
-import { breadcrumbOptions } from "../breadcrumbs";
+import { IssueMultiPicker } from "./IssuePicker";
 
 // The shared issue filter bar, used by both the list and the graph.
 //
-// Memoised, and its option lists built once per input array rather than per render: the parent and
-// dependency pickers name every issue by its ancestor chain, which is far too much work to redo on
-// every keystroke in the search box.
+// Memoised, and its option lists built once per input array rather than per render. The two issue
+// pickers take no options at all any more: they search the tracker as you type, where they used to
+// be handed a copy of it and filter that.
 export const Filters = memo(function Filters({
   value,
   onChange,
   labels,
   actors,
-  index = [],
 }: {
   value: IssueFilterState;
   onChange: (next: IssueFilterState) => void;
   labels: Label[];
   actors: Actor[];
-  index?: IssueIndexEntry[];
 }) {
   const set = (patch: Partial<IssueFilterState>) => onChange({ ...value, ...patch });
-  const issueOpts = useMemo(() => breadcrumbOptions(index), [index]);
   const labelOpts = useMemo(() => labels.map((l) => ({ value: l.id, label: l.name })), [labels]);
   const actorOpts = useMemo(() => actors.map((a) => ({ value: a.id, label: a.displayName })), [actors]);
 
@@ -68,8 +65,7 @@ export const Filters = memo(function Filters({
       </div>
       <div>
         <label>Parent (any)</label>
-        <MultiSelect
-          options={issueOpts}
+        <IssueMultiPicker
           selected={value.parents}
           onChange={(parents) => set({ parents })}
           placeholder="any parent"
@@ -77,8 +73,7 @@ export const Filters = memo(function Filters({
       </div>
       <div>
         <label>Depends on (all)</label>
-        <MultiSelect
-          options={issueOpts}
+        <IssueMultiPicker
           selected={value.dependsOn}
           onChange={(dependsOn) => set({ dependsOn })}
           placeholder="no requirement"

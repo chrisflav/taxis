@@ -97,14 +97,23 @@ private def schemas : Json := obj [
   ("ApiToken", schemaObj [("id", typ "integer"), ("actorId", typ "integer"), ("name", typ "string"),
     ("tokenPrefix", typ "string"), ("createdAt", typ "integer"), ("lastUsed", nullable "integer")]),
   ("ApiTokenCreated", schemaObj [("token", ref "ApiToken"), ("secret", typ "string")]),
+  ("IssueIndexEntry", schemaObj [("id", typ "integer"), ("title", typ "string"),
+    ("parent", nullable "integer")]),
+  ("SiblingNav", schemaObj [("position", typ "integer"), ("count", typ "integer"),
+    ("prev", nullable "object"), ("next", nullable "object")]),
   ("IssueDetail", schemaObj [("issue", ref "Issue"), ("assignedActors", arrayOf (ref "Actor")),
     ("issueLabels", arrayOf (ref "Label")), ("attachedArtifacts", arrayOf (ref "Artifact")),
     ("attachedChecks", arrayOf (ref "Check")), ("comments", arrayOf (ref "Comment")),
-    ("events", arrayOf (ref "Event"))]),
+    ("events", arrayOf (ref "Event")), ("ancestors", arrayOf (ref "IssueIndexEntry")),
+    ("siblings", ref "SiblingNav")]),
   ("PluginKind", schemaObj [("kind", typ "string"), ("fields", arrayOf (typ "object"))]),
   ("Plugins", schemaObj [("artifactKinds", arrayOf (ref "PluginKind")), ("checkKinds", arrayOf (ref "PluginKind")),
     ("repoDepsKinds", arrayOf (typ "string"))]),
-  ("Graph", schemaObj [("nodes", arrayOf (typ "object")), ("edges", arrayOf (typ "object"))]),
+  ("GraphNode", schemaObj [("id", typ "integer"), ("title", typ "string"), ("state", typ "string"),
+    ("locked", typ "boolean"), ("labels", arrayOf (typ "integer")), ("parent", nullable "integer"),
+    ("dependencies", arrayOf (typ "integer")), ("assignees", arrayOf (typ "integer")),
+    ("deadline", nullable "integer")]),
+  ("Graph", schemaObj [("nodes", arrayOf (ref "GraphNode"))]),
   ("RepoNode", schemaObj [("id", typ "string"), ("url", typ "string"), ("name", typ "string"),
     ("issues", arrayOf (typ "integer")), ("attached", typ "boolean"),
     ("ecosystem", nullable "string"), ("error", nullable "string")]),
@@ -121,7 +130,7 @@ private def paths : Json := obj [
     [("200", jsonResp "OpenAPI spec" (typ "object"))])]),
   ("/plugins", obj [("get", operation "System" "List registered artifact and check kinds" [] none
     [("200", jsonResp "Plugin kinds" (ref "Plugins"))])]),
-  ("/graph", obj [("get", operation "Issues" "Dependency graph of visible issues" [] none
+  ("/graph", obj [("get", operation "Issues" "Every visible issue as a graph node, carrying both edge relations (dependencies and parent)" [] none
     [("200", jsonResp "Graph" (ref "Graph"))])]),
   ("/repo-graph", obj [("get", operation "Repositories" "Dependency graph of attached repositories"
     [queryParam "external" "Include dependencies on repositories that are not attached"] none
@@ -131,6 +140,10 @@ private def paths : Json := obj [
 
   ("/me", obj [("get", operation "Auth" "The current authenticated actor" [] none
     [("200", jsonResp "Actor" (ref "Actor")), ("401", emptyResp "Not authenticated")])]),
+  ("/session", obj [("get", operation "Auth" "The current actor (null when signed out) and which sign-in methods are configured" [] none
+    [("200", jsonResp "Session" (schemaObj [("actor", nullable "object"),
+      ("centralPasswordEnabled", typ "boolean"), ("googleEnabled", typ "boolean"),
+      ("githubEnabled", typ "boolean")]))])]),
   ("/auth/google/login", obj [("get", operation "Auth" "Redirect to Google consent" [] none
     [("302", emptyResp "Redirect")])]),
   ("/auth/google/callback", obj [("get", operation "Auth" "OAuth callback" [queryParam "code" "Authorization code"] none
@@ -183,14 +196,19 @@ private def paths : Json := obj [
       none [("200", jsonResp "Issues" (arrayOf (ref "Issue")))]),
     ("post", operation "Issues" "Create an issue" [] (some (jsonBody (ref "IssueInput"))) [("201", jsonResp "Created" (ref "Issue"))])]),
   ("/issues/index", obj [
-    ("get", operation "Issues" "Every visible issue as {id, title, parent} — enough to name an issue in a breadcrumb trail or a picker"
-      [] none [("200", jsonResp "Issue index" (arrayOf (typ "object")))])]),
+    ("get", operation "Issues" "Visible issues as {id, title, parent} — enough to name an issue in a breadcrumb trail or a picker. Filtered, this names a known handful or searches for one; unfiltered it returns every visible issue, which grows with the tracker"
+      [queryParam "ids" "Comma-separated issue ids: name exactly these",
+       queryParam "q" "Search titles by substring, or an issue by its number (capped at 50 matches unless limit says otherwise)",
+       queryParam "limit" "Maximum number of entries to return (at most 200 with a search)"]
+      none [("200", jsonResp "Issue index" (arrayOf (ref "IssueIndexEntry")))])]),
   ("/issues/{id}", obj [
     ("get", operation "Issues" "Fetch an issue with related entities" [idParam] none
       [("200", jsonResp "Issue detail" (ref "IssueDetail")), ("404", emptyResp "Not found")]),
     ("patch", operation "Issues" "Update an issue (rejected on locked fields)" [idParam] (some (jsonBody (ref "IssueUpdate")))
       [("200", jsonResp "Issue" (ref "Issue")), ("422", jsonResp "Validation error" (ref "Error"))]),
     ("delete", operation "Issues" "Delete an issue" [idParam] none [("200", jsonResp "Deleted" (ref "Deleted"))])]),
+  ("/issues/{id}/ancestors", obj [("get", operation "Issues" "The containment path above an issue, root first, excluding the issue itself"
+    [idParam] none [("200", jsonResp "Ancestors" (arrayOf (ref "IssueIndexEntry")))])]),
   ("/issues/{id}/events", obj [("get", operation "Issues" "The recorded history (audit trail) of an issue"
     [idParam] none [("200", jsonResp "Events" (arrayOf (ref "Event")))])]),
 

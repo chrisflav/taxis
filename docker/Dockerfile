@@ -14,24 +14,29 @@ RUN npm run build
 # lean-toolchain (currently v4.31.0) is fetched exactly as `lake` would locally.
 FROM debian:bookworm-slim AS backend
 # `build-essential` provides a `cc` for leansqlite's bundled SQLite amalgamation (C bindings) —
-# the Lean toolchain's own bundled clang isn't wired up as `cc`.
+# the Lean toolchain's own bundled clang isn't wired up as `cc`. `zlib1g-dev` provides the headers
+# for `bindings/gzip.c`, which compresses API responses.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl git build-essential \
+      ca-certificates curl git build-essential zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 ENV ELAN_HOME=/root/.elan
 ENV PATH="${ELAN_HOME}/bin:${PATH}"
 RUN curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf \
       | sh -s -- -y --no-modify-path --default-toolchain none
 WORKDIR /src
-COPY lean-toolchain lakefile.toml lake-manifest.json Taxis.lean Main.lean Tests.lean ./
+COPY lean-toolchain lakefile.lean lake-manifest.json Taxis.lean Main.lean Tests.lean ./
 COPY Taxis ./Taxis
+# The C sources the lakefile builds into the FFI library.
+COPY bindings ./bindings
 # `lake build taxis` (not the default `lake build`) so this doesn't also compile the `test` exe.
 RUN lake build taxis
 
 # ---- Runtime ----
 FROM debian:bookworm-slim AS runtime
+# `zlib1g` is what the binary's `-lz` resolves against at run time. It is already present in the
+# base image (dpkg and apt depend on it), but naming it keeps that from being a coincidence.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl \
+      ca-certificates curl zlib1g \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=backend /src/.lake/build/bin/taxis ./taxis

@@ -1,24 +1,26 @@
 import { useEffect, useState } from "react";
 import { PageHeader } from "./PageHeader";
+import { PAGE_META } from "../pages";
 import type { Actor, ApiToken, Group } from "../types";
-import { api } from "../api";
+import { api, paths } from "../api";
+import { EMPTY, REFERENCE_MAX_AGE, useResource } from "../cache";
 import { Modal, ConfirmModal } from "./Modal";
 import { MultiSelect } from "./MultiSelect";
 import { Pagination, usePagination } from "./Pagination";
 import { ActorName } from "./ActorName";
 
 export function Admin() {
-  const [groups, setGroups] = useState<Group[]>([]);
-  const loadGroups = () => api.listGroups().then(setGroups).catch(() => {});
-  useEffect(() => { loadGroups(); }, []);
+  // Reference data, through the shared cache like everywhere else. Read into local state, these
+  // two re-requested lists the application had already fetched — `/actors` is in the startup
+  // prefetch — which cost a round trip on arrival to be told what was already in hand.
+  const groupsRes = useResource<Group[]>(paths.groups, api.listGroups, REFERENCE_MAX_AGE);
+  const groups = groupsRes.data ?? EMPTY;
+  const loadGroups = groupsRes.reload;
 
   // Actors first, then groups below, each with its own search + pagination.
   return (
     <div>
-      <PageHeader
-        title="Admin"
-        description="Who can sign in, which groups they belong to, and bringing issues in from elsewhere."
-      />
+      <PageHeader {...PAGE_META.admin} />
       <ActorsPanel groups={groups} />
       <GroupsPanel groups={groups} onChange={loadGroups} />
       <ImportPanel />
@@ -27,15 +29,14 @@ export function Admin() {
 }
 
 function ActorsPanel({ groups }: { groups: Group[] }) {
-  const [actors, setActors] = useState<Actor[]>([]);
-  const [err, setErr] = useState<string | null>(null);
+  const actorsRes = useResource<Actor[]>(paths.actors, api.listActors, REFERENCE_MAX_AGE);
+  const actors = actorsRes.data ?? EMPTY;
+  const err = actorsRes.error;
+  const load = actorsRes.reload;
   const [query, setQuery] = useState("");
   const [editing, setEditing] = useState<Actor | "new" | null>(null);
   const [deleting, setDeleting] = useState<Actor | null>(null);
   const [tokensFor, setTokensFor] = useState<Actor | null>(null);
-
-  const load = () => api.listActors().then(setActors).catch((e) => setErr(String(e)));
-  useEffect(() => { load(); }, []);
 
   const groupName = (id: number) => groups.find((g) => g.id === id)?.name ?? `#${id}`;
 

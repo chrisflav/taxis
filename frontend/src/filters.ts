@@ -1,5 +1,21 @@
-import type { Issue } from "./types";
+import type { IssueState } from "./types";
 import { fuzzyMatch } from "./fuzzy";
+
+/** What the list's filters actually test. Both a full `Issue` and an `IssueListRow` satisfy it, so
+    the same predicates serve the list (which holds trimmed rows) and the graph (which holds whole
+    issues) without either having to carry the other's fields. */
+export interface Filterable {
+  id: number;
+  title: string;
+  state: IssueState;
+  labels: number[];
+  assignees: number[];
+  parent: number | null;
+  dependencies: number[];
+  deadline: number | null;
+  /** Only a whole issue has one; where it is absent the query matches titles alone. */
+  description?: string;
+}
 
 export interface IssueFilterState {
   q: string;
@@ -20,24 +36,35 @@ export const emptyFilters: IssueFilterState = {
 };
 
 /** Open, has a deadline, and that deadline has passed. */
-export function isOverdue(i: Issue, now = Date.now()): boolean {
+export function isOverdue(i: Filterable, now = Date.now()): boolean {
   return i.deadline != null && i.state === "open" && i.deadline * 1000 < now;
 }
 
 // Labels and dependsOn use AND (must match every selected value); assignees and parents use OR
 // (match any selected value).
-export function matchesFilters(i: Issue, f: IssueFilterState): boolean {
+//
+// Split from the text query because the two are answered differently once the list stops holding
+// every issue: these are decided locally against whatever rows are here, while a row the *server*
+// matched is known to match the query however the local test would judge it.
+export function matchesStructuralFilters(i: Filterable, f: IssueFilterState): boolean {
   return (
     (f.state === "" || i.state === f.state) &&
     f.labels.every((l) => i.labels.includes(l)) &&
     (f.assignees.length === 0 || f.assignees.some((a) => i.assignees.includes(a))) &&
     (f.parents.length === 0 || (i.parent != null && f.parents.includes(i.parent))) &&
     f.dependsOn.every((d) => i.dependencies.includes(d)) &&
-    (!f.overdue || isOverdue(i)) &&
-    // List rows arrive without a description (see `Issue` in types.ts), so there the query matches
-    // titles; where a full issue is on hand the description is searched too, as before.
-    fuzzyMatch(f.q, `${i.title} ${i.description ?? ""}`)
+    (!f.overdue || isOverdue(i))
   );
+}
+
+/** The text half of the filter. List rows arrive without a description (see `IssueListRow`), so
+    there the query matches titles; where a whole issue is on hand the description is searched too. */
+export function matchesText(i: Filterable, q: string): boolean {
+  return fuzzyMatch(q, `${i.title} ${i.description ?? ""}`);
+}
+
+export function matchesFilters(i: Filterable, f: IssueFilterState): boolean {
+  return matchesStructuralFilters(i, f) && matchesText(i, f.q);
 }
 
 const numList = (params: URLSearchParams, key: string): number[] =>
