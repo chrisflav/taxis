@@ -1,6 +1,7 @@
 import { useCallback, useState } from "react";
 import type { Actor, IssueListRow, Label } from "../types";
 import { api } from "../api";
+import { isQueuedLocally } from "../offline";
 import { MultiSelect } from "./MultiSelect";
 import { IssueSelectPicker } from "./IssuePicker";
 
@@ -25,6 +26,10 @@ export function BulkBar({
   const [assigneeSel, setAssigneeSel] = useState<number[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // How many of the last apply's patches only reached the offline queue. Without this the bar
+  // clears its selection and the rows below keep their old values, which reads as "nothing
+  // happened" rather than "stored, not sent" — the list draws no pending markers of its own.
+  const [queued, setQueued] = useState(0);
 
   const selectedIssues = issues.filter((i) => selectedIds.has(i.id));
   // The parent picker searches the whole tracker — a parent may well be outside the current
@@ -34,6 +39,7 @@ export function BulkBar({
   const apply = () => {
     setBusy(true);
     setError(null);
+    setQueued(0);
     const patches = selectedIssues.map((issue) => {
       switch (action) {
         case "add-labels":
@@ -47,7 +53,14 @@ export function BulkBar({
       }
     });
     Promise.all(patches)
-      .then(() => { onApplied(); onClear(); })
+      .then((results) => {
+        const stored = results.filter(isQueuedLocally).length;
+        setQueued(stored);
+        onApplied();
+        // Keep the selection when nothing was actually sent: the rows still show their old values,
+        // so clearing would leave the reader with no sign of which issues the change is waiting on.
+        if (stored === 0) onClear();
+      })
       .catch((e) => setError(String(e)))
       .finally(() => setBusy(false));
   };
@@ -71,6 +84,11 @@ export function BulkBar({
         )}
       </div>
       {error && <span className="error small">{error}</span>}
+      {queued > 0 && (
+        <span className="small muted" title="Stored on this device and sent when the connection returns. The rows below still show what the server holds.">
+          Stored on this device — {queued} {queued === 1 ? "issue" : "issues"} not sent yet
+        </span>
+      )}
       <button className="primary" onClick={apply} disabled={busy}>Apply</button>
       <button onClick={onClear} disabled={busy}>Clear selection</button>
     </div>

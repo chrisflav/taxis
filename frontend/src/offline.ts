@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { invalidateCache, peekCached, writeCached } from "./cache";
+import { useSyncExternalStore } from "react";
+import { dropCached, invalidateCache, peekCached, writeCached } from "./cache";
 import type { Issue, IssueDetail } from "./types";
 
 // Offline editing: where a write goes when there is no server to send it to.
@@ -34,13 +34,34 @@ import type { Issue, IssueDetail } from "./types";
 //   body is set aside as a conflict for the reader to look at and discard. No field-level merging
 //   is attempted — two people editing the same issue is a conversation to have, not an algorithm
 //   to run.
+//
+// And two things the queue is careful *not* to do:
+//
+//   It does not replay one person's work as another. A queue outlives the tab it was filled in, so
+//   the account that comes back to the browser need not be the account that left: sign out, hand
+//   the laptop over, and an unreplayed edit would go out under whoever signs in next — attributed
+//   to them, and against issues they may not even be able to see. Every op therefore records the
+//   actor who made it, a drain runs only once the session is known, and an op belonging to somebody
+//   else is set aside as a conflict rather than sent. It is still their work; it is just not this
+//   reader's to submit.
+//
+//   It does not silently create the same thing twice. A `fetch` rejection does not distinguish
+//   "never left the machine" from "the server took it and the reply never came back", so a write
+//   queued from a mid-flight failure is marked `uncertain`. For a patch or a delete that changes
+//   nothing — the version check turns a duplicate patch into a visible conflict, and a delete is
+//   happy with a 404. For the two writes that genuinely create something (an issue, a comment) it
+//   does, so those are held out of the drain and offered to the reader as "this may already have
+//   been sent", with Send and Discard. Guessing on their behalf would either lose the work or post
+//   it twice, and there is no third answer available from here.
 
 const BASE = "/api";
 
 /** Where the queue lives between sessions. Versioned in the name so a future change of shape can
-    ignore what an older build wrote rather than trying to understand it. */
-const QUEUE_KEY = "taxis:offline-queue:v1";
-const CONFLICT_KEY = "taxis:offline-conflicts:v1";
+    ignore what an older build wrote rather than trying to understand it — which is what the bump
+    to v2 is: v1 entries carry no actor and no `uncertain` flag, and the whole point of both is that
+    an op without them cannot be replayed safely. */
+const QUEUE_KEY = "taxis:offline-queue:v2";
+const CONFLICT_KEY = "taxis:offline-conflicts:v2";
 
 /** What kind of interaction a queued request is. Kept alongside the method and path because the
     replay treats them differently — only a patch has a version to check, only a delete is content
@@ -68,13 +89,38 @@ export interface QueuedOp {
   baseUpdatedAt: number | null;
   /** Cache prefixes to drop once the server has this write, so views read the result. */
   invalidate: string[];
+  /** Who made this write. A drain sends only what the current session's actor made — see the note
+      about handing the laptop over in the header. Null when nobody was signed in, which the server
+      will refuse anyway. */
+  actorId: number | null;
+  /** Whether this op may already have reached the server: set when it was queued from a `fetch`
+      that rejected mid-flight rather than from a connection known to be down beforehand. Only
+      consulted for the writes where replaying twice would create a second thing — see `HELD_KINDS`. */
+  uncertain: boolean;
   queuedAt: number;
 }
 
-/** Why a queued write was not applied. All three end up under the same "local version conflict"
+/** The kinds where sending the same op twice makes a second thing rather than the same thing. A
+    patch is checked against the version it was written from and a delete is content with a 404, so
+    neither needs holding back; these two have no such guard, and no way to acquire one without an
+    idempotency key the API does not have. */
+const HELD_KINDS = new Set<OpKind>(["create", "comment"]);
+
+/** Whether this op is waiting on the reader to say whether it was already sent. */
+export function isHeld(op: QueuedOp): boolean {
+  return op.uncertain && HELD_KINDS.has(op.kind);
+}
+
+/** The same question asked by op id, for a caller holding only the result of its own write. */
+export function isOpHeld(opId: string): boolean {
+  const op = queue.find((q) => q.opId === opId);
+  return op != null && isHeld(op);
+}
+
+/** Why a queued write was not applied. All of these end up under the same "local version conflict"
     label, because from the reader's side they are the same situation: the local version was not
     applied and is being kept. */
-export type ConflictReason = "stale" | "missing" | "rejected";
+export type ConflictReason = "stale" | "missing" | "rejected" | "foreign";
 
 /** A local version that was never applied, kept so it is not silently lost. */
 export interface Conflict {
@@ -107,6 +153,10 @@ export interface OfflineState {
       predates the sync either way. A collision counts precisely because it means the issue on
       screen is the one thing it cannot be — current. */
   syncCount: number;
+  /** True once a write to `localStorage` has failed — it is full, or blocked. The queue still works
+      for this session, but it will not survive a reload, and that is the sort of thing somebody
+      with unsent work on screen is entitled to be told rather than to discover. */
+  storageFailed: boolean;
 }
 
 /** The stand-in an intercepted write resolves with. A caller that only wanted the write to happen
@@ -139,17 +189,40 @@ let browserOnline = typeof navigator === "undefined" || navigator.onLine !== fal
     attempts would need something to unblock it, and the only honest something is a poll. */
 let unreachable = false;
 let seq = 0;
+let storageFailed = false;
+/** The actor every write from now on is made by, and the only actor whose queued writes a drain
+    will send. `null` means signed out. */
+let currentActorId: number | null = null;
+/** Whether the session has been resolved at all. Distinct from "signed out": at the moment the page
+    loads neither is known, and draining a queue before finding out is precisely how one person's
+    work goes out under another's name. */
+let actorKnown = false;
+/** Whether the page has finished loading. A queue left over from a previous session is sent after
+    the `load` event and not before — the same rule the markdown parser follows, because a request
+    in flight when the page would otherwise fire `load` is counted against the load event in
+    Firefox, and `bench/budgets.json` is there to keep that cost honest. */
+let pageLoaded = false;
 
 const listeners = new Set<() => void>();
-let snapshot: OfflineState = { offline: false, queue, conflicts, syncCount };
+let snapshot: OfflineState = { offline: false, queue, conflicts, syncCount, storageFailed };
 
 function rebuild(): void {
-  snapshot = { offline: isOffline(), queue, conflicts, syncCount };
+  snapshot = { offline: isOffline(), queue, conflicts, syncCount, storageFailed };
 }
 
 function notify(): void {
   rebuild();
   listeners.forEach((f) => f());
+}
+
+/** Tell the queue who is signed in. Called from `App` as the session resolves and on every sign-in
+    and sign-out, and the moment a queue left over from a previous session becomes safe to send. */
+export function setCurrentActor(id: number | null): void {
+  const changed = !actorKnown || currentActorId !== id;
+  currentActorId = id;
+  actorKnown = true;
+  if (changed) notify();
+  if (id != null && queue.length > 0) void drainQueue();
 }
 
 /** True when a write should go straight to the queue without being attempted. */
@@ -166,15 +239,14 @@ export function subscribeOffline(fn: () => void): () => void {
   return () => { listeners.delete(fn); };
 }
 
-/** Re-render this component when connectivity, the queue or the conflict set changes. */
+/** Re-render this component when connectivity, the queue or the conflict set changes.
+ *
+ *  `useSyncExternalStore` rather than a subscription hand-rolled over `useState`: the snapshot can
+ *  move between a component's render and the effect that would subscribe, and this is the hook that
+ *  exists to close that window rather than paper over it. `rebuild` replaces the snapshot object
+ *  wholesale on every change, which is what makes the identity comparison it does the right one. */
 export function useOfflineState(): OfflineState {
-  const [state, setState] = useState(snapshot);
-  useEffect(() => {
-    // The snapshot can have moved between this component's render and this effect running.
-    setState(offlineSnapshot());
-    return subscribeOffline(() => setState(offlineSnapshot()));
-  }, []);
-  return state;
+  return useSyncExternalStore(subscribeOffline, offlineSnapshot, offlineSnapshot);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -195,6 +267,8 @@ function isQueuedOp(v: unknown): v is QueuedOp {
     && typeof o.method === "string" && typeof o.path === "string"
     && (o.body === null || typeof o.body === "string")
     && (o.issueId === null || typeof o.issueId === "number")
+    && (o.actorId === null || typeof o.actorId === "number")
+    && typeof o.uncertain === "boolean"
     && Array.isArray(o.fields) && Array.isArray(o.invalidate);
 }
 
@@ -218,13 +292,27 @@ function readStored<T>(key: string, valid: (v: unknown) => v is T): T[] {
   }
 }
 
+/** How many local versions are kept aside before the oldest starts falling off.
+ *
+ *  Conflicts only ever leave by being discarded by hand, so without a ceiling a long-lived tab
+ *  accumulates them until `localStorage` refuses the write — at which point the *queue* stops
+ *  being persisted too, which is the one thing here that must not quietly stop working. Fifty is
+ *  far more than anybody will read through, and the queue is what the cap is protecting. */
+const MAX_CONFLICTS = 50;
+
 function persist(): void {
+  if (conflicts.length > MAX_CONFLICTS) {
+    conflicts = conflicts.slice(conflicts.length - MAX_CONFLICTS);
+  }
   try {
     localStorage.setItem(QUEUE_KEY, JSON.stringify(queue));
     localStorage.setItem(CONFLICT_KEY, JSON.stringify(conflicts));
+    storageFailed = false;
   } catch {
     // Storage full, or blocked. The queue still works for this session; it just will not survive a
-    // reload. Failing the user's edit over it would be a worse trade.
+    // reload. Failing the user's edit over it would be a worse trade — but going quiet about it
+    // would be its own kind of lie, so the indicator says so.
+    storageFailed = true;
   }
 }
 
@@ -299,8 +387,14 @@ function seenUpdatedAt(path: string): number | null {
  * Returns the value the caller should resolve with, or null when this request is not one the queue
  * accepts — in which case the caller carries on failing exactly as it did before this module
  * existed.
+ *
+ * `uncertain` says which of the two ways this got here: false when the connection was known to be
+ * down before the request was made, true when it was made and the `fetch` rejected part-way, where
+ * the server may or may not already have it.
  */
-export function queueWrite(method: string, path: string, body: unknown): QueuedResult | null {
+export function queueWrite(
+  method: string, path: string, body: unknown, uncertain = false,
+): QueuedResult | null {
   const what = classify(method, path);
   if (!what) return null;
   const text = typeof body === "string" ? body : null;
@@ -317,6 +411,8 @@ export function queueWrite(method: string, path: string, body: unknown): QueuedR
     // The same prefixes `api.ts` drops after a write that succeeded: any issue read is affected by
     // any issue write, and the graph draws issues.
     invalidate: what.kind.startsWith("comment") ? ["/issues"] : ["/issues", "/graph"],
+    actorId: currentActorId,
+    uncertain,
     queuedAt: Date.now(),
   };
   queue = [...queue, op];
@@ -442,10 +538,22 @@ export function discardQueued(opId: string): void {
   queue = next;
   persist();
   // What was shown as pending came from the queue, so dropping the op is enough to un-show it —
-  // except in the cached copy this op was folded into, which has to go. Only that one key: the
-  // rest of the cache is all that can be read while offline.
-  if (dropped?.kind === "patch") invalidateCache(dropped.path);
+  // except in the cached copy this op was folded into, which has to go. Exactly that one key, by
+  // `dropCached` rather than by prefix: `invalidateCache("/issues/12")` would take `/issues/120`
+  // and `/issues/12/ancestors` with it, and offline those are gone for good.
+  if (dropped?.kind === "patch") dropCached(dropped.path);
   notify();
+}
+
+/** Send a held op after all — the reader has decided it did not reach the server the first time.
+ *  Clearing `uncertain` is what lets the drain past it; discarding it instead is `discardQueued`. */
+export function confirmQueued(opId: string): void {
+  const op = queue.find((q) => q.opId === opId);
+  if (!op || !op.uncertain) return;
+  queue = queue.map((q) => (q.opId === opId ? { ...q, uncertain: false } : q));
+  persist();
+  notify();
+  void drainQueue();
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -590,16 +698,38 @@ const HALT_BACKOFF_MS = 60_000;
  * is not simultaneously being written to by the op behind it.
  */
 export async function drainQueue(): Promise<void> {
-  if (draining || !browserOnline || queue.length === 0) return;
+  if (draining || !pageLoaded || !browserOnline || queue.length === 0) return;
+  // Nobody to send as. Signed out, or the session has not come back yet — either way the queue
+  // waits, because sending somebody else's work under this session is worse than sending it late.
+  // `setCurrentActor` starts a drain the moment that stops being true.
+  if (!actorKnown || currentActorId == null) return;
   if (haltedAt !== 0 && Date.now() - haltedAt < HALT_BACKOFF_MS) return;
   draining = true;
   const appliedAt = new Map<number, number>();
   let applied = 0;
   let conflicted = false;
   try {
-    // Re-read `queue` each time round: an op enqueued while the drain is running belongs to it.
-    while (queue.length > 0) {
-      const op = queue[0];
+    // The head of the queue minus what this pass has already set aside — by op id rather than by
+    // index, because `queue` is re-read every time round and its indices do not survive that: an op
+    // enqueued while the drain is running belongs to it, one discarded from the interface must not
+    // be sent, and either can happen during an `await` below.
+    const passedOver = new Set<string>();
+    for (;;) {
+      const op = queue.find((q) => !passedOver.has(q.opId));
+      if (!op) break;
+      // Waiting on the reader to say whether the server already has this. Everything behind it
+      // still goes: nothing queued can refer to an unsent creation (there is no id to refer to),
+      // and holding the rest hostage to one uncertain comment would strand a whole session's work.
+      if (isHeld(op)) { passedOver.add(op.opId); continue; }
+      // Somebody else's work, on a browser this account now has. Kept, labelled, not sent.
+      if (op.actorId != null && op.actorId !== currentActorId) {
+        recordConflict(op, "foreign", null, null);
+        conflicted = true;
+        queue = queue.filter((q) => q.opId !== op.opId);
+        persist();
+        notify();
+        continue;
+      }
       let outcome: Outcome;
       try {
         outcome = await replay(op, appliedAt);
@@ -620,8 +750,9 @@ export async function drainQueue(): Promise<void> {
       persist();
       notify();
     }
-    // The queue emptied, so the server is plainly reachable and whatever stopped a previous drain
-    // has passed.
+    // The drain reached the end without anything failing to answer, so the server is plainly
+    // reachable and whatever stopped a previous one has passed. The queue is not necessarily empty:
+    // held ops are still in it, waiting on the reader rather than on the network.
     unreachable = false;
     haltedAt = 0;
   } finally {
@@ -634,8 +765,10 @@ export async function drainQueue(): Promise<void> {
       // updated to the remote version when a collision is found, and a collision means precisely
       // that the copy on screen is out of date — dropping it from the cache is not enough, because
       // nothing would go and read it again until the reader happened to navigate.
+      //
+      // Nothing to persist here: `syncCount` is a signal to this session's mounted views and means
+      // nothing to the next one, and the queue and the conflicts were written as each op resolved.
       syncCount += 1;
-      persist();
     }
     notify();
   }
@@ -658,6 +791,14 @@ if (typeof window !== "undefined") {
   conflicts = readStored(CONFLICT_KEY, isConflict);
   rebuild();
 
+  // Set unconditionally, not only when there is a queue to send: a session that starts with an
+  // empty queue and fills one later still needs the gate open. With nothing queued this costs the
+  // one `load` listener and no request at all.
+  afterPageLoad(() => {
+    pageLoaded = true;
+    if (queue.length > 0) void drainQueue();
+  });
+
   window.addEventListener("online", () => {
     browserOnline = true;
     // The browser saying the network is back is a reason to try, not proof that it worked. If the
@@ -672,10 +813,4 @@ if (typeof window !== "undefined") {
     browserOnline = false;
     notify();
   });
-
-  // A queue left over from a previous session — the tab was closed with edits still in it — is
-  // sent once the page has loaded. Note what this does *not* do: with an empty queue, which is
-  // every ordinary page load, it makes no request at all. The offline layer costs a page load
-  // nothing, which is what `bench/budgets.json` is there to keep true.
-  if (queue.length > 0) afterPageLoad(() => { void drainQueue(); });
 }

@@ -7,8 +7,8 @@ import { api, childrenQuery, issuePagePath, paths } from "../api";
 import { EMPTY, LIST_MAX_AGE, REFERENCE_MAX_AGE, useResource } from "../cache";
 import type { Conflict, QueuedOp } from "../offline";
 import {
-  applyPendingEdits, conflictFor, discardConflict, isOffline, isQueuedLocally, pendingCommentsFor,
-  pendingDeleteFor, pendingFieldsFor, queuedBody, useOfflineState,
+  applyPendingEdits, conflictFor, discardConflict, isHeld, isOffline, isQueuedLocally,
+  pendingCommentsFor, pendingDeleteFor, pendingFieldsFor, queuedBody, useOfflineState,
 } from "../offline";
 import { Modal, ConfirmModal, useConfirmClose } from "./Modal";
 import { LabelChip } from "./LabelChip";
@@ -955,7 +955,9 @@ function ConflictPanel({ conflict, labelName }: { conflict: Conflict; labelName:
     ? "The issue no longer exists on the server."
     : conflict.reason === "rejected"
       ? `The server refused the change: ${conflict.message ?? "no reason given"}.`
-      : "The issue was changed on the server while this device was offline.";
+      : conflict.reason === "foreign"
+        ? "It was written on this device by a different account, so it was not sent under yours."
+        : "The issue was changed on the server while this device was offline.";
   return (
     <div className="panel conflict-panel">
       <h3 className="panel-title">
@@ -1389,12 +1391,18 @@ function Timeline({
       <div className="timeline-list">
         {items.map((it) => <div key={it.key} className="timeline-entry">{it.node}</div>)}
         {/* Written here, held here. Last, because they are the newest thing on the issue, and
-            visibly apart from the posted ones, because nobody else can see them yet. */}
+            visibly apart from the posted ones, because nobody else can see them yet — with the
+            exception of one whose request was cut off mid-flight, where "nobody else can see it"
+            is exactly what cannot be promised. */}
         {queuedComments.map((op) => (
           <div key={op.opId} className="timeline-entry">
             <div className="comment-card comment-pending">
               <div className="row" style={{ justifyContent: "space-between" }}>
-                <span className="small muted">Written on this device · not posted yet</span>
+                <span className="small muted">
+                  {isHeld(op)
+                    ? "Written on this device · the connection dropped while sending, so it may or may not have been posted"
+                    : "Written on this device · not posted yet"}
+                </span>
                 <span className="badge pending">pending</span>
               </div>
               <div style={{ marginTop: 4 }}><Markdown text={String(queuedBody(op).body ?? "")} /></div>

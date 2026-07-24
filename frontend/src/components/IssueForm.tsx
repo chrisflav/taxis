@@ -3,7 +3,7 @@ import { LockIcon, LockedMark } from "./Icon";
 import type { Actor, Group, Issue, Label } from "../types";
 import { api, paths } from "../api";
 import { EMPTY, REFERENCE_MAX_AGE, useResource } from "../cache";
-import { isQueuedLocally } from "../offline";
+import { isOpHeld, isQueuedLocally } from "../offline";
 import { MultiSelect } from "./MultiSelect";
 import { IssueMultiPicker, IssueSelectPicker } from "./IssuePicker";
 import { AutoTextarea } from "./AutoTextarea";
@@ -50,8 +50,9 @@ export function IssueForm({
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(!editing);
   // Set when a creation went to the offline queue instead of to the server, which is neither a
-  // success to navigate away from nor an error to correct.
-  const [queuedOffline, setQueuedOffline] = useState(false);
+  // success to navigate away from nor an error to correct. "held" is the narrower case where the
+  // connection dropped mid-request and nobody can say whether the server got it.
+  const [queuedOffline, setQueuedOffline] = useState<null | "queued" | "held">(null);
 
   // What counts as "unmodified" for onDirtyChange: the loaded issue when editing, or blank fields
   // (with the pre-selected parent) when creating — a pre-filled parent alone isn't user input.
@@ -116,8 +117,13 @@ export function IssueForm({
       // is not an issue, and giving it a stand-in id that other queued writes could refer to is a
       // whole identity-remapping problem this deliberately does not have.)
       if (!editing && isQueuedLocally(i)) {
-        setQueuedOffline(true);
-        if (onDone) onDone(-1);
+        setQueuedOffline(isOpHeld(i.opId) ? "held" : "queued");
+        // `onDone` is deliberately *not* called. It means "here is the issue you just made", and
+        // its callers navigate to it — passing a stand-in id sent the reader to `#/issues/-1`, a
+        // page for an issue that does not exist. Nor is there anything to close: an embedded form
+        // that vanished would take the notice below with it, leaving a creation that queued
+        // silently. So the form stays, says what happened, and the reader dismisses it.
+        onDirtyChange?.(false);
         return;
       }
       const id = editing ? issueId! : (i as Issue).id;
@@ -149,12 +155,21 @@ export function IssueForm({
     <form className={embedded ? "" : "panel"} onSubmit={submit} style={embedded ? undefined : { maxWidth: 680 }}>
       {!embedded && <h2>{editing ? `Edit issue #${issueId}` : "New issue"} {locked && <LockedMark />}</h2>}
       {error && <div className="error">{error}</div>}
-      {queuedOffline && (
+      {queuedOffline === "queued" && (
         <div className="panel small notice">
           <span>
             No connection to the server. This issue is stored on this device and will be created
             when the connection returns — it has no number until then, so there is no page for it
             yet. The top bar counts what is still waiting.
+          </span>
+        </div>
+      )}
+      {queuedOffline === "held" && (
+        <div className="panel small notice">
+          <span>
+            The connection dropped while this was being sent, so there is no way to tell from here
+            whether the server received it. It is stored on this device rather than sent again,
+            which could file it twice. The top bar offers to send it or to discard it.
           </span>
         </div>
       )}

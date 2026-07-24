@@ -49,6 +49,17 @@ export function writeCached<T>(key: string, data: T): void {
   entries.set(key, { data, at: Date.now() });
 }
 
+/** Drop exactly one key, where `invalidateCache` drops a prefix.
+ *
+ *  The difference matters to any caller holding a path rather than a namespace: `"/issues/12"` is a
+ *  prefix of `"/issues/120"` and of `"/issues/12/ancestors"`, so dropping "just that issue" through
+ *  `invalidateCache` takes nine of its neighbours and its ancestor chain with it. Harmless when a
+ *  re-read is a round trip away; not harmless offline, where a dropped entry is data that cannot be
+ *  fetched back. */
+export function dropCached(key: string): void {
+  entries.delete(key);
+}
+
 /** A request the page started before any of this code existed.
  *
  *  `index.html` fires the reads a route needs from an inline script, so they overlap the download

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Conflict, QueuedOp } from "../offline";
-import { discardConflict, discardQueued, useOfflineState } from "../offline";
+import { confirmQueued, discardConflict, discardQueued, isHeld, useOfflineState } from "../offline";
 
 // What the top bar says about work that is not on the server yet.
 //
@@ -10,7 +10,8 @@ import { discardConflict, discardQueued, useOfflineState } from "../offline";
 //
 // It is also the only place a conflict on an issue you cannot reach is reachable from: an issue
 // deleted on the server while you were editing it locally leaves a local version behind, and
-// without this list there would be nowhere to see or discard it.
+// without this list there would be nowhere to see or discard it. Held writes are the same story —
+// a creation that may already have been filed has no page of its own to ask about.
 
 /** How a queued write reads to somebody who wants to know what they are still waiting on. */
 function describe(op: QueuedOp): string {
@@ -27,40 +28,63 @@ function describe(op: QueuedOp): string {
 function reasonText(c: Conflict): string {
   if (c.reason === "missing") return "the issue no longer exists on the server";
   if (c.reason === "rejected") return c.message ?? "the server refused the change";
+  if (c.reason === "foreign") return "it was written by a different account on this device";
   return "it was changed on the server in the meantime";
 }
 
+/** A count with its noun, so the summary line does not have to spell out the plural each time. */
+const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
+
 export function OfflineIndicator() {
-  const { offline, queue, conflicts } = useOfflineState();
+  const { offline, queue, conflicts, storageFailed } = useOfflineState();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const chipRef = useRef<HTMLButtonElement>(null);
 
-  // Close the popover when clicking anywhere outside it.
+  // Close the popover on a click outside it or on Escape — the latter returning focus to the chip,
+  // since a keyboard user who dismissed this has nowhere else to have been.
   useEffect(() => {
     if (!open) return;
     const onDoc = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      setOpen(false);
+      chipRef.current?.focus();
+    };
     document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
   }, [open]);
 
-  const pending = queue.length;
-  if (!offline && pending === 0 && conflicts.length === 0) return null;
+  // Writes that are simply waiting for a connection, and writes waiting for the reader to say
+  // whether the server already has them. Different questions, so different sections below.
+  const held = queue.filter(isHeld);
+  const waiting = queue.filter((op) => !isHeld(op));
+  const needsAttention = held.length + conflicts.length;
+  if (!offline && queue.length === 0 && conflicts.length === 0) return null;
 
-  // Offline is the headline when it is true, because it explains the rest. Online with a queue
-  // still in it means a drain that has not finished or could not finish, which is worth saying.
+  // Offline is the headline when it is true, because it explains the rest; the pending count rides
+  // along with it. Online with a queue still in it means a drain that has not finished or could
+  // not finish, which is worth saying on its own. Failing those, what is left is conflicts.
+  const summarisesConflicts = !offline && queue.length === 0;
   const summary = offline
-    ? `Offline${pending > 0 ? ` — ${pending} change${pending === 1 ? "" : "s"} pending` : ""}`
-    : pending > 0
-      ? `${pending} change${pending === 1 ? "" : "s"} pending`
-      : `${conflicts.length} local version conflict${conflicts.length === 1 ? "" : "s"}`;
+    ? `Offline${queue.length > 0 ? ` — ${count(queue.length, "change")} pending` : ""}`
+    : queue.length > 0
+      ? `${count(queue.length, "change")} pending`
+      : count(conflicts.length, "local version conflict");
 
   return (
     <div className="offline-indicator" ref={ref}>
       <button
+        ref={chipRef}
         className={`offline-chip${offline ? " is-offline" : ""}`}
         aria-expanded={open}
+        aria-haspopup="true"
         title={offline
           ? "No connection to the server. Changes are stored on this device and sent when it comes back."
           : "Changes waiting to be sent."}
@@ -68,17 +92,46 @@ export function OfflineIndicator() {
       >
         <span className="offline-dot" aria-hidden="true" />
         {summary}
-        {conflicts.length > 0 && !offline && pending > 0 && (
-          <span className="badge failing">{conflicts.length}</span>
+        {/* Anything needing a decision gets its own count, whatever the summary line went with —
+            a conflict does not stop mattering because the connection also happens to be down, and
+            the pending count alone would swallow it. Suppressed only where the summary is already
+            saying exactly this number. */}
+        {needsAttention > 0 && !summarisesConflicts && (
+          <span className="badge failing">{needsAttention}</span>
         )}
       </button>
 
       {open && (
         <div className="offline-menu">
-          {pending > 0 && (
+          {storageFailed && (
+            <div className="offline-menu-head small error">
+              This device's storage is full or blocked, so what is waiting below is only held for as
+              long as this tab stays open. Send it while you can.
+            </div>
+          )}
+          {held.length > 0 && (
+            <>
+              <div className="offline-menu-head small muted">
+                May already have been sent — the connection dropped part-way. Sending again could
+                file it twice.
+              </div>
+              {held.map((op) => (
+                <div key={op.opId} className="offline-item">
+                  <span className="small">{describe(op)}</span>
+                  <span className="row">
+                    <button className="ghost small" title="Send this change to the server"
+                      onClick={() => confirmQueued(op.opId)}>Send</button>
+                    <button className="ghost small" title="Discard this change"
+                      onClick={() => discardQueued(op.opId)}>Discard</button>
+                  </span>
+                </div>
+              ))}
+            </>
+          )}
+          {waiting.length > 0 && (
             <>
               <div className="offline-menu-head small muted">Waiting to be sent</div>
-              {queue.map((op) => (
+              {waiting.map((op) => (
                 <div key={op.opId} className="offline-item">
                   <span className="small">{describe(op)}</span>
                   <button className="ghost small" title="Discard this change"
@@ -104,7 +157,7 @@ export function OfflineIndicator() {
               ))}
             </>
           )}
-          {pending === 0 && conflicts.length === 0 && (
+          {queue.length === 0 && conflicts.length === 0 && (
             <div className="offline-menu-head small muted">
               Nothing is waiting. Changes made from here are stored on this device until the
               connection returns.

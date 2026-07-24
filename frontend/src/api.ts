@@ -61,7 +61,10 @@ async function req<T>(path: string, opts: RequestInit = {}): Promise<T> {
   } catch (e) {
     if (mutating && isNetworkError(e)) {
       noteUnreachable();
-      const queued = queueWrite(method, path, opts.body);
+      // Queued as *uncertain*: the request left, and a `fetch` rejection says only that no reply
+      // came back — not whether the server acted on it first. The queue holds back the two kinds
+      // where replaying a write it already has would make a second one.
+      const queued = queueWrite(method, path, opts.body, true);
       if (queued) return queued as T;
     }
     throw e;
