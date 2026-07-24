@@ -102,8 +102,10 @@ export interface OfflineState {
   offline: boolean;
   queue: QueuedOp[];
   conflicts: Conflict[];
-  /** Incremented each time a drain applied at least one queued write. Views that are already
-      mounted watch this to re-read what they are showing: their data predates the sync. */
+  /** Incremented each time a drain changed what the server holds *or* found that somebody else
+      had. Views that are already mounted watch this to re-read what they are showing: their data
+      predates the sync either way. A collision counts precisely because it means the issue on
+      screen is the one thing it cannot be — current. */
   syncCount: number;
 }
 
@@ -627,7 +629,12 @@ export async function drainQueue(): Promise<void> {
     if (applied > 0 || conflicted) {
       // Views already on screen are showing what they read before any of this: `invalidateCache`
       // makes the *next* read truthful, and this is what asks them to make one.
-      if (applied > 0) syncCount += 1;
+      //
+      // A conflict counts as much as an applied write. Issue #420 asks for the interface to be
+      // updated to the remote version when a collision is found, and a collision means precisely
+      // that the copy on screen is out of date — dropping it from the cache is not enough, because
+      // nothing would go and read it again until the reader happened to navigate.
+      syncCount += 1;
       persist();
     }
     notify();
