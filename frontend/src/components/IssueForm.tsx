@@ -6,6 +6,7 @@ import { EMPTY, REFERENCE_MAX_AGE, useResource } from "../cache";
 import { MultiSelect } from "./MultiSelect";
 import { IssueMultiPicker, IssueSelectPicker } from "./IssuePicker";
 import { AutoTextarea } from "./AutoTextarea";
+import { DeadlinePresets } from "./DeadlinePresets";
 import { localInputToUnix, unixToLocalInput } from "../datetime";
 import { useIssueRefAutocomplete } from "../useIssueRefAutocomplete";
 import { IssueRefMenu } from "./IssueRefMenu";
@@ -202,6 +203,7 @@ export function IssueForm({
       <MultiSelect options={actorOpts} selected={assignees} onChange={setAssignees} placeholder="Assign actors…" />
       <label>Deadline</label>
       <input type="datetime-local" value={deadline} onChange={(e) => setDeadline(e.target.value)} />
+      <DeadlinePresets onPick={setDeadline} />
       <label>Visible to groups (empty = public)</label>
       <MultiSelect
         options={visibleGroups.map((g) => ({ value: g.id, label: g.name }))}
