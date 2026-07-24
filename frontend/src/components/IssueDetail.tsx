@@ -623,6 +623,26 @@ function IssueRef({ id }: { id: number }) {
   );
 }
 
+// "Open" is what you almost always want to see in a container's children — the work that is left —
+// so it's the default on a genuinely first-ever visit. But the choice, once made, belongs to the
+// reader and not to the issue: every issue's page mounts a fresh ChildrenPanel, so to keep one
+// setting across issues (and across a full reload, which a module-level variable would not survive)
+// it's mirrored to localStorage under one shared key. Only the state tab is persisted; the search
+// box stays per-view, since a query that helped find a child here rarely helps on the next issue.
+const CHILD_STATE_STORAGE_KEY = "taxis:child-state-filter";
+
+function loadChildStateFilter(): "" | IssueState {
+  try {
+    const raw = localStorage.getItem(CHILD_STATE_STORAGE_KEY);
+    // Trust only a value from the known set; anything else (a stale or corrupted key) falls back
+    // to the "open" default rather than filtering by a state the UI can't represent.
+    if (raw === "" || raw === "open" || raw === "closed" || raw === "completed") return raw;
+  } catch {
+    // localStorage can throw in private-mode or otherwise blocked contexts; the default is fine.
+  }
+  return "open";
+}
+
 // The issues contained by this one, listed here rather than behind a link to a filtered issue list.
 // Going one step down the containment tree used to mean leaving the issue for the search page and
 // coming back, which is a round trip to answer "what is in this?" — a question the page it starts
@@ -649,7 +669,12 @@ function ChildrenPanel({
   // container with thirty children the questions you ask in place are "which one was that" and
   // "what is still open". Anything beyond that is what the issue list is for, one link below.
   const [q, setQ] = useState("");
-  const [state, setState] = useState<"" | IssueState>("");
+  const [state, setState] = useState<"" | IssueState>(loadChildStateFilter);
+
+  // Persist the tab so the next issue's panel opens on the same filter.
+  useEffect(() => {
+    try { localStorage.setItem(CHILD_STATE_STORAGE_KEY, state); } catch {}
+  }, [state]);
 
   // Counted over every child, not over the filtered view and not over the fetched page — this is
   // the issue's progress, and it should change neither because you typed in the search box nor
