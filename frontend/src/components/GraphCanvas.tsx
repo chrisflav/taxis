@@ -8,7 +8,10 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 // "down": generations stack top-to-bottom, siblings spread left-to-right (the original layout).
 // "right": rotated 90° — generations run left-to-right (parent on the left), siblings stack
 // top-to-bottom.
-export type GraphDirection = "down" | "right";
+// "radial": concentric rings — depth-0 nodes near the centre, each deeper generation on a larger
+// ring, siblings spread by angle. A genuinely different shape rather than a rotation of the layered
+// one, but it reuses the same depth + sibling-ordering the layered path already computes.
+export type GraphDirection = "down" | "right" | "radial";
 
 export interface GraphNode {
   id: string;
@@ -98,6 +101,63 @@ function layout<N extends GraphNode>(nodes: N[], nodeW: number, nodeH: number, d
   x.forEach((v) => { minX = Math.min(minX, v); maxX = Math.max(maxX, v); });
   if (!isFinite(minX)) { minX = 0; maxX = 0; }
 
+  const edges: { child: string; parent: string }[] = [];
+  nodes.forEach((n) => (parentsOf.get(n.id) ?? []).forEach((p) => edges.push({ child: n.id, parent: p })));
+
+  // Radial layout: same depth + relaxed sibling order as the layered path, but mapped through
+  // polar coordinates instead of a grid. Depth -> ring radius (deeper is further out); the node's
+  // position along the global sibling axis -> angle, so a node keeps the same angle as the branch
+  // above it and edges run roughly outward. Returns the same shape as the layered path so the
+  // viewport, fit-to-view, hover and edge drawing don't have to know which layout produced it.
+  if (direction === "radial") {
+    const span = maxX - minX;
+    // A gap left at the bottom of the circle so the widest ring's two ends (sibling axis min and
+    // max) don't land on the same angle and collide; the sweep is centred on straight up.
+    const ANGLE_SPAN = Math.PI * 2 * 0.94;
+    const RING_GAP = nodeW + 60;
+    const angleOf = (id: string) => {
+      // A lone column (or a single node) has no spread to speak of — send it straight up.
+      const frac = span > 1e-6 ? (x.get(id)! - minX) / span : 0.5;
+      return -Math.PI / 2 + (frac - 0.5) * ANGLE_SPAN;
+    };
+
+    // Each ring is at least `depth * RING_GAP` out, but is pushed further when a ring holds enough
+    // nodes that they wouldn't otherwise fit around it, and never allowed to reach or cross the ring
+    // inside it — so the rings stay concentric and in depth order however lopsided the tree is.
+    const ringRadius: number[] = [];
+    let prev = -Infinity;
+    layers.forEach((layer, depth) => {
+      const fit = layer.length > 1 ? (layer.length * (nodeW * 0.6)) / ANGLE_SPAN : 0;
+      let r = Math.max(depth * RING_GAP, fit);
+      if (r <= prev) r = prev + RING_GAP;
+      ringRadius[depth] = r;
+      prev = r;
+    });
+
+    const maxR = ringRadius.length ? ringRadius[ringRadius.length - 1] : 0;
+    const margin = 40;
+    const width = 2 * maxR + nodeW + 2 * margin;
+    const height = 2 * maxR + nodeH + 2 * margin;
+    const cx = width / 2;
+    const cy = height / 2;
+
+    const placed = new Map<string, Placed<N>>();
+    layers.forEach((layer, depth) => {
+      const r = ringRadius[depth];
+      layer.forEach((id) => {
+        const a = angleOf(id);
+        // Store the card's top-left, like the layered path, so the render code is identical.
+        placed.set(id, {
+          node: nodeById.get(id)!,
+          x: cx + r * Math.cos(a) - nodeW / 2,
+          y: cy + r * Math.sin(a) - nodeH / 2,
+        });
+      });
+    });
+
+    return { placed, edges, width, height, parentsOf, childrenOf };
+  }
+
   // Position/extent along the (continuous, post-relaxation) sibling axis vs. the (integer) depth
   // axis — each parameterized by whichever node dimension + gap governs spacing along the screen
   // axis it ends up on, which depends on `direction`.
@@ -119,9 +179,6 @@ function layout<N extends GraphNode>(nodes: N[], nodeW: number, nodeH: number, d
       });
     });
   });
-
-  const edges: { child: string; parent: string }[] = [];
-  nodes.forEach((n) => (parentsOf.get(n.id) ?? []).forEach((p) => edges.push({ child: n.id, parent: p })));
 
   const sExtent = siblingExtent(direction === "down" ? nodeW : nodeH, direction === "down" ? X_GAP : Y_GAP);
   const dExtent = depthExtent(direction === "down" ? nodeH : nodeW, direction === "down" ? Y_GAP : X_GAP);
@@ -279,18 +336,33 @@ export function GraphCanvas<N extends GraphNode>({
             const c = model.placed.get(e.child);
             const p = model.placed.get(e.parent);
             if (!c || !p) return null;
-            // Connects the child's edge facing its parent's generation to that edge of the
-            // parent: top->bottom when stacked vertically, left->right when stacked
-            // horizontally — an S-curve bulging along whichever axis separates generations.
-            const x1 = direction === "down" ? c.x + nodeWidth / 2 : c.x;
-            const y1 = direction === "down" ? c.y : c.y + nodeHeight / 2;
-            const x2 = direction === "down" ? p.x + nodeWidth / 2 : p.x + nodeWidth;
-            const y2 = direction === "down" ? p.y + nodeHeight : p.y + nodeHeight / 2;
             const hi = hover != null && (e.child === hover || e.parent === hover);
             const dim = connected != null && !hi;
-            const d = direction === "down"
-              ? `M ${x1} ${y1} C ${x1} ${(y1 + y2) / 2}, ${x2} ${(y1 + y2) / 2}, ${x2} ${y2}`
-              : `M ${x1} ${y1} C ${(x1 + x2) / 2} ${y1}, ${(x1 + x2) / 2} ${y2}, ${x2} ${y2}`;
+            let d: string;
+            if (direction === "radial") {
+              // Centre-to-centre, bowed toward the layout's centre so it reads as an arc following
+              // the rings rather than a chord cutting across them. The parent end is pulled back to
+              // that card's edge so the arrowhead lands on the card instead of under it.
+              const ccx = c.x + nodeWidth / 2, ccy = c.y + nodeHeight / 2;
+              const pcx = p.x + nodeWidth / 2, pcy = p.y + nodeHeight / 2;
+              const gx = model.width / 2, gy = model.height / 2;
+              const mx = (ccx + pcx) / 2, my = (ccy + pcy) / 2;
+              const qx = mx + (gx - mx) * 0.35, qy = my + (gy - my) * 0.35;
+              const dx = ccx - pcx, dy = ccy - pcy, len = Math.hypot(dx, dy) || 1;
+              const ex = pcx + (dx / len) * (nodeHeight / 2), ey = pcy + (dy / len) * (nodeHeight / 2);
+              d = `M ${ccx} ${ccy} Q ${qx} ${qy} ${ex} ${ey}`;
+            } else {
+              // Connects the child's edge facing its parent's generation to that edge of the
+              // parent: top->bottom when stacked vertically, left->right when stacked
+              // horizontally — an S-curve bulging along whichever axis separates generations.
+              const x1 = direction === "down" ? c.x + nodeWidth / 2 : c.x;
+              const y1 = direction === "down" ? c.y : c.y + nodeHeight / 2;
+              const x2 = direction === "down" ? p.x + nodeWidth / 2 : p.x + nodeWidth;
+              const y2 = direction === "down" ? p.y + nodeHeight : p.y + nodeHeight / 2;
+              d = direction === "down"
+                ? `M ${x1} ${y1} C ${x1} ${(y1 + y2) / 2}, ${x2} ${(y1 + y2) / 2}, ${x2} ${y2}`
+                : `M ${x1} ${y1} C ${(x1 + x2) / 2} ${y1}, ${(x1 + x2) / 2} ${y2}, ${x2} ${y2}`;
+            }
             const title = edgeTitle?.(c.node, p.node);
             return (
               <path key={i} className={`graph-edge${hi ? " hi" : ""}${dim ? " dim" : ""}`}

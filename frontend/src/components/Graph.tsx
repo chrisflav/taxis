@@ -50,7 +50,13 @@ function readGraphFiltersFromHash(): IssueFilterState {
 export function GraphView() {
   const [filters, setFilters] = useState<IssueFilterState>(readGraphFiltersFromHash);
   const [layoutMode, setLayoutMode] = useState<GraphMode>("dependencies");
+  // The overall shape to lay the graph out in. "layered" is the original top-down/left-right grid,
+  // where `direction` picks which way generations run; "radial" draws concentric rings and ignores
+  // `direction` (there is no up/down to a circle), which is why the Down/Right control is hidden for
+  // it. Kept separate from `direction` so switching back to layered restores the last direction.
+  const [shape, setShape] = useState<"layered" | "radial">("layered");
   const [direction, setDirection] = useState<GraphDirection>("down");
+  const canvasDirection: GraphDirection = shape === "radial" ? "radial" : direction;
   const [genFilter, setGenFilter] = useState<number[]>([]);
   const [showLabels, setShowLabels] = useState(false);
   const [showAssignees, setShowAssignees] = useState(false);
@@ -145,13 +151,23 @@ export function GraphView() {
             </button>
           </div>
           <div className="segmented">
-            <button className={direction === "down" ? "active" : ""} onClick={() => setDirection("down")} title="Parent on top, expand downward">
-              ⬇ Down
+            <button className={shape === "layered" ? "active" : ""} onClick={() => setShape("layered")} title="Generations in rows or columns">
+              Layered
             </button>
-            <button className={direction === "right" ? "active" : ""} onClick={() => setDirection("right")} title="Parent on the left, expand to the right">
-              ➡ Right
+            <button className={shape === "radial" ? "active" : ""} onClick={() => setShape("radial")} title="Generations on concentric rings around the centre">
+              ◎ Radial
             </button>
           </div>
+          {shape === "layered" && (
+            <div className="segmented">
+              <button className={direction === "down" ? "active" : ""} onClick={() => setDirection("down")} title="Parent on top, expand downward">
+                ⬇ Down
+              </button>
+              <button className={direction === "right" ? "active" : ""} onClick={() => setDirection("right")} title="Parent on the left, expand to the right">
+                ➡ Right
+              </button>
+            </div>
+          )}
           <div style={{ minWidth: 200 }}>
             <MultiSelect
               options={generationOptions}
@@ -172,6 +188,7 @@ export function GraphView() {
         {layoutMode === "dependencies"
           ? "Arrows point from an issue to the dependency it needs."
           : "Arrows point from a child issue to its parent."}{" "}
+        {shape === "radial" && "Roots sit at the centre and each generation rings further out. "}
         Scroll to zoom, drag to pan, hover to trace, click to open.
       </p>
 
@@ -185,7 +202,7 @@ export function GraphView() {
           nodes={nodes}
           nodeWidth={NODE_W}
           nodeHeight={nodeH}
-          direction={direction}
+          direction={canvasDirection}
           nodeClassName={(n) => n.issue.state}
           onNodeOpen={(n) => { window.location.hash = `#/issues/${n.issue.id}`; }}
           renderNode={(n) => (
