@@ -462,7 +462,13 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
           />
         )}
         {addingChild && (
-          <Modal title={`New child issue of #${issue.id}`} onClose={addChildClose.requestClose}>
+          <Modal title="New child issue" onClose={addChildClose.requestClose}>
+            {/* Say which issue this child lands under. The parent's title is already loaded for
+                this page, so naming it here — rather than a bare "#123" — spares the reader from
+                opening the modal unsure of where the new issue will be filed. */}
+            <div className="muted small" style={{ marginBottom: 12 }}>
+              Child of <span className="issue-ref-id">#{issue.id}</span> · <Markdown text={issue.title} inline />
+            </div>
             <IssueForm
               me={me}
               embedded
