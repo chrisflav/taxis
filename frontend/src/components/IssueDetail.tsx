@@ -469,13 +469,16 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
             <div className="muted small" style={{ marginBottom: 12 }}>
               Child of <span className="issue-ref-id">#{issue.id}</span> · <Markdown text={issue.title} inline />
             </div>
+            {/* Creating a child is a step in working *this* issue, so stay on it: `onDone` closes
+                the modal and reloads the children list, and the new child appears in the panel
+                above rather than yanking the reader off to a page they didn't ask for. */}
             <IssueForm
               me={me}
               embedded
               initialParent={issue.id}
               onCancel={addChildClose.requestClose}
               onDirtyChange={setAddChildDirty}
-              onDone={(newId) => { setAddingChild(false); window.location.hash = `#/issues/${newId}`; }}
+              onDone={() => { setAddingChild(false); childrenRes.reload(); }}
             />
           </Modal>
         )}
