@@ -36,6 +36,19 @@ export function peekCached<T>(key: string): T | undefined {
   return hit ? (hit.data as T) : undefined;
 }
 
+/** Replace the cached value for `key` without fetching it.
+ *
+ *  For the offline queue, and only for it: a write that could not be sent still has to be visible
+ *  to a reader who navigates away and comes back, and while there is no connection there is no
+ *  request that could tell them. Nothing else should write here — a cached entry is otherwise a
+ *  copy of what the server said, and the moment it stops being that it stops being a cache.
+ *
+ *  Deliberately silent: mounted components hold their own copy of what they read, so this changes
+ *  what the *next* read of the key sees and not what is currently on screen. */
+export function writeCached<T>(key: string, data: T): void {
+  entries.set(key, { data, at: Date.now() });
+}
+
 /** A request the page started before any of this code existed.
  *
  *  `index.html` fires the reads a route needs from an inline script, so they overlap the download
