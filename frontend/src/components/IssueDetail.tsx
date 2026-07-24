@@ -21,6 +21,7 @@ import { learnIssueNames, useIssueName, useKnownIssueName } from "../issueNames"
 import { IssueMultiPicker, IssueSelectPicker } from "./IssuePicker";
 import { fuzzyMatch } from "../fuzzy";
 import { ClockIcon, LockedMark, TrashIcon } from "./Icon";
+import type { CascadeState } from "./CascadeStateModal";
 
 // Everything behind a button loads when that button is pressed. None of it is reachable without a
 // deliberate action, and between them the three carry the whole issue-creation form and both
@@ -30,6 +31,10 @@ const AttachModal = lazy(() => import("./AttachModal").then((m) => ({ default: m
 const RequestReviewModal = lazy(() =>
   import("./AttachModal").then((m) => ({ default: m.RequestReviewModal })));
 const IssueForm = lazy(() => import("./IssueForm").then((m) => ({ default: m.IssueForm })));
+// Same reasoning, and it carries a request of its own: nobody who is merely reading an issue needs
+// the dialogue that asks about its children, nor the list it fetches to ask with.
+const CascadeStateModal = lazy(() =>
+  import("./CascadeStateModal").then((m) => ({ default: m.CascadeStateModal })));
 
 // Render a Unix (seconds) timestamp in the viewer's locale.
 function fmtTime(ts: number): string {
@@ -49,6 +54,8 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
   const [delArtifact, setDelArtifact] = useState<Artifact | null>(null);
   const [delCheck, setDelCheck] = useState<Check | null>(null);
   const [completeConfirm, setCompleteConfirm] = useState(false);
+  // The state a click asked for, held while the children prompt asks whether it should carry down.
+  const [cascade, setCascade] = useState<CascadeState | null>(null);
   const [addingChild, setAddingChild] = useState(false);
   const [addChildDirty, setAddChildDirty] = useState(false);
   const addChildClose = useConfirmClose(addChildDirty, () => setAddingChild(false));
@@ -136,6 +143,29 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
   const setState = (state: string) => { setActionError(null); patch({ state }).catch((e) => setActionError(String(e))); };
   const del = () => api.deleteIssue(id).then(() => (window.location.hash = "#/issues"));
 
+  // Set this issue's state, and the state of the children the prompt listed — there is no bulk
+  // endpoint, so a cascade is one request per child. `allSettled`, because a child that refuses the
+  // change (a check not passing, a lock, a visibility rule) is a fact about that child and not a
+  // reason to abandon the rest or the issue the reader actually clicked; the refusals are counted
+  // and said out loud instead. Only the listed children: the cascade never recurses into
+  // grandchildren, so nothing is written that the prompt did not show.
+  const applyState = (state: CascadeState, childIds: number[]) => {
+    setCascade(null);
+    setActionError(null);
+    Promise.allSettled(childIds.map((c) => api.updateIssue(c, { state })))
+      .then((rs) => rs.filter((r) => r.status === "rejected").length)
+      .then((failed) => api.updateIssue(id, { state })
+        .then(() => {
+          if (failed > 0) {
+            setActionError(
+              `${failed} of ${childIds.length} child issues could not be set to ${state}.`);
+          }
+        })
+        .catch((e) => setActionError(String(e))))
+      // Children may have changed even where the issue itself refused, so refresh either way.
+      .then(() => { load(); childrenRes.reload(); });
+  };
+
   const groupName = (g: number) => groups.find((x) => x.id === g)?.name ?? `#${g}`;
   const actorOf = (aid: number) => allActors.find((a) => a.id === aid);
   const labelName = (l: number) => allLabels.find((x) => x.id === l)?.name ?? `#${l}`;
@@ -151,6 +181,18 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
   // marking-as-completed just silently succeeding.
   const failingChecks = detail.attachedChecks.filter((c) => c.status !== "passing");
   const completionBlocked = failingChecks.length > 0 && !me?.admin;
+
+  // Whether finishing this issue leaves unfinished work filed under it — counted over every child
+  // by the server, not over the page the panel happens to hold. While that page is still in flight
+  // the answer reads as "none", which skips the prompt rather than disabling the button: the prompt
+  // is an offer to save the reader some clicks, and is not worth making them wait for.
+  const openChildCount = childrenRes.data?.stateCounts?.open
+    ?? children.filter((c) => c.state === "open").length;
+  // Complete and close both mean something for the children; reopening an issue claims nothing
+  // about them, so it goes straight through. Asked *after* the failing-checks bypass so the two
+  // questions queue rather than fight over the screen.
+  const requestStateChange = (state: CascadeState) =>
+    (openChildCount > 0 ? setCascade(state) : setState(state));
 
   const visibleGroups = me?.admin ? groups : groups.filter((g) => me?.groups.includes(g.id));
 
@@ -380,7 +422,7 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
                   <>
                     <button
                       className="primary"
-                      onClick={() => (failingChecks.length > 0 ? setCompleteConfirm(true) : setState("completed"))}
+                      onClick={() => (failingChecks.length > 0 ? setCompleteConfirm(true) : requestStateChange("completed"))}
                       disabled={completionBlocked}
                       title={completionBlocked
                         ? `Blocked: ${failingChecks.length} check(s) not passing (${failingChecks.map((c) => c.kind).join(", ")})`
@@ -388,7 +430,7 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
                     >
                       Complete
                     </button>
-                    <button onClick={() => setState("closed")}>Close without completing</button>
+                    <button onClick={() => requestStateChange("closed")}>Close without completing</button>
                   </>
                 ) : (
                   <button className="primary" onClick={() => setState("open")}>Reopen</button>
@@ -497,8 +539,16 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
             title="Complete with failing checks?"
             message={`${failingChecks.length} check(s) are not passing (${failingChecks.map((c) => c.kind).join(", ")}). As an admin you can bypass this and complete the issue anyway.`}
             confirmLabel="Complete anyway"
-            onConfirm={() => { setCompleteConfirm(false); setState("completed"); }}
+            onConfirm={() => { setCompleteConfirm(false); requestStateChange("completed"); }}
             onCancel={() => setCompleteConfirm(false)}
+          />
+        )}
+        {cascade && (
+          <CascadeStateModal
+            parent={issue.id}
+            state={cascade}
+            onApply={(childIds) => applyState(cascade, childIds)}
+            onCancel={() => setCascade(null)}
           />
         )}
         {confirmDelete && (
