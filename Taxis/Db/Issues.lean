@@ -505,38 +505,148 @@ def listIssuePage (db : Conn) (state : Option IssueState) (labelId : Option Labe
     pure (some (counts.open_ + counts.closed + counts.completed), some counts)
   pure { rows, nextCursor, total, stateCounts }
 
-/-- An issue reduced to what it takes to name it and to decide whether it may be seen. -/
-structure IssueIndexEntry where
-  id : IssueId
-  title : String
-  parent : Option IssueId
-  /-- The groups this issue is restricted to; empty means public. -/
-  visibility : Array GroupId
-
 private structure IndexRow where
   id : IssueId
   title : String
   parent : Option IssueId
 deriving SQLite.Row, Inhabited
 
-/-- Every issue, named. This backs `GET /issues/index`, which is read on essentially every page
-    load and needs three fields per issue.
+private def IndexRow.toEntry (r : IndexRow) : IssueIndexEntry :=
+  { id := r.id, title := r.title, parent := r.parent }
+
+/-- Issues, named. This backs `GET /issues/index`: three fields per issue, and no more.
 
     It has its own query rather than reducing `listIssues`, because reducing `listIssues` meant
     selecting every description and goal in the tracker — much the largest thing in the table — and
-    loading all six relation tables, in order to throw all of it away. Only visibility survives
-    besides the naming fields, and only because the caller has to filter on it. -/
-def listIssueIndex (db : Conn) : IO (Array IssueIndexEntry) := do
-  -- The same order `listIssues` returns, so the pickers and the `#123` autocomplete that read this
-  -- still offer recently-touched issues first.
-  let rows ← (← db query!"SELECT id, title, parent_id FROM issues
-    ORDER BY updated_at DESC, id DESC" as IndexRow).toArray
-  let visibility ← (← db query!"SELECT issue_id, group_id FROM issue_visibility
-    ORDER BY issue_id, group_id" as RelRow).toArray
-  let byIssue := groupRel visibility
+    loading all six relation tables, in order to throw all of it away.
+
+    `ids` and `q` are what keep it from being a copy of the tracker. Every caller wants either a
+    handful of issues it can already name by number (a parent, a set of dependencies, the `#123`s
+    in one comment) or the issues matching what somebody just typed into a picker; asking for
+    either costs what the answer costs. Unfiltered it still returns everything, which is what an
+    API client walking the tracker wants and what no page load should ever ask for.
+
+    `q` matches a title by substring, or an issue by its exact number. That is narrower than the
+    fuzzy matching this used to get in the browser, and reaches further: the fuzzy matching ran
+    over whatever slice of the tracker had been downloaded, and this runs over all of it.
+
+    Visibility is applied in SQL rather than over the result, so `limit` counts rows the caller may
+    actually see — a limit applied before the filter would silently return short pages. -/
+def listIssueIndex (db : Conn) (actorGroups : Option (Array GroupId))
+    (ids : Option (Array IssueId) := none) (q : Option String := none)
+    (limit : Option Nat := none) : IO (Array IssueIndexEntry) := do
+  -- An explicitly empty id set asks for nothing; `IN ()` is not valid SQL, and a query is not
+  -- needed to answer it.
+  if ids == some #[] then return #[]
+  let idSql := match ids with
+    | some arr => " AND i.id IN " ++ idTuple (arr.map (·.val))
+    | none => ""
+  let qTrimmed := q.map (·.trimAscii.toString)
+  let qlike := qTrimmed.map (fun s => "%" ++ s ++ "%")
+  -- `#123` in a picker is a search for issue 123, not for the digits in a title.
+  let qId := qTrimmed.bind (fun s => (s.dropWhile (· == '#')).toInt?) |>.map Int64.ofInt
+  -- SQLite reads a negative LIMIT as "no limit".
+  let lim : Int64 := match limit with | some n => Int64.ofNat n | none => -1
+  let stmt ← SQLite.prepare db (
+    "SELECT i.id, i.title, i.parent_id FROM issues i
+     WHERE (" ++ visibilitySql actorGroups ++ ")
+       AND (?1 IS NULL OR i.title LIKE ?1 OR i.id = ?2)" ++ idSql ++
+    -- The same order `listIssues` returns, so a picker offers recently-touched issues first.
+    s!" ORDER BY i.updated_at DESC, i.id DESC LIMIT {lim}")
+  SQLite.NullableQueryParam.bind stmt 1 qlike
+  SQLite.NullableQueryParam.bind stmt 2 qId
+  pure ((← (stmt.resultsAs IndexRow).toArray).map IndexRow.toEntry)
+
+/-- The containment path above `id`: its parent, its parent's parent, and so on, root first and
+    excluding `id` itself.
+
+    One statement rather than one query per step, and one response rather than the naming index of
+    the whole tracker, which is how the client used to answer this.
+
+    The recursion carries the visibility predicate, so it stops at the first ancestor the reader
+    may not see — the same trail the client drew when a parent was missing from its index, and for
+    the same reason: a breadcrumb that names an issue you cannot open is worse than a short one.
+    The depth bound is a guard against a cycle in the parent chain, which nothing should be able to
+    create (`createIssue`/`updateIssue` check) but which a chain-walking query must not hang on. -/
+def issueAncestors (db : Conn) (id : IssueId) (actorGroups : Option (Array GroupId)) :
+    IO (Array IssueIndexEntry) := do
+  let rows ← queryAll db IndexRow
+    ("WITH RECURSIVE chain(id, title, parent_id, depth) AS (
+        SELECT i.id, i.title, i.parent_id, 0 FROM issues i WHERE i.id = " ++ toString id.val ++ "
+        UNION ALL
+        SELECT i.id, i.title, i.parent_id, c.depth + 1
+          FROM issues i JOIN chain c ON i.id = c.parent_id
+         WHERE c.depth < 64 AND (" ++ visibilitySql actorGroups ++ ")
+      )
+      SELECT id, title, parent_id FROM chain WHERE depth > 0 ORDER BY depth DESC")
+  pure (rows.map IndexRow.toEntry)
+
+private structure GraphRow where
+  id : IssueId
+  title : String
+  state : IssueState
+  locked : Bool
+  parent : Option IssueId
+  deadline : Option Timestamp
+deriving SQLite.Row, Inhabited
+
+/-- Every visible issue as a graph node: the naming fields, the two edge relations, and the three
+    things a card shows.
+
+    Relations are read whole rather than scoped to the matched ids, unlike everywhere else: the
+    scope here *is* the whole table, and naming ten thousand ids in an `IN` list to say so would
+    cost more than the rows do.
+
+    A dependency on an issue the reader may not see is dropped rather than drawn, so the graph
+    never hints at what visibility hides — the same rule the edge list was filtered by before. -/
+def graphNodes (db : Conn) (actorGroups : Option (Array GroupId)) : IO (Array GraphNode) := do
+  let rows ← queryAll db GraphRow
+    ("SELECT i.id, i.title, i.state, i.locked, i.parent_id, i.deadline FROM issues i
+      WHERE (" ++ visibilitySql actorGroups ++ ")
+      ORDER BY i.updated_at DESC, i.id DESC")
+  let relAll (table col : String) : IO (Std.HashMap Int64 (Array Int64)) := do
+    pure (groupRel (← queryAll db RelRow
+      s!"SELECT issue_id, {col} FROM {table} ORDER BY issue_id, {col}"))
+  let labels ← relAll "issue_labels" "label_id"
+  let deps ← relAll "issue_dependencies" "depends_on_id"
+  let assignees ← relAll "issue_assignees" "actor_id"
+  let visibleIds : Std.HashSet Int64 := rows.foldl (fun s r => s.insert r.id.val) {}
   pure <| rows.map fun r =>
-    { id := r.id, title := r.title, parent := r.parent,
-      visibility := (byIssue.getD r.id.val #[]).map (⟨·⟩) }
+    let rel (m : Std.HashMap Int64 (Array Int64)) : Array Int64 := m.getD r.id.val #[]
+    { id := r.id, title := r.title, state := r.state, locked := r.locked,
+      parent := r.parent.filter (fun p => visibleIds.contains p.val),
+      labels := (rel labels).map (⟨·⟩),
+      dependencies := ((rel deps).filter visibleIds.contains).map (⟨·⟩),
+      assignees := (rel assignees).map (⟨·⟩),
+      deadline := r.deadline }
+
+private structure CountRow where
+  n : Int64
+deriving SQLite.Row, Inhabited
+
+/-- Where `id` sits among the issues sharing `parent`, and the two either side of it.
+
+    Four indexed statements over `idx_issues_parent`, each answering one question about a set the
+    caller never has to hold: how many siblings there are, which one this is, and the names of its
+    two neighbours. The alternative — listing the children and finding the issue in them — costs
+    the whole set to show two links. -/
+def issueSiblings (db : Conn) (id : IssueId) (parent : Option IssueId)
+    (actorGroups : Option (Array GroupId)) : IO SiblingNav := do
+  let some parentId := parent | return {}
+  let vis := visibilitySql actorGroups
+  let scope := s!"FROM issues i WHERE i.parent_id = {parentId.val} AND (" ++ vis ++ ")"
+  let count ← queryAll db CountRow ("SELECT COUNT(*) " ++ scope)
+  let position ← queryAll db CountRow ("SELECT COUNT(*) " ++ scope ++ s!" AND i.id <= {id.val}")
+  let neighbour (cmp order : String) : IO (Option IssueIndexEntry) := do
+    let rows ← queryAll db IndexRow
+      ("SELECT i.id, i.title, i.parent_id " ++ scope ++ s!" AND i.id {cmp} {id.val}
+        ORDER BY i.id {order} LIMIT 1")
+    pure (rows[0]?.map IndexRow.toEntry)
+  pure {
+    position := (position[0]?.map (·.n.toNatClampNeg)).getD 0
+    count := (count[0]?.map (·.n.toNatClampNeg)).getD 0
+    prev := ← neighbour "<" "DESC"
+    next := ← neighbour ">" "ASC" }
 
 /-- Create an issue with its relations, attributed to `creatorId`. The creator and every assignee
     automatically participate (get notified of future activity). May raise a validation error on
@@ -615,7 +725,8 @@ def deleteIssue (db : Conn) (id : IssueId) : IO Bool := do
   let removed ← (← db query!"DELETE FROM issues WHERE id = {id} RETURNING id" as IssueId).toArray
   pure !removed.isEmpty
 
-/-- All dependency edges in the tracker, as `(issue, dependsOn)` id pairs. Used for the graph. -/
+/-- All dependency edges in the tracker, as `(issue, dependsOn)` id pairs. The graph reads them off
+    the nodes (see `graphNodes`); this remains the direct way to ask the relation a question. -/
 def allDependencyEdges (db : Conn) : IO (Array (IssueId × IssueId)) := do
   (← db query!"SELECT issue_id, depends_on_id FROM issue_dependencies" as (IssueId × IssueId)).toArray
 

@@ -176,15 +176,32 @@ def issuePageH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
     ("total", match page.total with | some t => toJson t | none => Json.null),
     ("stateCounts", match page.stateCounts with | some c => toJson c | none => Json.null)])
 
-/-- The lightweight issue index: only what the breadcrumb trail and the issue-picker dropdowns
-    need to name an issue (`id`, `title`, `parent`). Views that filter server-side no longer hold
-    every issue, but still have to render an ancestor chain or offer any issue as a parent — this
-    is what they read instead of pulling the whole list back. -/
+/-- The default and maximum number of matches a search of the index returns. A picker shows a
+    dozen rows and nobody scrolls a thousand; past this the answer is "type more", not "send
+    more". -/
+private def indexSearchLimit : Nat := 50
+private def indexSearchMaxLimit : Nat := 200
+
+/-- The lightweight issue index: what it takes to *name* an issue (`id`, `title`, `parent`), for
+    the breadcrumb trails, the pickers and the `#123` references that need nothing else.
+
+    `?ids=1,2,3` names a known handful; `?q=…` searches the tracker for a picker; unfiltered it
+    still returns everything, which is a deliberate walk rather than a page load. Nothing on the
+    critical path of a page reads it unfiltered — that is what made it the largest thing a page
+    load transferred, at 140 KB gzipped on a ten-thousand-issue tracker, on every route. -/
 def issueIndexH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
-  let entries ← ctx.readM Db.listIssueIndex
-  let rows := (entries.filter (fun e => visibleToGroups req.actor e.visibility)).map fun e =>
-    Json.mkObj [("id", toJson e.id), ("title", toJson e.title), ("parent", toJson e.parent)]
-  ok (Json.arr rows)
+  let ids := (req.query "ids").map fun s =>
+    ((s.splitOn ",").filterMap (fun p => p.trimAscii.toString.toInt?)).toArray.map
+      (fun n => (⟨Int64.ofInt n⟩ : IssueId))
+  let q := (req.query "q").filter (!·.trimAscii.isEmpty)
+  -- A search is capped whether or not the caller thought to ask for a cap; an unfiltered read is
+  -- not, because that is a client walking the tracker deliberately rather than drawing a page.
+  let limit := match (req.query "limit").bind (·.toNat?), q with
+    | some n, _ => some (min indexSearchMaxLimit n)
+    | none, some _ => some indexSearchLimit
+    | none, none => none
+  let entries ← ctx.readM (Db.listIssueIndex · (req.actor.map (·.groups)) ids q limit)
+  ok (toJson entries)
 
 /-- A non-admin actor may only restrict visibility to groups they belong to. -/
 private def ensureVisibilityAllowed (actor : Actor) (vis : Array GroupId) : ApiM Unit := do
@@ -206,11 +223,17 @@ def toArtifactView (a : Artifact) : IO ArtifactView := do
     | none => pure { label := a.payload.compress }
   pure { id := a.id, kind := a.kind, payload := a.payload, display }
 
-/-- Assemble the expanded detail view of an issue. -/
-private def loadDetail (db : Db.Conn) (id : IssueId) (actorId : Option ActorId) : IO (Option IssueDetail) := do
+/-- Assemble the expanded detail view of an issue.
+
+    The ancestor chain and the sibling neighbours are part of the response because the page draws
+    them: leaving them out is what made every issue page fetch a naming index of the entire
+    tracker, and both are bounded — a chain is a handful of rows and the neighbours are two. -/
+private def loadDetail (db : Db.Conn) (id : IssueId) (actor : Option Actor) : IO (Option IssueDetail) := do
   match ← Db.getIssue db id with
   | none => pure none
   | some issue =>
+    let actorId := actor.map (·.id)
+    let groups := actor.map (·.groups)
     let assignedActors ← issue.assignees.filterMapM (Db.getActor db ·)
     let issueLabels ← issue.labels.filterMapM (Db.getLabel db ·)
     let attachedArtifacts ← (← Db.issueArtifacts db id).mapM toArtifactView
@@ -221,15 +244,26 @@ private def loadDetail (db : Db.Conn) (id : IssueId) (actorId : Option ActorId) 
       | some a => Db.isParticipant db id a
       | none => pure false
     let reviewRequests ← Db.issueReviewRequests db id
-    pure (some { issue, assignedActors, issueLabels, attachedArtifacts, attachedChecks, comments, events, participating, reviewRequests })
+    let ancestors ← Db.issueAncestors db id groups
+    let siblings ← Db.issueSiblings db id issue.parent groups
+    pure (some { issue, assignedActors, issueLabels, attachedArtifacts, attachedChecks, comments,
+                 events, participating, reviewRequests, ancestors, siblings })
 
 def getIssueH (ctx : AppContext) (id : Int64) (actor : Option Actor) : ApiM ApiResponse := do
-  match ← ctx.readM (loadDetail · ⟨id⟩ (actor.map (·.id))) with
+  match ← ctx.readM (loadDetail · ⟨id⟩ actor) with
   | some d =>
     -- Hide non-visible issues as if they did not exist.
     if visibleTo actor d.issue then ok (toJson d)
     else fail (.notFound s!"issue {id} not found")
   | none => fail (.notFound s!"issue {id} not found")
+
+/-- The containment path above an issue, root first, excluding the issue itself.
+
+    Its own route as well as a field on the detail response, because the issue list needs it for an
+    issue it is not otherwise reading: filtered to one parent's children, the trail names the chain
+    down to that parent. -/
+def issueAncestorsH (ctx : AppContext) (id : Int64) (actor : Option Actor) : ApiM ApiResponse := do
+  ok (toJson (← ctx.readM (Db.issueAncestors · ⟨id⟩ (actor.map (·.groups)))))
 
 /-- Issue #3: an issue may not be marked completed while it has non-passing checks, unless an
     admin bypasses it. -/
@@ -407,20 +441,18 @@ def runCheckH (ctx : AppContext) (id : Int64) : ApiM ApiResponse := do
 
 /-! ## Graph -/
 
+/-- Every visible issue as a graph node, with both edge relations carried on the nodes themselves.
+
+    The graph view read `GET /issues?summary=1` instead of this, which is how it came to transfer
+    340 KB gzipped at ten thousand issues to draw cards that show a number, a title, a state and
+    optionally a label and an assignee. A node here carries that and the two relations the layout
+    needs, and nothing else.
+
+    The separate edge list is gone with it: `dependencies` on a node says the same thing, and
+    saying it twice is bytes on a payload whose whole problem was its size. -/
 def graphH (ctx : AppContext) (actor : Option Actor) : ApiM ApiResponse := do
-  let (issues, edges) ← ctx.readM (fun db => do
-    let issues ← Db.listIssues db none none none none
-    let edges ← Db.allDependencyEdges db
-    pure (issues, edges))
-  let visible := issues.filter (visibleTo actor)
-  let visibleIds : Std.HashSet Int64 := visible.foldl (fun s i => s.insert i.id.val) {}
-  let nodes := visible.map fun i =>
-    Json.mkObj [("id", toJson i.id), ("title", i.title), ("state", toJson i.state), ("labels", toJson i.labels)]
-  -- Edges are dependency edges: `issue` depends on `dependsOn`.
-  let edgeJson := (edges.filter fun (iss, dep) =>
-      visibleIds.contains iss.val && visibleIds.contains dep.val).map fun (iss, dep) =>
-    Json.mkObj [("issue", toJson iss), ("dependsOn", toJson dep)]
-  ok (Json.mkObj [("nodes", Json.arr nodes), ("edges", Json.arr edgeJson)])
+  let nodes ← ctx.readM (Db.graphNodes · (actor.map (·.groups)))
+  ok (Json.mkObj [("nodes", toJson nodes)])
 
 /-! ## Repository graph -/
 
@@ -907,6 +939,7 @@ def dispatch (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
   | .post, ["repo-graph", "refresh"] => repoGraphRefreshH
 
   | .get, ["me"] => meH req
+  | .get, ["session"] => sessionH ctx req
   | .get, ["auth", "google", "login"] => googleLoginH ctx
   | .get, ["auth", "google", "callback"] => googleCallbackH ctx req
   | .get, ["auth", "github", "login"] => githubLoginH ctx
@@ -942,6 +975,7 @@ def dispatch (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
   | .get, ["issues", "index"] => issueIndexH ctx req
   | .get, ["issues", "page"] => issuePageH ctx req
   | .get, ["issues", id] => getIssueH ctx (← Req.parseId id) req.actor
+  | .get, ["issues", id, "ancestors"] => issueAncestorsH ctx (← Req.parseId id) req.actor
   | .patch, ["issues", id] => updateIssueH ctx (← Req.parseId id) req
   | .delete, ["issues", id] => deleteIssueH ctx (← Req.parseId id)
   | .get, ["issues", id, "events"] => listEventsH ctx (← Req.parseId id) req.actor

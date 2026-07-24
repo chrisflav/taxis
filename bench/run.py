@@ -54,23 +54,28 @@ DEFAULT_SIZES = [100, 1000, 10000]
 # `#/repos` is deliberately absent: building that graph reads package manifests over the network,
 # so it is neither reproducible nor available to a CI runner without egress.
 ROUTES = {
-    # What blocks the first row appearing. The list reads one page and draws it; the rest of the
-    # feed arrives afterwards and is measured separately, under "feed".
+    # What blocks the first row appearing. The list reads one page and draws it; further pages are
+    # fetched only when the reader pages forward, and are measured separately under "feed".
+    #
+    # No naming index anywhere below. It used to be on every one of these routes and was 140 KB
+    # gzipped of the 148 KB the issue list cost -- an index of every issue's title, to draw a
+    # breadcrumb and fill a picker nobody had opened. Names are now asked for by id or searched for.
     "#/issues": [
-        "/api/labels", "/api/actors", "/api/issues/index",
-        "/api/issues/page?limit=200&state=open", "/api/me", "/api/health",
+        "/api/labels", "/api/actors",
+        "/api/issues/page?limit=200&state=open", "/api/session",
     ],
+    # `/plugins` and `/groups` are gone from here: they describe the attachment dialogues and the
+    # visibility editor, neither of which is on the page until somebody opens one.
     "#/issues/{id}": [
-        "/api/labels", "/api/actors", "/api/issues/index",
+        "/api/labels", "/api/actors",
         "/api/issues/{id}", "/api/issues/page?parent={id}&limit=100",
-        "/api/plugins", "/api/groups", "/api/me", "/api/health",
+        "/api/session",
     ],
     "#/graph": [
-        "/api/labels", "/api/actors", "/api/issues/index",
-        "/api/issues?summary=1", "/api/me", "/api/health",
+        "/api/labels", "/api/actors", "/api/graph", "/api/session",
     ],
     "#/labels": [
-        "/api/labels", "/api/actors", "/api/issues/index", "/api/me", "/api/health",
+        "/api/labels", "/api/actors", "/api/session",
     ],
 }
 
@@ -78,13 +83,17 @@ ROUTES = {
 # Must match `useIssueFeed.ts`: the benchmark is measuring what the application actually does.
 FEED_PAGE_SIZE = 200
 FEED_CAP = 5000
+# How far the list pages ahead of what it shows -- `rowsNeeded` in IssueList.tsx, for the default
+# page size of 25 on the first page. The feed stops there until the reader moves.
+FEED_ROWS_WANTED = 2 * 25
 
 TIMED = [
     "/api/issues/page?limit=200&state=open",
     "/api/issues/index",
-    "/api/issues?summary=1",
-    "/api/issues?summary=1&state=open",
+    "/api/issues/index?q=proof&limit=50",
     "/api/issues/{id}",
+    "/api/issues/{id}/ancestors",
+    "/api/issues?summary=1",
     "/api/graph",
 ]
 
@@ -210,9 +219,9 @@ def measure_size(binary: str, seeder: str, size: int, samples: int) -> dict:
                                  name: round(model_ms(len(paths), gz, bw, rtt), 1)
                                  for name, (bw, rtt) in PROFILES.items()}}
 
-        # The background feed: how much the list pulls after its first page, and in how many
-        # requests. Bounded by the client's own cap, which is what keeps this from growing without
-        # limit as the tracker does.
+        # The feed: how much the list pulls after its first page, and in how many requests.
+        # Bounded by what the table is showing rather than by the size of the tracker -- the client
+        # asks for the page it draws plus one page of slack, and stops.
         feed = {"requests": 1, "gzip": 0, "rows": 0}
         cur, rows = None, 0
         while True:
@@ -225,7 +234,7 @@ def measure_size(binary: str, seeder: str, size: int, samples: int) -> dict:
             feed["gzip"] += n
             got = len(body["issues"])
             rows += got
-            if not body["nextCursor"] or got == 0 or rows >= FEED_CAP:
+            if not body["nextCursor"] or got == 0 or rows >= FEED_CAP or rows >= FEED_ROWS_WANTED:
                 break
             cur, feed["requests"] = body["nextCursor"], feed["requests"] + 1
         feed["rows"] = rows

@@ -228,6 +228,22 @@ def meH (req : Req) : ApiM ApiResponse := do
   | some a => ok (toJson a)
   | none => fail (.unauthorized "not authenticated")
 
+/-- Who you are and how you could sign in, in one answer.
+
+    A page load needs both and used to ask twice — `/me` for the actor and `/health` for which
+    sign-in methods exist — which is two of the six connections a browser will open to one origin,
+    spent on 137 bytes. They are one question ("what should the account corner of the bar show?")
+    and this answers it.
+
+    Unlike `/me` it succeeds when nobody is signed in: `actor` is then `null`, which is an answer
+    rather than an error, and the sign-in buttons are precisely what an anonymous reader needs. -/
+def sessionH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
+  ok (Json.mkObj [
+    ("actor", match req.actor with | some a => toJson a | none => Json.null),
+    ("centralPasswordEnabled", Json.bool ctx.config.centralPassword.isSome),
+    ("googleEnabled", Json.bool ctx.config.googleClientId.isSome),
+    ("githubEnabled", Json.bool ctx.config.githubClientId.isSome)])
+
 /-- Destroy the current session. -/
 def logoutH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
   match req.sessionToken with
