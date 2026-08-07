@@ -44,13 +44,13 @@ function AccountMenu({ me, onChange }: { me: Actor; onChange: () => void }) {
           </div>
           <a role="menuitem" href="#/tokens" onClick={() => setOpen(false)}>API tokens</a>
           {me.admin && <a role="menuitem" href="#/admin" onClick={() => setOpen(false)}>Admin</a>}
-          {isNativeApp && <a role="menuitem" href="#/connect" onClick={() => setOpen(false)}>Server</a>}
+          {isNativeApp && <a role="menuitem" href="#/servers" onClick={() => setOpen(false)}>Servers</a>}
           <a role="menuitem" href={api.docsUrl} target="_blank" rel="noreferrer">API reference ↗</a>
           {/* Signing out of the packaged app means giving up its token, which is a property of the
               connection rather than of a session — so it lives on the same screen the token was
               entered on, next to the server it belongs to. */}
           {isNativeApp
-            ? <a role="menuitem" href="#/connect" onClick={() => setOpen(false)}>Sign out…</a>
+            ? <a role="menuitem" href="#/servers" onClick={() => setOpen(false)}>Sign out…</a>
             : <button role="menuitem" onClick={() => { setOpen(false); api.logout().then(onChange); }}>Sign out</button>}
         </div>
       )}
@@ -72,7 +72,7 @@ export function LoginBar({ me, auth, onChange }: { me: Actor | null; auth: Sessi
   // requests — showing the buttons would be offering three things that cannot work. It carries an
   // API token instead, and that is entered on the connect screen.
   if (isNativeApp) {
-    return <a href="#/connect"><button>Sign in</button></a>;
+    return <a href="#/servers"><button>Sign in</button></a>;
   }
 
   const googleEnabled = !!auth?.googleEnabled;

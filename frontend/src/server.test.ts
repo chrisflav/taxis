@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isPrivateHost, normalizeServerUrl } from "./server";
+import { isPrivateHost, normalizeServerUrl } from "./serverList";
 
 /**
  * `normalizeServerUrl` is the packaged app's front door: everything it reads and writes goes to

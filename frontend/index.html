@@ -48,9 +48,19 @@
         var packaged = !!(window.Capacitor && window.Capacitor.isNativePlatform
           && window.Capacitor.isNativePlatform());
         try {
-          base = localStorage.getItem("taxis.serverUrl") || "";
-          token = localStorage.getItem("taxis.apiToken");
-        } catch (e) { /* private mode */ }
+          // The active entry of the same store `server.ts` keeps, read by hand because this runs
+          // before any module has. Anything unexpected in there means "no server yet", which is a
+          // reason to prefetch nothing rather than to guess.
+          var store = JSON.parse(localStorage.getItem("taxis.servers") || "null");
+          var active = store && (store.servers || []).filter(function (s) { return s.url === store.active; })[0];
+          if (active) { base = active.url; token = active.token; }
+          // A single-server install that has not been migrated yet — `server.ts` does that on its
+          // first read, which has not happened at this point on the very first launch after an update.
+          if (!base) {
+            base = localStorage.getItem("taxis.serverUrl") || "";
+            token = localStorage.getItem("taxis.apiToken");
+          }
+        } catch (e) { /* private mode, or storage this build does not understand */ }
         if (packaged && !base) return;
         function get(path) {
           if (preload[path]) return;

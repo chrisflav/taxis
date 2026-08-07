@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { dropCached, invalidateCache, peekCached, writeCached } from "./cache";
-import { apiBase, authHeaders, onServerChange, requestCredentials } from "./server";
+import { apiBase, authHeaders, onServerForgotten, requestCredentials, serverScope } from "./server";
 import type { Issue, IssueDetail } from "./types";
 
 // Offline editing: where a write goes when there is no server to send it to.
@@ -63,9 +63,18 @@ const BASE = (): string => apiBase();
 /** Where the queue lives between sessions. Versioned in the name so a future change of shape can
     ignore what an older build wrote rather than trying to understand it — which is what the bump
     to v2 is: v1 entries carry no actor and no `uncertain` flag, and the whole point of both is that
-    an op without them cannot be replayed safely. */
-const QUEUE_KEY = "taxis:offline-queue:v2";
-const CONFLICT_KEY = "taxis:offline-conflicts:v2";
+    an op without them cannot be replayed safely.
+
+    Suffixed by the server, because a queued `PATCH /issues/12` is a change to issue 12 *on the
+    tracker it was made against*, and the packaged app moves between several. Sending it to another
+    would edit an unrelated issue that happens to share a number. In a browser the suffix is empty
+    and these are byte-for-byte the keys they always were, so a returning reader's unsent work is
+    still theirs. */
+const QUEUE_BASE = "taxis:offline-queue:v2";
+const CONFLICT_BASE = "taxis:offline-conflicts:v2";
+
+const queueKey = (scope: string = serverScope()): string => QUEUE_BASE + scope;
+const conflictKey = (scope: string = serverScope()): string => CONFLICT_BASE + scope;
 
 /** What kind of interaction a queued request is. Kept alongside the method and path because the
     replay treats them differently — only a patch has a version to check, only a delete is content
@@ -309,8 +318,8 @@ function persist(): void {
     conflicts = conflicts.slice(conflicts.length - MAX_CONFLICTS);
   }
   try {
-    localStorage.setItem(QUEUE_KEY, JSON.stringify(queue));
-    localStorage.setItem(CONFLICT_KEY, JSON.stringify(conflicts));
+    localStorage.setItem(queueKey(), JSON.stringify(queue));
+    localStorage.setItem(conflictKey(), JSON.stringify(conflicts));
     storageFailed = false;
   } catch {
     // Storage full, or blocked. The queue still works for this session; it just will not survive a
@@ -549,18 +558,33 @@ export function discardQueued(opId: string): void {
   notify();
 }
 
-/** Throw away every queued write and every unresolved conflict.
+/** How much unsent work a server is holding, for the interface that offers to forget it.
  *
- *  Not an undo button — there is deliberately no interface for this. It exists for the one event
- *  that makes the queue meaningless rather than merely unwanted: the packaged app being pointed at
- *  a *different server*. A queued `PATCH /issues/12` is a change to issue 12 on the tracker it was
- *  made against, and replaying it somewhere else would edit an unrelated issue that happens to
- *  share a number. Since the queue cannot be sent where it belongs any more, the only honest thing
- *  left is to drop it — which is why switching servers is a confirmed action that says so. */
-export function discardAllQueuedWork(): void {
+ *  Reads the stored queue for a server that is *not* the current one, which is the only way to
+ *  answer "removing this will lose N changes" — the in-memory queue is the active server's. */
+export function queuedCountFor(scope: string): number {
+  return readStored(queueKey(scope), isQueuedOp).length;
+}
+
+/** Drop everything queued against one server, because that server has been forgotten.
+ *
+ *  Not an undo button — there is deliberately no interface for discarding the *current* server's
+ *  queue. This exists for the one event that leaves a queue with nowhere to go: the entry it was
+ *  scoped to being removed. Up to that point a queue simply waits, including while the app is
+ *  showing a different tracker, because each one is stored under its own key.
+ *
+ *  Takes the scope rather than reading the current one: by the time this runs the entry is being
+ *  removed, and it may or may not be the active one. */
+export function forgetQueueFor(scope: string): void {
+  try {
+    localStorage.removeItem(queueKey(scope));
+    localStorage.removeItem(conflictKey(scope));
+  } catch {
+    /* Storage is unavailable; there was nothing persisted to remove. */
+  }
+  if (scope !== serverScope()) return;
   queue = [];
   conflicts = [];
-  persist();
   invalidateCache();
   notify();
 }
@@ -807,12 +831,14 @@ function afterPageLoad(fn: () => void): void {
 }
 
 if (typeof window !== "undefined") {
-  queue = readStored(QUEUE_KEY, isQueuedOp);
-  conflicts = readStored(CONFLICT_KEY, isConflict);
+  queue = readStored(queueKey(), isQueuedOp);
+  conflicts = readStored(conflictKey(), isConflict);
   rebuild();
 
-  // The queue is scoped to a server as well as to an actor: see `discardAllQueuedWork`.
-  onServerChange(discardAllQueuedWork);
+  // Switching servers no longer costs anybody their unsent work — each tracker keeps its own
+  // queue, under its own key. Removing one is different: there is then nowhere left to send what
+  // was queued against it, so it goes with it.
+  onServerForgotten(forgetQueueFor);
 
   // Set unconditionally, not only when there is a queue to send: a session that starts with an
   // empty queue and fills one later still needs the gate open. With nothing queued this costs the

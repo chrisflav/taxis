@@ -106,13 +106,17 @@ Two things differ between the page a taxis server serves and the app on a phone,
 [`frontend/src/server.ts`](frontend/src/server.ts):
 
 - **Where the server is.** In a browser the app was served *by* the tracker, so the API is at
-  `/api` on its own origin. Packaged, it has to be told which tracker it belongs to — that is the
-  connect screen, and it is the only screen that exists solely in the app.
+  `/api` on its own origin. Packaged, it has to be told — and since a phone is one device used
+  against several trackers, it keeps a **list** of them with one current. That is the **Servers**
+  screen (the account menu, or the tracker's name next to the wordmark), and it is the only screen
+  that exists solely in the app. Switching is one tap; each entry keeps its own token and its own
+  queue of unsent changes, so moving between two trackers never costs you work on either.
 - **How it authenticates.** In a browser, the session cookie the server set. Packaged, requests are
   cross-origin, and the server's `Access-Control-Allow-Origin: *` cannot be combined with
   credentials — so the app carries an **API token** (**Tokens** in the web UI) as
-  `Authorization: Bearer`. The OAuth and password sign-ins all end in a cookie on the server's
-  origin, which an app running from your device could never send back, so it does not offer them.
+  `Authorization: Bearer`, one per server — a token is issued by one tracker and means nothing to
+  another. The OAuth and password sign-ins all end in a cookie on the server's origin, which an app
+  running from your device could never send back, so it does not offer them.
 
 With no token the app still works, read-only: taxis lets anyone read.
 

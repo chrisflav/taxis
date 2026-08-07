@@ -3,7 +3,7 @@ import type { Actor, Session } from "./types";
 import { api, paths } from "./api";
 import { cachedGet, invalidateCache } from "./cache";
 import { setCurrentActor } from "./offline";
-import { isConfigured } from "./server";
+import { activeServer, isConfigured, isNativeApp } from "./server";
 import { IssueList } from "./components/IssueList";
 import { LoginBar } from "./components/Login";
 import { NotificationBell } from "./components/NotificationBell";
@@ -32,8 +32,8 @@ const IssueForm = lazy(() => import("./components/IssueForm").then((m) => ({ def
 // data is prefetched from the URL before React mounts, so the chunk arrives alongside the response
 // it will render rather than after it.
 const IssueDetail = lazy(() => import("./components/IssueDetail").then((m) => ({ default: m.IssueDetail })));
-// Only the packaged app has a server to choose, so in a browser this chunk is never fetched.
-const ServerConnect = lazy(() => import("./components/ServerConnect").then((m) => ({ default: m.ServerConnect })));
+// Only the packaged app has servers to choose between, so in a browser this chunk is never fetched.
+const Servers = lazy(() => import("./components/Servers").then((m) => ({ default: m.Servers })));
 
 // The same mark as the favicon, so the tab and the page agree on what this is. Drawn here rather
 // than loaded from /icon.svg: it is smaller inline than the request would be.
@@ -143,8 +143,8 @@ export function App() {
   // Before the packaged app knows which tracker it belongs to there is nothing any other view could
   // read, so this one stands in for all of them rather than every view learning to say "not
   // configured". In a browser `isConfigured()` is true from the first frame and this never fires.
-  if (!isConfigured()) view = <ServerConnect />;
-  else if (top === "connect") view = <ServerConnect />;
+  if (!isConfigured()) view = <Servers />;
+  else if (top === "servers" || top === "connect") view = <Servers />;
   else if (top === "graph") view = <GraphView />;
   else if (top === "repos") view = <RepoGraphView />;
   else if (top === "labels") view = <LabelsPage me={me} />;
@@ -185,6 +185,15 @@ export function App() {
             <Turnstile />
             <span>taxis</span>
           </a>
+          {/* Which tracker you are looking at. Only in the packaged app, and only once there is
+              more than nothing to say: on the web the answer is "the one that served this page",
+              which the address bar already gives you. It doubles as the way to the switcher, since
+              the name of the thing you want to change is the obvious thing to press. */}
+          {isNativeApp && activeServer() && (
+            <a className="server-tag" href="#/servers" title={activeServer()!.url}>
+              {activeServer()!.label}
+            </a>
+          )}
           {/* Every destination in the bar is a view of a tracker, so until the packaged app has one
               the bar carries the wordmark and the theme toggle and nothing else — four links that
               would each land on the same "connect first" screen are four ways of not saying it. */}

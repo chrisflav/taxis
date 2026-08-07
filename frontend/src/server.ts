@@ -1,20 +1,22 @@
 /**
- * Where the API is, and how this build proves who it is.
+ * Which taxis this app is talking to, and how it proves who it is.
  *
  * The web app and the packaged app are the same application — same components, same views, same
  * offline queue. Exactly two things differ between them, and both are answered here:
  *
  *   - **Where the server is.** In a browser the app is served *by* the server, so the API is at
  *     `/api` on its own origin and there is nothing to configure. Packaged, the app is served from
- *     the device, so it has to be told which taxis it belongs to.
+ *     the device, so it has to be told which taxis it belongs to — and, since a phone is one device
+ *     used against several trackers, it holds a *list* of them and one that is current.
  *   - **How it authenticates.** In a browser that is the session cookie the server set, and it
  *     rides along on its own. Packaged, requests are cross-origin: the server answers with
  *     `Access-Control-Allow-Origin: *`, which the fetch spec forbids combining with credentials,
  *     and a `SameSite=Lax` cookie would not be sent cross-site anyway. So the packaged app carries
  *     an API token — the same personal access token a bot uses, minted under **Tokens** in the web
- *     UI — as `Authorization: Bearer`.
+ *     UI — as `Authorization: Bearer`. Each server has its own, because a token is issued by one
+ *     tracker and means nothing to another.
  *
- * Everything above `api.ts` is unaware of the distinction, which is the point.
+ * Everything above `api.ts` is unaware of all of it, which is the point.
  */
 
 declare global {
@@ -26,18 +28,54 @@ declare global {
 /**
  * Whether this is the packaged app rather than a page served by a taxis server.
  *
- * Two signals, because neither alone is enough. The build flag is set by `npm run build:app` and is
- * true for every packaged build whether or not the native bridge has finished setting itself up;
- * the runtime check catches a Capacitor shell running a bundle that was not built for it (`cap run`
- * against a plain `npm run build`), which would otherwise look like a browser and go looking for an
- * API on the device.
+ * Answered at build time in both real builds, and that is the point rather than an optimisation.
+ * Vite substitutes the flag as a literal, so each branch below collapses to a constant and the
+ * bundler deletes the other side: the web build carries none of the server list, the migration or
+ * the switcher — several kilobytes of a chunk every page load waits for, in aid of a screen a
+ * browser can never reach. The packaged build likewise carries no "am I packaged" test.
+ *
+ * The runtime check is the fallback for the one case with no flag: `npm run dev`, or a Capacitor
+ * shell running a bundle that was not built for it, which would otherwise look like a browser and
+ * go looking for an API on the device. It is also what the tests use to exercise both builds.
  */
-export const isNativeApp: boolean =
-  (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_TAXIS_PACKAGED === "1" ||
-  (typeof window !== "undefined" && window.Capacitor?.isNativePlatform?.() === true);
+const PACKAGED_FLAG = (import.meta as unknown as { env?: Record<string, string> }).env
+  ?.VITE_TAXIS_PACKAGED;
 
-const SERVER_KEY = "taxis.serverUrl";
-const TOKEN_KEY = "taxis.apiToken";
+export const isNativeApp: boolean =
+  PACKAGED_FLAG === "1"
+    ? true
+    : PACKAGED_FLAG === "0"
+      ? false
+      : typeof window !== "undefined" && window.Capacitor?.isNativePlatform?.() === true;
+
+/**
+ * One tracker the app knows about.
+ *
+ * The **URL is the identity**. Two entries for one origin would be two names for one tracker, and
+ * everything scoped to a server — its token, its queue of unsent writes — is scoped by where it is.
+ * Editing an entry's address therefore makes it a different server, which is the honest reading:
+ * work queued against the old address was queued against a different tracker.
+ */
+export interface ServerProfile {
+  /** Normalised origin, e.g. `https://taxis.example.org` or `http://192.168.1.10:8080`. */
+  url: string;
+  /** What to call it in the switcher. Defaults to the host. */
+  label: string;
+  /** The API token used against this server, or null to browse it read-only. */
+  token: string | null;
+}
+
+export interface ServerStore {
+  v: 2;
+  servers: ServerProfile[];
+  /** The `url` of the current server, or null before one is chosen. */
+  active: string | null;
+}
+
+const STORE_KEY = "taxis.servers";
+/** The single-server keys this replaced; read once, to migrate, then removed. */
+const V1_SERVER_KEY = "taxis.serverUrl";
+const V1_TOKEN_KEY = "taxis.apiToken";
 
 /** Reading `localStorage` throws in a few configurations; a missing value is the right answer. */
 function read(key: string): string | null {
@@ -57,6 +95,96 @@ function write(key: string, value: string | null): void {
   }
 }
 
+const EMPTY: ServerStore = { v: 2, servers: [], active: null };
+
+function isProfile(value: unknown): value is ServerProfile {
+  const p = value as ServerProfile | null;
+  return !!p && typeof p.url === "string" && p.url !== "" && typeof p.label === "string";
+}
+
+/**
+ * Read the store, migrating a single-server install on the way.
+ *
+ * Parsed defensively rather than trusted: this is storage an older build wrote, and a shape it does
+ * not recognise must degrade to "no servers configured" — which shows the connect screen — rather
+ * than throwing on every read and leaving the app with no way to be pointed anywhere.
+ */
+function load(): ServerStore {
+  const raw = read(STORE_KEY);
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as ServerStore;
+      if (parsed && Array.isArray(parsed.servers)) {
+        const servers = parsed.servers.filter(isProfile).map((p) => ({ ...p, token: p.token ?? null }));
+        const active = servers.some((s) => s.url === parsed.active) ? parsed.active : servers[0]?.url ?? null;
+        return { v: 2, servers, active };
+      }
+    } catch {
+      /* Fall through to the migration, then to empty. */
+    }
+  }
+  const legacyUrl = read(V1_SERVER_KEY);
+  if (legacyUrl) {
+    const migrated: ServerStore = {
+      v: 2,
+      servers: [{ url: legacyUrl, label: labelFor(legacyUrl), token: read(V1_TOKEN_KEY) }],
+      active: legacyUrl,
+    };
+    save(migrated);
+    write(V1_SERVER_KEY, null);
+    write(V1_TOKEN_KEY, null);
+    return migrated;
+  }
+  return EMPTY;
+}
+
+function save(store: ServerStore): void {
+  write(STORE_KEY, JSON.stringify(store));
+}
+
+
+/** The default name for a server: its host, which is how people refer to one anyway. */
+export function labelFor(url: string): string {
+  return url.replace(/^https?:\/\//, "").replace(/\/$/, "");
+}
+
+/**
+ * The store, read once and then held.
+ *
+ * Lazy and gated, and both matter. Gated because a browser has no list — `isNativeApp` is a
+ * build-time constant, so this collapses to `EMPTY` and the bundler deletes `load`, the migration
+ * and everything they reach rather than shipping them in the chunk every page load waits for. Lazy
+ * because a module-level read would run before that folding could help.
+ */
+export function readStore(): ServerStore {
+  if (cached) return cached;
+  cached = !isNativeApp || typeof window === "undefined" ? EMPTY : load();
+  return cached;
+}
+
+let cached: ServerStore | null = null;
+
+/**
+ * Write the store and reload.
+ *
+ * The reload is the point, not a shortcut. The response cache, every view's state and the naming
+ * index all hold data read from the server that was current a moment ago; a reload is the one
+ * operation guaranteed to leave none of it behind. What it does *not* discard is the unsent work,
+ * because that is scoped per server (see `serverScope`) and stays with the one it was made against.
+ */
+export function writeStore(next: ServerStore): void {
+  cached = next;
+  save(next);
+  window.location.hash = "#/issues";
+  window.location.reload();
+}
+
+/** The server the app is currently showing, or null before one is chosen. */
+export function activeServer(): ServerProfile | null {
+  const store = readStore();
+  return store.servers.find((s) => s.url === store.active) ?? null;
+}
+
 /**
  * The origin the app talks to: empty in a browser, meaning "wherever this page came from".
  *
@@ -65,8 +193,7 @@ function write(key: string, value: string | null): void {
  * is the normal, working state.
  */
 export function serverOrigin(): string {
-  if (!isNativeApp) return "";
-  return read(SERVER_KEY) ?? "";
+  return activeServer()?.url ?? "";
 }
 
 /** The base every API path is appended to. */
@@ -76,11 +203,11 @@ export function apiBase(): string {
 
 /** Whether the app knows which server it belongs to. Always true in a browser. */
 export function isConfigured(): boolean {
-  return !isNativeApp || serverOrigin() !== "";
+  return !isNativeApp || activeServer() != null;
 }
 
 export function apiToken(): string | null {
-  return isNativeApp ? read(TOKEN_KEY) : null;
+  return activeServer()?.token ?? null;
 }
 
 /** The credential the packaged app carries, if any; a browser sends its cookie instead. */
@@ -98,78 +225,34 @@ export function requestCredentials(): RequestCredentials {
 }
 
 /**
- * Turn whatever somebody typed into an origin, or null if it cannot be one.
+ * What distinguishes one server's stored state from another's.
  *
- * Two things it does beyond parsing. It picks the scheme when none was given, and picks it by where
- * the host is: `localhost:8080` is the address this project's own README tells you to run, and
- * defaulting that to https would fail every first attempt. Anything not plainly on this device or a
- * private network defaults to https. It also drops a trailing `/api`, because that is the URL in
- * somebody's clipboard when they have been looking at the API rather than at the app.
+ * Empty in a browser, which is what keeps the storage keys of the web app byte-for-byte what they
+ * were before any of this existed — a returning reader's unsent work is still theirs. In the app it
+ * is the active server's URL, so each tracker gets its own queue and switching between two of them
+ * is not a reason to throw either away.
  */
-export function normalizeServerUrl(input: string): string | null {
-  let s = input.trim();
-  if (!s) return null;
-  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(s)) {
-    const host = s.split("/")[0].split(":")[0];
-    s = (isPrivateHost(host) ? "http://" : "https://") + s;
-  }
-  let url: URL;
-  try {
-    url = new URL(s);
-  } catch {
-    return null;
-  }
-  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
-  if (!url.hostname) return null;
-  // A base is a scheme, a host and possibly a path prefix — a query or a fragment cannot survive
-  // having `/api/issues` appended to it.
-  let path = url.pathname.replace(/\/+$/, "");
-  if (path.endsWith("/api")) path = path.slice(0, -4);
-  return `${url.protocol}//${url.host}${path}`;
-}
-
-/** Whether a host is this device or a private network, and so is expected to be plain HTTP. */
-export function isPrivateHost(host: string): boolean {
-  const h = host.toLowerCase().replace(/^\[|\]$/g, "");
-  if (h === "localhost" || h === "127.0.0.1" || h === "::1" || h === "0.0.0.0") return true;
-  if (/\.(local|localhost|home\.arpa)$/.test(h)) return true;
-  if (/^10\./.test(h) || /^192\.168\./.test(h)) return true;
-  const m = /^172\.(\d+)\./.exec(h);
-  if (m && Number(m[1]) >= 16 && Number(m[1]) <= 31) return true;
-  return false;
+export function serverScope(): string {
+  const url = serverOrigin();
+  return url ? `:${url}` : "";
 }
 
 /**
- * Point the app at a server, or at none.
- *
- * Everything the app is holding belongs to the server it was read from — the response cache, the
- * naming index, and the offline queue of writes that have not been sent yet. None of that means
- * anything against a different server, and a queued write must never be replayed to one. So this
- * does not try to reconcile: it stores the new setting and reloads, which is the one operation that
- * is guaranteed to leave no state behind from the previous server.
- */
-export function connectTo(serverUrl: string | null, token: string | null): void {
-  const changed = serverUrl !== (read(SERVER_KEY) ?? null);
-  write(SERVER_KEY, serverUrl);
-  write(TOKEN_KEY, token && token.trim() ? token.trim() : null);
-  // Only when the *server* changed. Replacing an expired token on the same server leaves any queued
-  // work pointing exactly where it was made, and that work should still go out.
-  if (changed) for (const hook of serverChangeHooks) hook();
-  window.location.hash = "#/issues";
-  window.location.reload();
-}
-
-/**
- * Run `fn` when the app is pointed at a *different* server, before the reload.
+ * Tell the modules that keep server-scoped state that a server is gone for good.
  *
  * This module deliberately knows nothing about what is stored against a server — that would make
  * the one piece of configuration every other module reads depend on all of them. Instead each
- * module that holds server-scoped state says so from its own side: `offline.ts` registers the
- * discard of its queue here, because a queued write belongs to the tracker it was made against and
- * replaying it elsewhere would edit an unrelated issue that happens to share a number.
+ * module says so from its own side: `offline.ts` registers the disposal of that server's queue,
+ * because a queued write belongs to the tracker it was made against and there is nowhere left to
+ * send it.
  */
-export function onServerChange(fn: () => void): void {
-  serverChangeHooks.push(fn);
+export function onServerForgotten(fn: (scope: string) => void): void {
+  forgetHooks.push(fn);
 }
 
-const serverChangeHooks: Array<() => void> = [];
+/** Called by `serverList.ts` when an entry is removed or its address moved. */
+export function notifyForgotten(url: string): void {
+  for (const hook of forgetHooks) hook(`:${url}`);
+}
+
+const forgetHooks: Array<(scope: string) => void> = [];
