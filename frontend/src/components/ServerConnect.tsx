@@ -9,7 +9,14 @@ import {
   normalizeServerUrl,
   serverOrigin,
 } from "../server";
+import { checkCompatibility, type Compatibility } from "../compat";
 import { PageHeader } from "./PageHeader";
+
+/** "a, b and c" — a list read as a sentence, because that is where it appears. */
+function listOf(items: string[]): string {
+  if (items.length <= 1) return items[0] ?? "";
+  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}
 
 /**
  * The one screen that exists only in the packaged app: which taxis is this, and who am I on it.
@@ -24,7 +31,7 @@ import { PageHeader } from "./PageHeader";
 type Probe =
   | { state: "idle" }
   | { state: "checking" }
-  | { state: "ok"; url: string; health: Health }
+  | { state: "ok"; url: string; health: Health; compat: Compatibility }
   | { state: "failed"; url: string; error: string };
 
 /** Ask a candidate server what it is, without a credential — `/api/health` needs none. */
@@ -72,7 +79,12 @@ export function ServerConnect() {
     }
     setResult({ state: "checking" });
     try {
-      setResult({ state: "ok", url: normalized, health: await probe(normalized) });
+      // Reachability and *usability* are two questions, and the second one is the reason this
+      // screen exists at all: the app ships separately from the server now, so a server can be
+      // perfectly reachable and still not have the endpoints this build was written against.
+      const health = await probe(normalized);
+      const compat = await checkCompatibility(normalized, token.trim() || null);
+      setResult({ state: "ok", url: normalized, health, compat });
     } catch (e) {
       setResult({
         state: "failed",
@@ -148,6 +160,21 @@ export function ServerConnect() {
             Reached taxis {result.health.version || "(version not reported)"} at{" "}
             <span className="mono">{result.url}</span>.
           </p>
+        )}
+        {/* The verdict that actually decides whether the app will work. A server can answer
+            `/api/health` perfectly and still be older than the endpoints this build calls, in which
+            case the issue list comes back empty and the error describes a routing accident. Better
+            to say it here, next to the address, than to let somebody discover it as a blank
+            screen. */}
+        {result.state === "ok" && result.compat.missing.length > 0 && (
+          <p className="error small">
+            This server is older than the app: it does not have {listOf(result.compat.missing)}.
+            Update it to <span className="mono">{result.compat.needs}</span> or newer — until then
+            the issue list will be empty.
+          </p>
+        )}
+        {result.state === "ok" && result.compat.missing.length === 0 && (
+          <p className="small muted">It has every endpoint this build of the app needs.</p>
         )}
         {result.state === "failed" && (
           <p className="error small">Could not reach {result.url} — {result.error}.</p>

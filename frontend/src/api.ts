@@ -23,6 +23,7 @@ import type {
 import { invalidateCache } from "./cache";
 import { isNetworkError, isQueuedLocally, isOffline, noteReachable, noteUnreachable, queueWrite } from "./offline";
 import { apiBase, authHeaders, requestCredentials, serverOrigin } from "./server";
+import { explainServerError } from "./compat";
 
 /** Where the API is. A function rather than a constant because the packaged app is told at runtime
     which server it belongs to, and can be re-pointed at another one; in a browser it is `/api` on
@@ -81,7 +82,11 @@ async function req<T>(path: string, opts: RequestInit = {}): Promise<T> {
   const text = await res.text();
   const data = text ? JSON.parse(text) : null;
   if (!res.ok) {
-    throw new Error(data?.error ?? res.statusText);
+    // The packaged app can be newer than the server it is pointed at — something that cannot happen
+    // in a browser, where the server serves its own frontend. When it is, a request lands on a route
+    // the server does not have and the error describes the routing accident rather than the cause.
+    // One rewrite, here, so every view that shows a server error shows the actionable sentence.
+    throw new Error(explainServerError(data?.error ?? res.statusText));
   }
   return data as T;
 }

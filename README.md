@@ -116,6 +116,12 @@ Two things differ between the page a taxis server serves and the app on a phone,
 
 With no token the app still works, read-only: taxis lets anyone read.
 
+The app is also the first taxis client that ships **separately from the server** — a phone keeps the
+build it was installed with, so it can be newer than the tracker it is pointed at, which a browser
+can never be. The connect screen's *Check connection* therefore reports two things: that the address
+answers, and that the server has the endpoints this build calls. A server that is too old is named
+as such, with the commit to update past — rather than being discovered later as an empty issue list.
+
 ```bash
 cd frontend
 npm install
