@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  What fills the window between the launcher tapping the icon and the WebView painting the app.
+
+  A colour and the mark, rather than the bitmap-per-orientation-per-density set a Capacitor project
+  starts with: fifteen PNGs of a logo is a lot of APK for something on screen for a moment, and a
+  layer-list scales to any window without any of them. The colour follows the system's light or dark
+  setting, which is the same thing `index.html` resolves before its own first paint — so the handover
+  from this to the app is not a flash of the wrong background.
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/splash_background" />
+    <item
+        android:drawable="@drawable/splash_mark"
+        android:gravity="center"
+        android:width="96dp"
+        android:height="96dp" />
+</layer-list>

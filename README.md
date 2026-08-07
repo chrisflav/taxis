@@ -9,7 +9,8 @@ taxis is an extensible issue tracker built in Lean 4, with a REST API backend an
   server, persisting to SQLite via [`leansqlite`](https://github.com/leanprover/leansqlite)
   (bundled — no system SQLite needed). JSON (de)serialisation uses `Lean.Data.Json`.
 - **Frontend** — a Vite + React + TypeScript single-page app in [`frontend/`](frontend),
-  built to static assets and served by the backend.
+  built to static assets and served by the backend. The same build, packaged with Capacitor, is the
+  **mobile app** — see [The mobile app](#the-mobile-app).
 - **Extensibility** — *artifacts* (things attached to an issue: a GitHub PR, a branch),
   *checks* (conditions like "CI passes on a branch"), and the two halves of the repository
   dependency graph (*forges*, which read files out of repositories on one host, and *dependency
@@ -94,6 +95,44 @@ the SQLite database persisted in `docker/data/` on the host (override the locati
 environment variables in `docker/docker-compose.yaml`; Compose automatically loads `docker/.env`
 (not committed — see `docker/.env.example` for what's available and their defaults) to fill in
 the `${VAR:-default}` placeholders there.
+
+### The mobile app
+
+The app is this same frontend, packaged with [Capacitor](https://capacitorjs.com) — the same
+components, the same bundle, the same offline queue, in a WebView. There is no second
+implementation to keep in step, and no second set of views to add a feature to twice.
+
+Two things differ between the page a taxis server serves and the app on a phone, and both live in
+[`frontend/src/server.ts`](frontend/src/server.ts):
+
+- **Where the server is.** In a browser the app was served *by* the tracker, so the API is at
+  `/api` on its own origin. Packaged, it has to be told which tracker it belongs to — that is the
+  connect screen, and it is the only screen that exists solely in the app.
+- **How it authenticates.** In a browser, the session cookie the server set. Packaged, requests are
+  cross-origin, and the server's `Access-Control-Allow-Origin: *` cannot be combined with
+  credentials — so the app carries an **API token** (**Tokens** in the web UI) as
+  `Authorization: Bearer`. The OAuth and password sign-ins all end in a cookie on the server's
+  origin, which an app running from your device could never send back, so it does not offer them.
+
+With no token the app still works, read-only: taxis lets anyone read.
+
+```bash
+cd frontend
+npm install
+npm run app:sync     # build the web bundle and copy it into the native project
+npm run app:apk      # …and assemble a debug APK (needs an Android SDK)
+npm run app:open     # or open the project in Android Studio
+```
+
+The APK lands in `frontend/android/app/build/outputs/apk/`. The **Android app** workflow builds one
+on every change to `frontend/`, and uploads it as a run artifact; dispatching it with *publish* also
+attaches it to the rolling `app-latest` prerelease, which is what to send somebody who just wants to
+install it. Set the `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and
+`ANDROID_KEY_PASSWORD` repository secrets to get a signed release APK — without them the release
+build is unsigned and the (debug-signed) debug APK is the installable one.
+
+iOS is the same web build: `npx cap add ios` in `frontend/`, then build it on a Mac. The platform
+is not committed because nothing in CI can compile it.
 
 ## Configuration
 

@@ -6,6 +6,10 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build && node scripts/precompress.mjs",
+    "build:app": "tsc -b && vite build --mode app",
+    "app:sync": "npm run build:app && cap sync android",
+    "app:apk": "npm run app:sync && cd android && ./gradlew assembleDebug",
+    "app:open": "cap open android",
     "preview": "vite preview",
     "test": "vitest run"
   },
@@ -20,6 +24,9 @@
     "react-dom": "18.3.1"
   },
   "devDependencies": {
+    "@capacitor/android": "^7.6.8",
+    "@capacitor/cli": "^7.6.8",
+    "@capacitor/core": "^7.6.8",
     "@types/react": "18.3.12",
     "@types/react-dom": "18.3.1",
     "jsdom": "^25.0.1",

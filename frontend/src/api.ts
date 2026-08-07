@@ -22,8 +22,12 @@ import type {
 } from "./types";
 import { invalidateCache } from "./cache";
 import { isNetworkError, isQueuedLocally, isOffline, noteReachable, noteUnreachable, queueWrite } from "./offline";
+import { apiBase, authHeaders, requestCredentials, serverOrigin } from "./server";
 
-const BASE = "/api";
+/** Where the API is. A function rather than a constant because the packaged app is told at runtime
+    which server it belongs to, and can be re-pointed at another one; in a browser it is `/api` on
+    this page's own origin, every time, exactly as it was. See `server.ts`. */
+const BASE = (): string => apiBase();
 
 /**
  * Every request the application makes goes through here, which is what makes this the one place
@@ -53,9 +57,9 @@ async function req<T>(path: string, opts: RequestInit = {}): Promise<T> {
 
   let res: Response;
   try {
-    res = await fetch(BASE + path, {
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
+    res = await fetch(BASE() + path, {
+      credentials: requestCredentials(),
+      headers: { "Content-Type": "application/json", ...authHeaders() },
       ...opts,
     });
   } catch (e) {
@@ -192,8 +196,12 @@ const refreshed = (prefix: string) => <T,>(result: T): T => {
 };
 
 export const api = {
-  googleLoginUrl: BASE + "/auth/google/login",
-  githubLoginUrl: BASE + "/auth/github/login",
+  // Getters, not constants: these are browser navigations to whichever server the app is talking
+  // to, and in the packaged app that is not known until it has been configured.
+  get googleLoginUrl() { return BASE() + "/auth/google/login"; },
+  get githubLoginUrl() { return BASE() + "/auth/github/login"; },
+  /** The API reference the account menu links to — served by the same server as the API. */
+  get docsUrl() { return serverOrigin() + "/docs"; },
 
   me: () => req<Actor>("/me"),
   /** Who's signed in and which sign-in methods exist, in one request. Succeeds signed out, with a

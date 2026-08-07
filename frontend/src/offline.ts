@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { dropCached, invalidateCache, peekCached, writeCached } from "./cache";
+import { apiBase, authHeaders, onServerChange, requestCredentials } from "./server";
 import type { Issue, IssueDetail } from "./types";
 
 // Offline editing: where a write goes when there is no server to send it to.
@@ -54,7 +55,10 @@ import type { Issue, IssueDetail } from "./types";
 //   been sent", with Send and Discard. Guessing on their behalf would either lose the work or post
 //   it twice, and there is no third answer available from here.
 
-const BASE = "/api";
+/** Where the API is — the same answer `api.ts` gets, from the same place. In a browser this is
+    `/api` on this page's own origin; in the packaged app it is whichever server the app was
+    connected to. See `server.ts`. */
+const BASE = (): string => apiBase();
 
 /** Where the queue lives between sessions. Versioned in the name so a future change of shape can
     ignore what an older build wrote rather than trying to understand it — which is what the bump
@@ -545,6 +549,22 @@ export function discardQueued(opId: string): void {
   notify();
 }
 
+/** Throw away every queued write and every unresolved conflict.
+ *
+ *  Not an undo button — there is deliberately no interface for this. It exists for the one event
+ *  that makes the queue meaningless rather than merely unwanted: the packaged app being pointed at
+ *  a *different server*. A queued `PATCH /issues/12` is a change to issue 12 on the tracker it was
+ *  made against, and replaying it somewhere else would edit an unrelated issue that happens to
+ *  share a number. Since the queue cannot be sent where it belongs any more, the only honest thing
+ *  left is to drop it — which is why switching servers is a confirmed action that says so. */
+export function discardAllQueuedWork(): void {
+  queue = [];
+  conflicts = [];
+  persist();
+  invalidateCache();
+  notify();
+}
+
 /** Send a held op after all — the reader has decided it did not reach the server the first time.
  *  Clearing `uncertain` is what lets the drain past it; discarding it instead is `discardQueued`. */
 export function confirmQueued(opId: string): void {
@@ -574,10 +594,10 @@ interface Sent {
  *
  *  Rejects only when nothing answered; an HTTP status is a result, and the caller decides. */
 async function send(method: string, path: string, body: string | null): Promise<Sent> {
-  const res = await fetch(BASE + path, {
+  const res = await fetch(BASE() + path, {
     method,
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
+    credentials: requestCredentials(),
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     ...(body == null ? {} : { body }),
   });
   const text = await res.text();
@@ -790,6 +810,9 @@ if (typeof window !== "undefined") {
   queue = readStored(QUEUE_KEY, isQueuedOp);
   conflicts = readStored(CONFLICT_KEY, isConflict);
   rebuild();
+
+  // The queue is scoped to a server as well as to an actor: see `discardAllQueuedWork`.
+  onServerChange(discardAllQueuedWork);
 
   // Set unconditionally, not only when there is a queue to send: a session that starts with an
   // empty queue and fills one later still needs the gate open. With nothing queued this costs the
