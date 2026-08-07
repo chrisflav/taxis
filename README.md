@@ -139,7 +139,15 @@ on every change to `frontend/`, and uploads it as a run artifact; dispatching it
 attaches it to the rolling `app-latest` prerelease, which is what to send somebody who just wants to
 install it. Set the `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and
 `ANDROID_KEY_PASSWORD` repository secrets to get a signed release APK — without them the release
-build is unsigned and the (debug-signed) debug APK is the installable one.
+build is unsigned and the debug APK is the installable one.
+
+The debug key (`frontend/android/debug.keystore`) is committed on purpose. Android refuses to
+install a package over one signed by a different key — reporting it as "App not installed" — and a
+CI runner has no keystore, so left to itself Gradle invents one per run and no build can ever
+upgrade another. It is not a secret: the credentials are the ones Android's own debug keystore has
+always used, and it signs only the debug build type. Release signing still comes from outside the
+repository. Changing which key signs a build — debug to release, or a new release key — still needs
+one uninstall on each device.
 
 iOS is the same web build: `npx cap add ios` in `frontend/`, then build it on a Mac. The platform
 is not committed because nothing in CI can compile it.

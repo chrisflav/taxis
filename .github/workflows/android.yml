@@ -58,10 +58,11 @@ jobs:
       - run: npm run app:sync
         working-directory: frontend
 
-      # Signing material never lives in the repository. When the two secrets are set the release APK
-      # is signed with that key and can be installed over a previous build; when they are not, the
-      # release APK comes out unsigned — still useful to inspect, not installable — and the debug
-      # APK (signed with Android's throwaway debug key) is the one to sideload.
+      # Release signing material never lives in the repository. When the secrets are set the release
+      # APK is signed with that key; when they are not, it comes out unsigned — still useful to
+      # inspect, not installable — and the debug APK is the one to sideload. The debug key *is*
+      # committed (`frontend/android/debug.keystore`), because a runner has no keystore and would
+      # otherwise invent a new one per run, making every build refuse to install over the last.
       - name: Decode the signing keystore
         id: keystore
         if: env.HAS_KEYSTORE == 'true'
@@ -106,13 +107,17 @@ jobs:
             done
             echo
             if [ -f apk/taxis-release.apk ]; then
-              echo "\`taxis-release.apk\` is signed and installable."
+              echo "\`taxis-release.apk\` is signed and installable. Its key is not the debug one,"
+              echo "so moving between the two needs an uninstall first."
             else
-              echo "No signing key is configured, so the release APK is unsigned and cannot be"
-              echo "installed. Sideload \`taxis-debug.apk\`, or set the \`ANDROID_KEYSTORE_BASE64\`,"
+              echo "No release signing key is configured, so the release APK is unsigned and cannot"
+              echo "be installed. Sideload \`taxis-debug.apk\`, or set the \`ANDROID_KEYSTORE_BASE64\`,"
               echo "\`ANDROID_KEYSTORE_PASSWORD\`, \`ANDROID_KEY_ALIAS\` and \`ANDROID_KEY_PASSWORD\`"
               echo "repository secrets to get a signed one."
             fi
+            echo
+            echo "\`taxis-debug.apk\` is signed with the repository's shared debug key, so a build"
+            echo "from any run installs over one from any other."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4

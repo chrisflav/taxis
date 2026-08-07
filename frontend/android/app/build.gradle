@@ -30,6 +30,25 @@ android {
         }
     }
     signingConfigs {
+        // A *shared* debug key, committed to the repository, and the reason it is here is upgrades.
+        //
+        // Gradle generates `~/.android/debug.keystore` on demand, which is fine on one developer's
+        // machine and wrong the moment builds come from CI: a fresh runner has no keystore, so every
+        // run invents a new one, every APK carries a different signature, and Android refuses to
+        // install one over another — reporting it, unhelpfully, as "App not installed". Pinning the
+        // key makes successive builds upgrade each other, which is the whole point of shipping a
+        // build somebody can install.
+        //
+        // Not a secret, and not treated as one: these are the credentials Android's own debug
+        // keystore has used forever, the certificate says "debug" in its name, and it signs only the
+        // debug build type. A release build still refuses to be signed by anything but a real key
+        // supplied from outside the repository — see `hasSigning` above.
+        debug {
+            storeFile file('../debug.keystore')
+            storePassword 'android'
+            keyAlias 'androiddebugkey'
+            keyPassword 'android'
+        }
         if (hasSigning) {
             release {
                 storeFile file(TAXIS_KEYSTORE_FILE)
@@ -41,6 +60,9 @@ android {
     }
 
     buildTypes {
+        debug {
+            signingConfig signingConfigs.debug
+        }
         release {
             // The application is web assets in an asset folder; there is no Java or Kotlin of ours
             // for R8 to shrink, and shrinking Capacitor's own bridge only risks stripping something
