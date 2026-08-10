@@ -44,11 +44,11 @@ def sourceHandler : ArtifactHandler where
       help := some "Commit SHA or ref the line numbers are pinned to" },
     { name := "startLine", label := "Start line", type := "number" },
     { name := "endLine", label := "End line", type := "number" }]
-  validate j := do
+  validate j := pure do
     let _ ← j.getObjValAs? String "repo"
     let _ ← j.getObjValAs? String "file"
     pure ()
-  render := sourceDisplay
+  render j := pure (sourceDisplay j)
 
 initialize registerArtifactHandler sourceHandler
 

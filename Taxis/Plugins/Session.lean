@@ -36,12 +36,12 @@ def sessionHandler : ArtifactHandler where
     { name := "agent", label := "Agent backend", required := true },
     { name := "series", label := "Series" },
     { name := "claimed_at", label := "Claimed at", required := true }]
-  validate j := do
+  validate j := pure do
     let _ ← j.getObjValAs? String "task_id"
     let _ ← j.getObjValAs? String "agent"
     let _ ← j.getObjValAs? String "claimed_at"
     pure ()
-  render := sessionDisplay
+  render j := pure (sessionDisplay j)
 
 initialize registerArtifactHandler sessionHandler
 

@@ -79,11 +79,11 @@ def repositoryHandler : ArtifactHandler where
       help := some "Revision the dependency graph reads manifests at. Defaults to the default branch." },
     { name := "ecosystem", label := "Ecosystem", placeholder := some "lake",
       help := some "Pin which dependency provider is used. Leave blank to detect automatically." }]
-  validate j := do
+  validate j := pure do
     let url ← j.getObjValAs? String "url"
     if (Repo.RepoRef.parse? url).isNone then
       throw s!"could not read an owner/repository out of '{url}'"
-  render := repositoryDisplay
+  render j := pure (repositoryDisplay j)
 
 initialize registerCheckHandler dependenciesCompleteHandler
 initialize registerCheckHandler reviewApprovedHandler

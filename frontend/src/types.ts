@@ -254,6 +254,22 @@ export interface Plugins {
   repoDepsKinds: string[];
 }
 
+/** A file storage backend configured on the server (`ISSUES_FILESTORES`) — the target of `file`
+    artifact uploads. Only the name and backend kind are exposed; credentials stay server-side. */
+export interface FileStore {
+  name: string;
+  kind: string;
+}
+
+/** A presigned upload target: PUT the file's bytes to `url` with `headers`, then attach a `file`
+    artifact whose payload carries `store` and `key`. */
+export interface UploadTarget {
+  url: string;
+  key: string;
+  store: string;
+  headers: Record<string, string>;
+}
+
 // One repository in the repository dependency graph. `id` is its canonical
 // "host/owner/name", the identity edges refer to.
 export interface RepoNode {

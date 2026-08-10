@@ -4,6 +4,15 @@ open Std.Async Taxis Taxis.Server
 def main (args : List String) : IO Unit := do
   let verbose := args.contains "--verbose" || args.contains "-v"
   let config := { ← Config.fromEnv with verbose }
+  -- Consumed here, then dropped: the raw ISSUES_FILESTORES JSON carries store credentials, and
+  -- after the stores are built (closures in the plugin registry) nothing else needs it — so the
+  -- context that serves requests never holds a second plaintext copy.
+  if let some storesJson := config.fileStores then
+    for err in ← Taxis.Plugins.configureFileStores storesJson do
+      IO.eprintln s!"[taxis] file store error: {err}"
+    let stores ← Taxis.Plugins.allFileStores
+    IO.println s!"[taxis] file stores: {if stores.isEmpty then "none configured" else ", ".intercalate (stores.toList.map (fun s => s!"{s.name} ({s.kind})"))}"
+  let config := { config with fileStores := none }
   let ctx ← AppContext.create config
   IO.println s!"[taxis] listening on http://{config.host}:{config.port} (db: {config.dbPath})"
   IO.println s!"[taxis] google oauth: {if config.googleClientId.isSome then "configured" else "NOT configured (set ISSUES_GOOGLE_CLIENT_ID/SECRET)"}"

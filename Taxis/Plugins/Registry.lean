@@ -34,15 +34,17 @@ structure FieldSpec where
   help : Option String := none
 deriving Repr, Inhabited, ToJson
 
-/-- Handler for one artifact `kind`: validates payloads and summarises them. -/
+/-- Handler for one artifact `kind`: validates payloads and summarises them. Both hooks run in
+    `IO` so a kind may consult runtime state — the `file` kind resolves its payload against the
+    file stores configured at startup, and mints a fresh presigned link on every render. -/
 structure ArtifactHandler where
   kind : String
   /-- Input fields the payload is built from (drives the frontend form). -/
   fields : Array FieldSpec := #[]
   /-- Validate a payload, returning a message on rejection. -/
-  validate : Json → Except String Unit := fun _ => .ok ()
+  validate : Json → IO (Except String Unit) := fun _ => pure (.ok ())
   /-- How to present the artifact: a label and an optional link. Lets each kind render itself. -/
-  render : Json → ArtifactDisplay := fun j => { label := j.compress }
+  render : Json → IO ArtifactDisplay := fun j => pure { label := j.compress }
 
 /-- Handler for one check `kind`: validates config and evaluates the check. -/
 structure CheckHandler where
@@ -86,10 +88,33 @@ structure RepoDepsProvider where
   kind : String
   deps : Repo.RepoRef → RepoFileReader → IO (Except String (Option (Array RepoDep)))
 
+/-- A configured file storage backend instance. Unlike artifact/check handlers — which are pure
+    code, compiled in — a file store is code *plus operator configuration* (endpoint, bucket,
+    credentials), so instances are built at startup from `ISSUES_FILESTORES` by the registered
+    `FileStoreBackend` for their `kind`, and looked up by their configured `name`. Credentials
+    stay inside the closures; they are never part of an artifact payload or API response. -/
+structure FileStore where
+  /-- Instance name, e.g. `"primary"` — what a `file` artifact's `store` field refers to. -/
+  name : String
+  /-- Backend kind that built this instance, e.g. `"s3"`. Purely informational. -/
+  kind : String
+  /-- A time-limited download URL for an object key. -/
+  downloadUrl : (key : String) → IO (Except String String)
+  /-- A time-limited upload URL for a new object, with the headers the client must send for the
+      signature to hold (e.g. `Content-Type`). -/
+  uploadUrl : (key contentType : String) → IO (Except String (String × Array (String × String)))
+
+/-- Builds `FileStore` instances of one backend kind out of their JSON configuration. -/
+structure FileStoreBackend where
+  kind : String
+  make : (name : String) → Json → Except String FileStore
+
 initialize artifactRegistryRef : IO.Ref (Std.HashMap String ArtifactHandler) ← IO.mkRef {}
 initialize checkRegistryRef : IO.Ref (Std.HashMap String CheckHandler) ← IO.mkRef {}
 initialize repoForgeRegistryRef : IO.Ref (Array RepoForge) ← IO.mkRef #[]
 initialize repoDepsRegistryRef : IO.Ref (Std.HashMap String RepoDepsProvider) ← IO.mkRef {}
+initialize fileStoreBackendRegistryRef : IO.Ref (Std.HashMap String FileStoreBackend) ← IO.mkRef {}
+initialize fileStoreRegistryRef : IO.Ref (Array FileStore) ← IO.mkRef #[]
 
 /-- Register (or replace) an artifact handler. Typically called from a plugin `initialize`. -/
 def registerArtifactHandler (h : ArtifactHandler) : IO Unit :=
@@ -141,5 +166,47 @@ def allRepoDepsProviders : IO (Array RepoDepsProvider) := do
 
 def repoDepsKinds : IO (Array String) := do
   return (← allRepoDepsProviders).map (·.kind)
+
+/-- Register a file-store backend kind. Typically called from a plugin `initialize`. -/
+def registerFileStoreBackend (b : FileStoreBackend) : IO Unit :=
+  fileStoreBackendRegistryRef.modify (·.insert b.kind b)
+
+def fileStoreBackend? (kind : String) : IO (Option FileStoreBackend) :=
+  return (← fileStoreBackendRegistryRef.get).get? kind
+
+/-- The configured file stores, in configuration order (the first is the frontend's default). -/
+def allFileStores : IO (Array FileStore) :=
+  fileStoreRegistryRef.get
+
+def fileStore? (name : String) : IO (Option FileStore) :=
+  return (← fileStoreRegistryRef.get).find? (·.name == name)
+
+/-- Build and register the file stores described by `configJson` (the `ISSUES_FILESTORES`
+    environment variable): a JSON array of objects, each carrying a `name`, a backend `kind`, and
+    that backend's own settings. Returns an error message per store that could not be built —
+    startup logs them and carries on, so one bad store does not take the tracker down. -/
+def configureFileStores (configJson : String) : IO (Array String) := do
+  let mut errors : Array String := #[]
+  match Json.parse configJson with
+  | .error e => return #[s!"ISSUES_FILESTORES is not valid JSON: {e}"]
+  | .ok j =>
+    let some entries := j.getArr?.toOption
+      | return #[s!"ISSUES_FILESTORES must be a JSON array of store objects"]
+    for entry in entries do
+      let name := (entry.getObjValAs? String "name").toOption.getD ""
+      let kind := (entry.getObjValAs? String "kind").toOption.getD ""
+      if name.isEmpty || kind.isEmpty then
+        errors := errors.push s!"file store entry missing \"name\" or \"kind\": {entry.compress}"
+        continue
+      if (← fileStore? name).isSome then
+        errors := errors.push s!"duplicate file store name '{name}'"
+        continue
+      match ← fileStoreBackend? kind with
+      | none => errors := errors.push s!"file store '{name}': unknown backend kind '{kind}'"
+      | some backend =>
+        match backend.make name entry with
+        | .error e => errors := errors.push s!"file store '{name}': {e}"
+        | .ok store => fileStoreRegistryRef.modify (·.push store)
+    return errors
 
 end Taxis.Plugins
