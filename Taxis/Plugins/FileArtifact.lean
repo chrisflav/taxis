@@ -4,9 +4,9 @@ import Taxis.Plugins.Registry
 # File artifact
 
 Built-in artifact kind `file`: an object held in one of the file stores configured at startup
-(`ISSUES_FILESTORES`, see `Taxis.Plugins.S3Store`). The payload names the store and the object
-key; rendering resolves them through the store into a time-limited download link, so nothing
-permanent or secret is ever stored on the artifact.
+(`[[filestores]]` / `ISSUES_FILESTORES`, see `Taxis.Plugins.S3Store`). The payload names the store
+and the object key; rendering resolves them through the store into a time-limited download link,
+so nothing permanent or secret is ever stored on the artifact.
 
 Payload fields:
 * `store` — name of a configured file store (required).
@@ -64,7 +64,7 @@ def fileHandler : ArtifactHandler where
   kind := "file"
   fields := #[
     { name := "store", label := "File store", required := true, placeholder := some "primary",
-      help := some "Name of a file store configured on the server (ISSUES_FILESTORES)." },
+      help := some "Name of a file store configured on the server." },
     { name := "key", label := "Object key", required := true, placeholder := some "uploads/2026/report.pdf" },
     { name := "name", label := "Display name", placeholder := some "report.pdf" },
     { name := "mime", label := "Content type", placeholder := some "application/pdf" },

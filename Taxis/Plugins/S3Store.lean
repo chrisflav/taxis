@@ -10,7 +10,7 @@ actual AWS bucket, Ceph RGW — reached through SigV4 presigned URLs (`Taxis.Sig
 tracker never proxies file bytes: downloads and uploads go straight between the browser and the
 bucket, authorised by a signature minted here from credentials that never leave the server.
 
-Store configuration (one entry of `ISSUES_FILESTORES`):
+Store configuration (one `[[filestores]]` table, or one entry of the `ISSUES_FILESTORES` array):
 * `endpoint` — base URL of the S3 API, e.g. `https://garage.example.com` (required).
 * `region` — signing region (required; Garage calls this its `s3_region`, e.g. `"garage"`).
 * `bucket` — bucket name (required).

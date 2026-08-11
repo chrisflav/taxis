@@ -213,6 +213,9 @@ def main : IO Unit := do
   check "amz timestamp mid-day" (Plugins.amzTimestamp (1735689600 + 3661) == ("20250101T010101Z", "20250101"))
 
   IO.println "File stores"
+  -- Stores are configured from JSON, whichever notation the operator wrote them in: this is the
+  -- `ISSUES_FILESTORES` spelling, and the `[[filestores]]` one is exercised under "Configuration".
+  let storeConfig (s : String) : Json := (Json.parse s).toOption.getD Json.null
   check "filename passes through clean" (Plugins.sanitizeFilename "report_v2.pdf" == "report_v2.pdf")
   check "filename spaces and slashes flattened" (Plugins.sanitizeFilename "my report/2026.pdf" == "my-report-2026.pdf")
   check "filename of only separators refused" (Plugins.sanitizeFilename ".." == "file")
@@ -232,8 +235,8 @@ def main : IO Unit := do
     check "unknown store degrades in display"
       (unknownStore.url.isNone && unknownStore.label == "k — store 'nope' not configured")
     -- Configure a store, at which point the same payload becomes valid and renders to a link.
-    let cfgErrors ← Plugins.configureFileStores
-      "[{\"name\": \"test\", \"kind\": \"s3\", \"endpoint\": \"https://garage.example.com\", \"region\": \"garage\", \"bucket\": \"taxis\", \"accessKey\": \"GK1\", \"secretKey\": \"sk\", \"prefix\": \"taxis/\"}]"
+    let cfgErrors ← Plugins.configureFileStores (storeConfig
+      "[{\"name\": \"test\", \"kind\": \"s3\", \"endpoint\": \"https://garage.example.com\", \"region\": \"garage\", \"bucket\": \"taxis\", \"accessKey\": \"GK1\", \"secretKey\": \"sk\", \"prefix\": \"taxis/\"}]")
     check "store configuration accepted" cfgErrors.isEmpty
     check "store lookup by name" ((← Plugins.fileStore? "test").isSome)
     check "file payload accepted with configured store"
@@ -269,15 +272,16 @@ def main : IO Unit := do
   check "mistyped optional field rejected"
     ((Plugins.S3Config.parse (Json.mkObj [("endpoint", "https://h"), ("region", "r"), ("bucket", "b"),
         ("accessKey", "ak"), ("secretKey", "sk"), ("pathStyle", "false")])) matches .error _)
-  check "bad filestore json reported"
-    (!(← Plugins.configureFileStores "not json").isEmpty)
+  check "file stores that are not a list reported"
+    (!(← Plugins.configureFileStores (Json.str "not a list")).isEmpty)
   check "unknown backend kind reported"
-    ((← Plugins.configureFileStores "[{\"name\": \"x\", \"kind\": \"nope\"}]").any (·.startsWith "file store 'x'"))
+    ((← Plugins.configureFileStores (storeConfig "[{\"name\": \"x\", \"kind\": \"nope\"}]")).any (·.startsWith "file store 'x'"))
   check "duplicate store name reported"
-    ((← Plugins.configureFileStores "[{\"name\": \"test\", \"kind\": \"s3\"}]").any (· == "duplicate file store name 'test'"))
+    ((← Plugins.configureFileStores (storeConfig "[{\"name\": \"test\", \"kind\": \"s3\"}]")).any (· == "duplicate file store name 'test'"))
   check "missing s3 field reported"
-    ((← Plugins.configureFileStores "[{\"name\": \"y\", \"kind\": \"s3\", \"endpoint\": \"https://h\"}]").any
-      (fun e => e.startsWith "file store 'y'"))
+    ((← Plugins.configureFileStores (storeConfig
+      "[{\"name\": \"y\", \"kind\": \"s3\", \"endpoint\": \"https://h\"}]")).any
+        (fun e => e.startsWith "file store 'y'"))
 
   IO.println "Repository references"
   let canonical (u : String) := (Repo.RepoRef.parse? u).map (·.canonical)
@@ -355,6 +359,111 @@ def main : IO Unit := do
     (match gzipIfWorthwhile noisy true with
      | some out => out.size < noisy.toUTF8.size
      | none => true)
+
+  IO.println "Configuration"
+  -- A configuration file is read as JSON, so what matters is that the nesting, the arrays of
+  -- tables and the types survive the crossing.
+  match ← Toml.parse "a = 1\n[t]\nb = [\"x\", \"y\"]\nc = true\n" with
+  | .ok j => check "toml becomes json" (j.compress == "{\"a\":1,\"t\":{\"b\":[\"x\",\"y\"],\"c\":true}}")
+  | .error e => check s!"toml becomes json ({e})" false
+  match ← Toml.parse "[[f]]\nname = \"a\"\n\n[[f]]\nname = \"b\"\n" with
+  | .ok j => check "array of tables is a json array" (j.compress == "{\"f\":[{\"name\":\"a\"},{\"name\":\"b\"}]}")
+  | .error e => check s!"array of tables is a json array ({e})" false
+  match ← Toml.parse "auth.google.clientId = \"g\"\n" with
+  | .ok j => check "dotted key nests" (j.compress == "{\"auth\":{\"google\":{\"clientId\":\"g\"}}}")
+  | .error e => check s!"dotted key nests ({e})" false
+  check "toml syntax error reported" ((← Toml.parse "port = \n") matches .error _)
+  -- Dates have no JSON counterpart and no setting is one; the reader says so rather than guessing.
+  check "toml date refused" ((← Toml.parse "when = 1979-05-27\n") matches .error _)
+
+  -- These read a file rather than the environment, and environment variables outrank it by
+  -- design: an `ISSUES_…` variable exported in the shell running the tests will fail them.
+  let cfgPath : System.FilePath := "/tmp/taxis-selftest-config.toml"
+  let dotenvPath : System.FilePath := "/tmp/taxis-selftest-config.env"
+  let noDotenv : System.FilePath := "/tmp/taxis-selftest-config.env.absent"
+  let writeCfg (lines : List String) : IO Unit := IO.FS.writeFile cfgPath ("\n".intercalate lines)
+  let throws (act : IO Unit) : IO Bool :=
+    try do act; pure false
+    catch _ => pure true
+  writeCfg [
+    "port = 9099", "host = \"0.0.0.0\"", "db = \"/tmp/taxis-selftest-cfg.sqlite\"",
+    "frontendDir = \"public\"", "baseUrl = \"https://issues.example.com\"",
+    "checkInterval = 30", "repoDepsTtl = 0", "verbose = true", "nonsense = 1",
+    "", "[auth]", "password = \"hunter2\"", "adminEmails = [\"a@x.io\", \"b@x.io\"]",
+    "devLogin = true", "typo = true",
+    "", "[auth.google]", "clientId = \"gid\"", "clientSecret = \"gsecret\"",
+    "", "[auth.github]", "clientId = \"ghid\"", "clientSecret = \"ghsecret\"",
+    "", "[github]", "token = \"ghtok\"",
+    "", "[[filestores]]", "name = \"fromtoml\"", "kind = \"s3\"",
+    "endpoint = \"https://garage.example.com\"", "region = \"garage\"", "bucket = \"taxis\"",
+    "accessKey = \"GK2\"", "secretKey = \"sk2\"", ""]
+  let loaded ← Config.load (some cfgPath) noDotenv
+  let c := loaded.config
+  check "configuration file reported" (loaded.path == some cfgPath)
+  check "port from file" (c.port == 9099)
+  check "host from file" (c.host == "0.0.0.0")
+  check "db path from file" (c.dbPath == "/tmp/taxis-selftest-cfg.sqlite")
+  check "frontend dir from file" (c.frontendDir == "public")
+  check "base url from file" (c.publicBaseUrl == "https://issues.example.com")
+  check "check interval from file" (c.checkIntervalSeconds == 30)
+  check "a zero ttl is kept, not defaulted" (c.repoDepsTtlSeconds == 0)
+  check "verbose from file" c.verbose
+  check "password from file" (c.centralPassword == some "hunter2")
+  check "admin emails from an array" (c.adminEmails == ["a@x.io", "b@x.io"])
+  check "dev login from file" c.devLogin
+  check "google credentials from file"
+    (c.googleClientId == some "gid" && c.googleClientSecret == some "gsecret")
+  check "github oauth credentials from file"
+    (c.githubClientId == some "ghid" && c.githubClientSecret == some "ghsecret")
+  -- The two GitHub settings are easy to conflate, so the file keeps them apart: `[auth.github]`
+  -- signs people in, `[github]` calls the API.
+  check "github api token from its own section" (c.githubToken == some "ghtok")
+  check "unknown settings reported, not fatal" (loaded.unknown == #["auth.typo", "nonsense"])
+  match c.fileStores with
+  | some stores =>
+    check "[[filestores]] arrives as a json array" ((stores.getArr?.toOption.map (·.size)) == some 1)
+    check "a store written as toml configures"
+      ((← Plugins.configureFileStores stores).isEmpty && (← Plugins.fileStore? "fromtoml").isSome)
+  | none => check "[[filestores]] arrives as a json array" false
+
+  -- `.env` sits between the environment and the file.
+  IO.FS.writeFile dotenvPath "ISSUES_HOST=10.0.0.1\nISSUES_PORT=9100\n"
+  let viaDotenv ← Config.load (some cfgPath) dotenvPath
+  check "a .env value beats the configuration file"
+    (viaDotenv.config.host == "10.0.0.1" && viaDotenv.config.port == 9100)
+  check "the configuration file still fills the rest"
+    (viaDotenv.config.centralPassword == some "hunter2")
+
+  let loadFails (lines : List String) : IO Bool := do
+    writeCfg lines
+    throws (discard (Config.load (some cfgPath) noDotenv))
+  check "a setting of the wrong type refuses to start" (← loadFails ["port = \"nope\""])
+  check "a port outside the range refuses to start" (← loadFails ["port = 70000"])
+  check "a non-boolean flag refuses to start" (← loadFails ["[auth]", "devLogin = \"yes\""])
+  check "file stores that are not tables refuse to start" (← loadFails ["filestores = 3"])
+  check "an unparseable file refuses to start" (← loadFails ["port = "])
+  check "a configuration file that was asked for must exist"
+    (← throws (discard (Config.load (some "/tmp/taxis-selftest-absent.toml") noDotenv)))
+
+  writeCfg [""]
+  let bare ← Config.load (some cfgPath) noDotenv
+  check "settings absent from the file fall back to defaults"
+    (bare.config.port == 8080 && bare.config.dbPath == "issues.sqlite" && !bare.config.devLogin
+      && bare.config.repoDepsTtlSeconds == 3600)
+  check "base url follows the port it defaults to"
+    (bare.config.publicBaseUrl == "http://localhost:8080")
+  for f in [cfgPath, dotenvPath] do
+    try IO.FS.removeFile f catch _ => pure ()
+  -- The committed example is documentation that goes stale silently: a setting renamed in `Config`
+  -- leaves it describing a key the server no longer reads, which `unknown` is exactly the check
+  -- for. Run from the package root, as `lake test` does.
+  if ← (System.FilePath.mk "config.example.toml").pathExists then
+    let sample ← Config.load (some "config.example.toml") noDotenv
+    check "the example configuration only names real settings" (sample.unknown == #[])
+    check "the example configuration states the defaults"
+      (sample.config.port == 8080 && sample.config.host == "127.0.0.1"
+        && sample.config.repoDepsTtlSeconds == 3600 && !sample.config.devLogin
+        && sample.config.fileStores.isNone)
 
   IO.println "Visibility"
   let pub : Issue := { id := ⟨1⟩, title := "p", visibility := #[], createdAt := ⟨0⟩, updatedAt := ⟨0⟩ }

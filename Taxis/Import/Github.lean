@@ -1,5 +1,6 @@
 import Taxis.Domain
 import Taxis.Http.Client
+import Taxis.Plugins.GithubForge
 
 /-!
 # GitHub issue import
@@ -28,11 +29,8 @@ private def labelNames (item : Json) : Array String := Id.run do
 
 /-- Fetch and map issues from `owner/repo`. `state` is one of `open`, `closed`, `all`. -/
 def fetchGithubIssues (owner repo state : String) : IO (Except String (Array GithubIssueImport)) := do
-  let token ← IO.getEnv "ISSUES_GITHUB_TOKEN"
-  let auth := token.map (fun t => #[("Authorization", s!"Bearer {t}")]) |>.getD #[]
-  let headers := #[("Accept", "application/vnd.github+json"), ("User-Agent", "issues-tracker")] ++ auth
   let url := s!"https://api.github.com/repos/{owner}/{repo}/issues?state={state}&per_page=50"
-  match ← Http.requestJson "GET" url headers with
+  match ← Http.requestJson "GET" url (← Plugins.githubHeaders) with
   | .error e => return .error e
   | .ok j =>
     match j.getArr? with

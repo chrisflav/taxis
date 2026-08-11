@@ -181,32 +181,32 @@ def allFileStores : IO (Array FileStore) :=
 def fileStore? (name : String) : IO (Option FileStore) :=
   return (← fileStoreRegistryRef.get).find? (·.name == name)
 
-/-- Build and register the file stores described by `configJson` (the `ISSUES_FILESTORES`
-    environment variable): a JSON array of objects, each carrying a `name`, a backend `kind`, and
-    that backend's own settings. Returns an error message per store that could not be built —
-    startup logs them and carries on, so one bad store does not take the tracker down. -/
-def configureFileStores (configJson : String) : IO (Array String) := do
+/-- Build and register the file stores described by `config`: an array of objects, each carrying a
+    `name`, a backend `kind`, and that backend's own settings. It reaches here as JSON whether it
+    was written as the `ISSUES_FILESTORES` document or as `[[filestores]]` tables in the
+    configuration file — `Config` has already reduced both to the same array.
+
+    Returns an error message per store that could not be built — startup logs them and carries on,
+    so one bad store does not take the tracker down. -/
+def configureFileStores (config : Json) : IO (Array String) := do
   let mut errors : Array String := #[]
-  match Json.parse configJson with
-  | .error e => return #[s!"ISSUES_FILESTORES is not valid JSON: {e}"]
-  | .ok j =>
-    let some entries := j.getArr?.toOption
-      | return #[s!"ISSUES_FILESTORES must be a JSON array of store objects"]
-    for entry in entries do
-      let name := (entry.getObjValAs? String "name").toOption.getD ""
-      let kind := (entry.getObjValAs? String "kind").toOption.getD ""
-      if name.isEmpty || kind.isEmpty then
-        errors := errors.push s!"file store entry missing \"name\" or \"kind\": {entry.compress}"
-        continue
-      if (← fileStore? name).isSome then
-        errors := errors.push s!"duplicate file store name '{name}'"
-        continue
-      match ← fileStoreBackend? kind with
-      | none => errors := errors.push s!"file store '{name}': unknown backend kind '{kind}'"
-      | some backend =>
-        match backend.make name entry with
-        | .error e => errors := errors.push s!"file store '{name}': {e}"
-        | .ok store => fileStoreRegistryRef.modify (·.push store)
-    return errors
+  let some entries := config.getArr?.toOption
+    | return #[s!"file stores must be a list of store objects, but are {config.compress}"]
+  for entry in entries do
+    let name := (entry.getObjValAs? String "name").toOption.getD ""
+    let kind := (entry.getObjValAs? String "kind").toOption.getD ""
+    if name.isEmpty || kind.isEmpty then
+      errors := errors.push s!"file store entry missing \"name\" or \"kind\": {entry.compress}"
+      continue
+    if (← fileStore? name).isSome then
+      errors := errors.push s!"duplicate file store name '{name}'"
+      continue
+    match ← fileStoreBackend? kind with
+    | none => errors := errors.push s!"file store '{name}': unknown backend kind '{kind}'"
+    | some backend =>
+      match backend.make name entry with
+      | .error e => errors := errors.push s!"file store '{name}': {e}"
+      | .ok store => fileStoreRegistryRef.modify (·.push store)
+  return errors
 
 end Taxis.Plugins

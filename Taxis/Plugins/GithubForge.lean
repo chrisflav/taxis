@@ -1,21 +1,25 @@
 import Taxis.Plugins.Registry
 import Taxis.Http.Client
+import Taxis.Config
 
 /-!
 # GitHub forge
 
 Low-level GitHub access shared by the GitHub plugins: the request headers (including the
-`ISSUES_GITHUB_TOKEN` bearer token, if configured), and a `RepoForge` that reads repository files
-through `raw.githubusercontent.com` so dependency providers can inspect manifests.
+configured GitHub token as a bearer token, if there is one), and a `RepoForge` that reads
+repository files through `raw.githubusercontent.com` so dependency providers can inspect
+manifests.
 -/
 
 open Lean
 
 namespace Taxis.Plugins
 
-/-- Headers for a GitHub request, carrying `ISSUES_GITHUB_TOKEN` as a bearer token when set. -/
+/-- Headers for a GitHub request, carrying the configured GitHub token as a bearer token when set.
+    Taken from `currentConfig` rather than the environment, so a token in the configuration file
+    counts for as much as `ISSUES_GITHUB_TOKEN` does. -/
 def githubHeaders : IO (Array (String × String)) := do
-  let token ← IO.getEnv "ISSUES_GITHUB_TOKEN"
+  let token := (← currentConfig).githubToken
   let auth := token.map (fun t => #[("Authorization", s!"Bearer {t}")]) |>.getD #[]
   pure (#[("Accept", "application/vnd.github+json"), ("User-Agent", "issues-tracker")] ++ auth)
 

@@ -74,7 +74,7 @@ function FileUpload({ onUploaded, onError }: {
     );
   }
   if (stores.length === 0) {
-    return <p className="muted small">No file store is configured on the server (ISSUES_FILESTORES) — fill the fields in by hand to link an already-hosted object.</p>;
+    return <p className="muted small">No file store is configured on the server — fill the fields in by hand to link an already-hosted object.</p>;
   }
   return (
     <div>

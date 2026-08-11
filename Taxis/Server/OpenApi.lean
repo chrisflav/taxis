@@ -164,7 +164,7 @@ private def paths : Json := obj [
     [("302", emptyResp "Redirect with session cookie")])]),
   ("/auth/logout", obj [("post", operation "Auth" "Destroy the current session" [] none
     [("200", emptyResp "Logged out")])]),
-  ("/auth/dev-login", obj [("post", operation "Auth" "Development-only email login (gated by ISSUES_DEV_LOGIN)"
+  ("/auth/dev-login", obj [("post", operation "Auth" "Development-only email login (gated by auth.devLogin / ISSUES_DEV_LOGIN)"
     [] (some (jsonBody (schemaObj [("email", typ "string"), ("displayName", typ "string")] ["email"])))
     [("200", jsonResp "Session" (schemaObj [("token", typ "string"), ("actor", ref "Actor")]))])]),
   ("/auth/password-login", obj [("post", operation "Auth" "Central password login (gated by ISSUES_CENTRAL_PASSWORD)"
