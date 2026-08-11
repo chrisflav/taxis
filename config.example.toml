@@ -1,0 +1,75 @@
+# Copy this file to config.toml (next to it, or wherever you run the server from) and fill in
+# what you need — every setting is optional and the values here are the defaults. config.toml is
+# gitignored: never commit real credentials from it.
+#
+# Run with a file somewhere else with `lake exe taxis --config /etc/taxis/config.toml`, or set
+# ISSUES_CONFIG. Environment variables override this file — see the README's Configuration section.
+
+# Port to listen on, and the address to bind to. 127.0.0.1 accepts local connections only; behind
+# a reverse proxy that is usually what you want, and 0.0.0.0 is what you need in a container.
+port = 8080
+host = "127.0.0.1"
+
+# SQLite database, and the built frontend assets (`npm run build` writes frontend/dist).
+db = "issues.sqlite"
+frontendDir = "frontend/dist"
+
+# Public URL the server is reached at. Required for the Google/GitHub OAuth redirect URIs to be
+# correct, and used to build absolute links — set it to your real URL in production.
+baseUrl = "http://localhost:8080"
+
+# How often the background sweeper re-evaluates checks, in seconds; 0 disables it.
+checkInterval = 0
+
+# How long a repository's resolved dependencies stay cached, in seconds. Building the repository
+# graph reads package manifests over the network; 0 disables the cache.
+repoDepsTtl = 3600
+
+# Log every incoming request to stderr (the same as passing --verbose).
+verbose = false
+
+[auth]
+# Single shared password for signing in, instead of (or alongside) OAuth. Unset disables it.
+# password = "…"
+
+# Emails granted admin the first time they sign in, to bootstrap the first administrator.
+adminEmails = []
+
+# Enables POST /api/auth/dev-login, which signs in as any email without a password. Local use
+# only — never enable this on a reachable deployment.
+devLogin = false
+
+# Google OAuth client, for "Sign in with Google". While neither this nor [auth.github] is set the
+# API is open (single-user/local mode); once either is, writes need a session. The authorised
+# redirect URI is <baseUrl>/auth/google/callback.
+[auth.google]
+# clientId = "…"
+# clientSecret = "…"
+
+# GitHub OAuth App, for "Sign in with GitHub". Callback URL <baseUrl>/auth/github/callback.
+# This signs people in; it is not the API token below.
+[auth.github]
+# clientId = "…"
+# clientSecret = "…"
+
+[github]
+# Personal-access token the server uses to call the GitHub API on your behalf: importing issues,
+# evaluating github-ci checks, reading manifests for the repository graph. Unrelated to the OAuth
+# App above — a deployment can have either, both, or neither.
+# token = "…"
+
+# File stores for `file` artifacts — one [[filestores]] block per store, none by default. The
+# first is the default in the attach dialogue. See the README's "File artifacts" section, and
+# remember the bucket needs a CORS rule allowing PUT from this server's origin for browser uploads.
+#
+# [[filestores]]
+# name = "primary"                        # what a file artifact's `store` field refers to
+# kind = "s3"                             # any S3-compatible store: Garage, SeaweedFS, AWS, Ceph
+# endpoint = "https://s3.example.com"
+# region = "garage"                       # Garage calls this s3_region; on AWS, the bucket region
+# bucket = "taxis"
+# accessKey = "…"
+# secretKey = "…"
+# prefix = "taxis/"                       # optional key prefix for everything taxis writes
+# pathStyle = true                        # endpoint/bucket/key rather than bucket.endpoint/key
+# urlTtlSeconds = 3600                    # how long a download link stays valid

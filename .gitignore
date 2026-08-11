@@ -6,6 +6,9 @@
 .env.local
 docker/.env
 docker/data/
+# Holds credentials, like .env — config.example.toml is the committed template.
+/config.toml
+docker/config.toml
 .claude/settings.local.json
 
 # Python bytecode

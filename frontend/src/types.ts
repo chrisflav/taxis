@@ -254,7 +254,7 @@ export interface Plugins {
   repoDepsKinds: string[];
 }
 
-/** A file storage backend configured on the server (`ISSUES_FILESTORES`) — the target of `file`
+/** A file storage backend configured on the server (`[[filestores]]`) — the target of `file`
     artifact uploads. Only the name and backend kind are exposed; credentials stay server-side. */
 export interface FileStore {
   name: string;

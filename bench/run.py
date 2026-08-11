@@ -114,7 +114,7 @@ def free_port() -> int:
 class Server:
     """A taxis server over one fixture, torn down on exit.
 
-    Run from an empty working directory: `Config.fromEnv` reads `.env` and `config.toml` out of the
+    Run from an empty working directory: `Config.load` reads `.env` and `config.toml` out of the
     current directory, and picking up the developer's would make the benchmark depend on which
     machine it ran on.
     """

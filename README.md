@@ -40,7 +40,7 @@ taxis is an extensible issue tracker built in Lean 4, with a REST API backend an
   transitive `inherited` entries), falling back to its `lakefile.toml` or `lakefile.lean`. The
   artifact can pin a branch to read (`ref`) and an ecosystem (`ecosystem`); left blank, the
   default branch is read and the providers detect the ecosystem themselves. Reading manifests
-  costs network requests, so results are cached (`ISSUES_REPO_DEPS_TTL`) and the view has a
+  costs network requests, so results are cached (`repoDepsTtl`) and the view has a
   **Refresh** button. Only repositories on issues you can see enter the graph.
 - **Comments** — a discussion thread on each issue; anyone signed in may comment, and a comment
   can be edited or removed by its author or an admin. Every issue is edited **inline** — clicking
@@ -77,7 +77,8 @@ cd frontend && npm install && npm run build && cd ..
 lake exe taxis
 ```
 
-Then open <http://localhost:8080>.
+Then open <http://localhost:8080>. It runs with no configuration at all; to change anything, copy
+`config.example.toml` to `config.toml` and edit it (see [Configuration](#configuration)).
 
 For frontend development with hot reload, run `npm run dev` in `frontend/` (it proxies `/api`
 to the backend on port 8080) and `lake exe taxis` in another terminal.
@@ -95,36 +96,92 @@ the SQLite database persisted in `docker/data/` on the host (override the locati
 `TAXIS_DATA_DIR`). Configuration (see below) is passed as
 environment variables in `docker/docker-compose.yaml`; Compose automatically loads `docker/.env`
 (not committed — see `docker/.env.example` for what's available and their defaults) to fill in
-the `${VAR:-default}` placeholders there.
+the `${VAR:-default}` placeholders there. To use a `config.toml` instead, uncomment the
+`ISSUES_CONFIG` variable and the matching volume in `docker-compose.yaml`.
 
 ## Configuration
 
-All configuration is via environment variables. They may be exported into the shell **or** placed
-in a `.env` file in the working directory (real environment variables take precedence). On startup
-the server logs whether Google/GitHub OAuth are configured and the redirect URIs it expects.
+Configuration goes in a **`config.toml`** file, or in environment variables, or both. The server
+reads `config.toml` from its working directory if it is there; `--config <path>` (or
+`ISSUES_CONFIG`) names a different file, which then has to exist.
 
-| Variable | Default | Purpose |
+```toml
+# config.toml — everything is optional; these are the defaults unless noted
+port = 8080
+host = "127.0.0.1"                        # bind address
+db = "issues.sqlite"                      # SQLite database path
+frontendDir = "frontend/dist"             # built frontend assets
+baseUrl = "http://localhost:8080"         # public URL, used for the OAuth redirects
+checkInterval = 0                         # background check sweep, in seconds (0 disables)
+repoDepsTtl = 3600                        # repository dependency cache, in seconds (0 disables)
+
+[auth]
+password = "…"                            # central login password; enables password sign-in
+adminEmails = ["you@example.com"]         # granted admin on login (bootstrap)
+devLogin = false                          # enables POST /api/auth/dev-login — never in production
+
+[auth.google]                             # when set, mutations require an authenticated session
+clientId = "…"
+clientSecret = "…"
+
+[auth.github]                             # GitHub OAuth App, for signing in
+clientId = "…"
+clientSecret = "…"
+
+[github]
+token = "…"                               # token for GitHub API calls — see the warning below
+
+[[filestores]]                            # zero or more; see File artifacts below
+name = "primary"
+kind = "s3"
+endpoint = "https://s3.example.com"
+region = "garage"
+bucket = "taxis"
+accessKey = "…"
+secretKey = "…"
+```
+
+`[auth.github]` and `[github]` are easy to conflate but serve different purposes: the first is a
+GitHub OAuth App used for **signing in**, the second is a personal-access token the server uses to
+**call the GitHub API** on your behalf (importing issues, evaluating `github-ci` checks, reading
+package manifests for the repository graph). They are configured independently of each other.
+
+A file that fails to parse, holds a setting of the wrong type, or names a port outside 1–65535
+stops startup with the line at fault. A key the server does not recognise is reported on stderr
+and otherwise ignored, so a typo does not pass silently. On startup the server also logs which
+file it read, whether Google/GitHub OAuth are configured, and the redirect URIs it expects.
+
+### Environment variables
+
+Every setting also has an environment variable, which **takes precedence** over the file — which
+is what lets a container override a baked-in configuration. Variables may be exported into the
+shell or placed in a `.env` file in the working directory; the full order is environment, then
+`.env`, then `config.toml`, then the defaults above.
+
+| Variable | `config.toml` | Purpose |
 | --- | --- | --- |
-| `ISSUES_PORT` | `8080` | Port to listen on |
-| `ISSUES_DB` | `issues.sqlite` | SQLite database path |
-| `ISSUES_FRONTEND_DIR` | `frontend/dist` | Directory of built frontend assets |
-| `ISSUES_BASE_URL` | `http://localhost:<port>` | Public URL (used for the OAuth redirects) |
-| `ISSUES_GOOGLE_CLIENT_ID` | — | Google OAuth client id; when set, mutations require auth |
-| `ISSUES_GOOGLE_CLIENT_SECRET` | — | Google OAuth client secret |
-| `ISSUES_GITHUB_CLIENT_ID` | — | GitHub OAuth App client id; when set, mutations require auth |
-| `ISSUES_GITHUB_CLIENT_SECRET` | — | GitHub OAuth App client secret |
-| `ISSUES_GITHUB_TOKEN` | — | Token for GitHub API calls (import, CI checks) — unrelated to the OAuth App above; see below |
-| `ISSUES_CHECK_INTERVAL` | `0` | Background check-sweep interval in seconds (`0` disables) |
-| `ISSUES_REPO_DEPS_TTL` | `3600` | How long resolved repository dependencies stay cached, in seconds (`0` disables caching) |
-| `ISSUES_FILESTORES` | — | File stores for `file` artifacts, as a JSON array (see [File artifacts](#file-artifacts)) |
-| `ISSUES_ADMIN_EMAILS` | — | Comma-separated emails granted admin on login (bootstrap) |
-| `ISSUES_DEV_LOGIN` | — | If set, enables `POST /api/auth/dev-login` for local use |
+| `ISSUES_PORT` | `port` | Port to listen on |
+| `ISSUES_HOST` | `host` | Address to bind to |
+| `ISSUES_DB` | `db` | SQLite database path |
+| `ISSUES_FRONTEND_DIR` | `frontendDir` | Directory of built frontend assets |
+| `ISSUES_BASE_URL` | `baseUrl` | Public URL (used for the OAuth redirects) |
+| `ISSUES_CENTRAL_PASSWORD` | `auth.password` | Central login password; when set, password login is enabled |
+| `ISSUES_ADMIN_EMAILS` | `auth.adminEmails` | Emails granted admin on login — comma-separated in the variable, a list in the file |
+| `ISSUES_DEV_LOGIN` | `auth.devLogin` | Enables `POST /api/auth/dev-login` for local use |
+| `ISSUES_GOOGLE_CLIENT_ID` | `auth.google.clientId` | Google OAuth client id; when set, mutations require auth |
+| `ISSUES_GOOGLE_CLIENT_SECRET` | `auth.google.clientSecret` | Google OAuth client secret |
+| `ISSUES_GITHUB_CLIENT_ID` | `auth.github.clientId` | GitHub OAuth App client id; when set, mutations require auth |
+| `ISSUES_GITHUB_CLIENT_SECRET` | `auth.github.clientSecret` | GitHub OAuth App client secret |
+| `ISSUES_GITHUB_TOKEN` | `github.token` | Token for GitHub API calls (import, CI checks) — unrelated to the OAuth App above |
+| `ISSUES_CHECK_INTERVAL` | `checkInterval` | Background check-sweep interval in seconds (`0` disables) |
+| `ISSUES_REPO_DEPS_TTL` | `repoDepsTtl` | How long resolved repository dependencies stay cached, in seconds (`0` disables caching) |
+| `ISSUES_FILESTORES` | `[[filestores]]` | File stores for `file` artifacts — a JSON array in the variable (see [File artifacts](#file-artifacts)) |
+| `ISSUES_VERBOSE` | `verbose` | Log every request to stderr (also `--verbose`) |
+| `ISSUES_CONFIG` | — | Path of the configuration file to read (also `--config`) |
 
-`ISSUES_GITHUB_CLIENT_ID`/`_SECRET` and `ISSUES_GITHUB_TOKEN` are easy to conflate but serve
-different purposes: the former is a GitHub OAuth App used for **signing in**, the latter is a
-personal-access token the server uses to **call the GitHub API** on your behalf (importing issues,
-evaluating `github-ci` checks, reading package manifests for the repository graph) — they can be
-configured independently of each other.
+A blank value counts as unset, so `ISSUES_GOOGLE_CLIENT_ID=` leaves Google OAuth off rather than
+configuring it with an empty id — which is what makes the `${VAR:-}` placeholders in
+`docker/docker-compose.yaml` safe to leave empty.
 
 When neither Google nor GitHub OAuth is configured the API is open (single-user/local mode); when
 either is, write operations require an authenticated session, and managing actors, groups, and
@@ -134,20 +191,26 @@ labels (plus running imports) additionally requires an **admin** actor.
 
 1. In the [Google Cloud Console](https://console.cloud.google.com/) create an **OAuth 2.0 Client
    ID** (application type "Web application").
-2. Add an **Authorized redirect URI** of `<ISSUES_BASE_URL>/auth/google/callback` (e.g.
+2. Add an **Authorized redirect URI** of `<baseUrl>/auth/google/callback` (e.g.
    `http://localhost:8080/auth/google/callback` for local use, or your public URL in production).
-3. Run the server with the client credentials and your public URL set:
+3. Put the client credentials and your public URL in `config.toml`, then run `lake exe taxis`:
 
-   ```bash
-   ISSUES_GOOGLE_CLIENT_ID=... \
-   ISSUES_GOOGLE_CLIENT_SECRET=... \
-   ISSUES_BASE_URL=https://issues.example.com \
-   ISSUES_ADMIN_EMAILS=you@example.com \
-   lake exe taxis
+   ```toml
+   baseUrl = "https://issues.example.com"
+
+   [auth]
+   adminEmails = ["you@example.com"]
+
+   [auth.google]
+   clientId = "…"
+   clientSecret = "…"
    ```
 
+   The matching environment variables (`ISSUES_GOOGLE_CLIENT_ID`, `ISSUES_GOOGLE_CLIENT_SECRET`,
+   `ISSUES_BASE_URL`, `ISSUES_ADMIN_EMAILS`) do the same thing.
+
 4. Click **Sign in with Google**. On the first login the server bootstraps admin for any email
-   listed in `ISSUES_ADMIN_EMAILS`.
+   listed in `auth.adminEmails`.
 
 ### Connecting a Google account to an actor
 
@@ -166,20 +229,26 @@ linked Google account can authenticate.
 
 1. In GitHub, go to **Settings → Developer settings → OAuth Apps → New OAuth App** (a personal
    account or organization both work).
-2. Set **Authorization callback URL** to `<ISSUES_BASE_URL>/auth/github/callback` (e.g.
+2. Set **Authorization callback URL** to `<baseUrl>/auth/github/callback` (e.g.
    `http://localhost:8080/auth/github/callback` for local use, or your public URL in production).
-3. Generate a client secret, then run the server with both credentials and your public URL set:
+3. Generate a client secret, then put both credentials and your public URL in `config.toml`:
 
-   ```bash
-   ISSUES_GITHUB_CLIENT_ID=... \
-   ISSUES_GITHUB_CLIENT_SECRET=... \
-   ISSUES_BASE_URL=https://issues.example.com \
-   ISSUES_ADMIN_EMAILS=you@example.com \
-   lake exe taxis
+   ```toml
+   baseUrl = "https://issues.example.com"
+
+   [auth]
+   adminEmails = ["you@example.com"]
+
+   [auth.github]
+   clientId = "…"
+   clientSecret = "…"
    ```
 
+   Note that this is `[auth.github]`, the OAuth App used for signing in — not `[github].token`,
+   which is the personal-access token for API calls.
+
 4. Click **Sign in with GitHub**. On the first login the server bootstraps admin for any email
-   listed in `ISSUES_ADMIN_EMAILS`.
+   listed in `auth.adminEmails`.
 
 Login requests the `read:user user:email` scopes. If the account's primary email isn't public, the
 server falls back to `GET /user/emails` and uses the verified primary address from there instead —
@@ -211,12 +280,19 @@ name and object key. Rendering an artifact resolves that pair into a time-limite
 outlive the TTL by up to an hour — never by more than the TTL itself), so nothing permanent or
 secret is stored anywhere.
 
-Stores are declared in `ISSUES_FILESTORES`, a JSON array — several can be configured at once, and
-the attach dialogue lets you pick one (the first is the default):
+Stores are declared as `[[filestores]]` tables in `config.toml` — several can be configured at
+once, and the attach dialogue lets you pick one (the first is the default):
 
-```bash
-ISSUES_FILESTORES='[{"name": "primary", "kind": "s3", "endpoint": "https://s3.example.com",
-  "region": "garage", "bucket": "taxis", "accessKey": "…", "secretKey": "…", "prefix": "taxis/"}]'
+```toml
+[[filestores]]
+name = "primary"
+kind = "s3"
+endpoint = "https://s3.example.com"
+region = "garage"
+bucket = "taxis"
+accessKey = "…"
+secretKey = "…"
+prefix = "taxis/"
 ```
 
 `name` is what `file` artifacts refer to, and `kind` selects the backend (file-store kinds are a
@@ -225,6 +301,17 @@ calls it `s3_region`; AWS, the bucket's region); `prefix` (optional) is a key pr
 the tracker writes lives under; `pathStyle` (default `true`) addresses objects as
 `endpoint/bucket/key` rather than `bucket.endpoint/key`; `urlTtlSeconds` (default 3600) is how
 long download links stay valid.
+
+The same stores can be given as a JSON array in `ISSUES_FILESTORES`, with the field names above —
+which is how they are configured where there is no configuration file, as under Docker Compose:
+
+```bash
+ISSUES_FILESTORES='[{"name": "primary", "kind": "s3", "endpoint": "https://s3.example.com",
+  "region": "garage", "bucket": "taxis", "accessKey": "…", "secretKey": "…", "prefix": "taxis/"}]'
+```
+
+A store that cannot be built is reported on startup and skipped; the others still come up, and
+`file` artifacts pointing at the missing one degrade to a plain label instead of a link.
 
 Direct browser uploads need a **CORS rule on the bucket** allowing `PUT` from the tracker's
 origin (with the `Content-Type` header); without one, the drop zone fails and the artifact form

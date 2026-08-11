@@ -7,7 +7,7 @@ import Taxis.Http.Client
 # Authentication
 
 Google OAuth 2.0 (authorization-code flow) plus opaque server-side sessions stored in a
-`HttpOnly` cookie. A development-only email login (`ISSUES_DEV_LOGIN=1`) is provided for local
+`HttpOnly` cookie. A development-only email login (`auth.devLogin`) is provided for local
 use and tests, so the session/visibility machinery can be exercised without real Google
 credentials.
 -/
@@ -261,9 +261,9 @@ private instance : FromJson DevLogin where
     email := ← jsonField? j "email"
     displayName := ← jsonFieldOpt? j "displayName" }
 
-/-- Development-only email login, gated by `ISSUES_DEV_LOGIN`. -/
+/-- Development-only email login, gated by `ISSUES_DEV_LOGIN` / `auth.devLogin`. -/
 def devLoginH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
-  unless (← liftIO (IO.getEnv "ISSUES_DEV_LOGIN")).isSome do
+  unless ctx.config.devLogin do
     fail (.forbidden "development login is disabled")
   let input ← parseBody DevLogin req.body
   let actor ← ctx.dbM (fun db => do
