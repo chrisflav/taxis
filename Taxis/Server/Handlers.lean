@@ -219,7 +219,7 @@ def createIssueH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
 /-- Enrich an artifact with its plugin-defined display (label + optional link). -/
 def toArtifactView (a : Artifact) : IO ArtifactView := do
   let display ← match ← Plugins.artifactHandler? a.kind with
-    | some h => pure (h.render a.payload)
+    | some h => h.render a.payload
     | none => pure { label := a.payload.compress }
   pure { id := a.id, kind := a.kind, payload := a.payload, display }
 
@@ -307,9 +307,9 @@ def createArtifactH (ctx : AppContext) (issueId : Int64) (req : Req) : ApiM ApiR
   let input ← parseBody ArtifactInput req.body
   let label ← match ← liftIO (Plugins.artifactHandler? input.kind) with
     | none => fail (.unprocessable s!"unknown artifact kind '{input.kind}'")
-    | some h => match h.validate input.payload with
+    | some h => match ← liftIO (h.validate input.payload) with
       | .error e => fail (.unprocessable s!"invalid {input.kind} payload: {e}")
-      | .ok _ => pure (h.render input.payload).label
+      | .ok _ => pure (← liftIO (h.render input.payload)).label
   let actorId := req.actor.map (·.id)
   match ← ctx.dbM (fun db => do
       match ← Db.getIssue db ⟨issueId⟩ with
@@ -337,9 +337,9 @@ def updateArtifactH (ctx : AppContext) (id : Int64) (req : Req) : ApiM ApiRespon
     let payload := (body.getObjVal? "payload").toOption.getD .null
     let label ← match ← liftIO (Plugins.artifactHandler? art.kind) with
       | none => fail (.unprocessable s!"unknown artifact kind '{art.kind}'")
-      | some h => match h.validate payload with
+      | some h => match ← liftIO (h.validate payload) with
         | .error e => fail (.unprocessable s!"invalid {art.kind} payload: {e}")
-        | .ok _ => pure (h.render payload).label
+        | .ok _ => pure (← liftIO (h.render payload)).label
     let actorId := req.actor.map (·.id)
     match ← ctx.dbM (fun db => do
         match ← Db.artifactIssue db ⟨id⟩ with
@@ -770,6 +770,44 @@ def createActorTokenH (ctx : AppContext) (id : Int64) (req : Req) : ApiM ApiResp
     let tok ← ctx.dbM (Db.createToken · a.id input.name hash pfx)
     created (toJson ({ token := tok, secret } : ApiTokenCreated))
 
+/-! ## File stores -/
+
+/-- The configured file stores, by name — what the frontend needs to offer an upload target.
+    Deliberately nothing else: endpoints and credentials stay on the server. -/
+def listFileStoresH : ApiM ApiResponse := do
+  let stores ← liftIO Plugins.allFileStores
+  ok (toJson (stores.map fun s => Json.mkObj [("name", s.name), ("kind", s.kind)]))
+
+/-- Mint a presigned upload URL in store `name`. The server chooses the object key — the minting
+    actor's id, a random token, and the sanitised filename, under `uploads/` — so an upload can
+    never overwrite an existing object and every object in the bucket names who minted its URL,
+    even if no artifact is ever attached. The mint is also logged. The response carries everything
+    the client needs: the URL to `PUT` the bytes to, the headers that must accompany them, and the
+    key to write into the `file` artifact after. -/
+def createUploadUrlH (name : String) (req : Req) : ApiM ApiResponse := do
+  let some store ← liftIO (Plugins.fileStore? name)
+    | fail (.notFound s!"no file store named '{name}' is configured")
+  let body ← parseJsonBody req.body
+  let filename := (body.getObjValAs? String "filename").toOption.getD ""
+  if filename.isEmpty then fail (.badRequest "missing required field 'filename'")
+  let contentType := (body.getObjValAs? String "contentType").toOption.getD "application/octet-stream"
+  -- The content type is signed into the URL as a header. `Sigv4` canonicalises whitespace, but a
+  -- control character has no business in a header value at all — refuse it rather than sign it.
+  if contentType.toList.any (fun c => c.toNat < 0x20 || c.toNat == 0x7f) then
+    fail (.badRequest "'contentType' must not contain control characters")
+  let token ← liftIO randomToken
+  let actorTag := match req.actor with
+    | some a => s!"a{a.id.val}"
+    | none => "anon"
+  let key := s!"uploads/{actorTag}-{String.ofList (token.toList.take 16)}/{Plugins.sanitizeFilename filename}"
+  match ← liftIO (store.uploadUrl key contentType) with
+  | .error e => fail (.server s!"could not mint an upload URL: {e}")
+  | .ok (url, headers) =>
+    liftIO <| IO.eprintln s!"[taxis] upload url minted by {actorTag} in store '{store.name}': {key}"
+    ok (Json.mkObj [
+      ("url", url), ("key", key), ("store", store.name),
+      ("headers", Json.mkObj (headers.toList.map fun (k, v) => (k, Json.str v)))])
+
 /-! ## Plugins -/
 
 def pluginsH : ApiM ApiResponse := do
@@ -934,6 +972,8 @@ def dispatch (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
   | .get, ["health"] => ok (Json.mkObj [("status", "ok"), ("version", Taxis.version), ("centralPasswordEnabled", Json.bool ctx.config.centralPassword.isSome), ("googleEnabled", Json.bool ctx.config.googleClientId.isSome), ("githubEnabled", Json.bool ctx.config.githubClientId.isSome)])
   | .get, ["openapi.json"] => ok OpenApi.spec
   | .get, ["plugins"] => pluginsH
+  | .get, ["filestores"] => listFileStoresH
+  | .post, ["filestores", name, "upload-url"] => createUploadUrlH name req
   | .get, ["graph"] => graphH ctx req.actor
   | .get, ["repo-graph"] => repoGraphH ctx req
   | .post, ["repo-graph", "refresh"] => repoGraphRefreshH

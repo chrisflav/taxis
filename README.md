@@ -11,9 +11,11 @@ taxis is an extensible issue tracker built in Lean 4, with a REST API backend an
 - **Frontend** — a Vite + React + TypeScript single-page app in [`frontend/`](frontend),
   built to static assets and served by the backend.
 - **Extensibility** — *artifacts* (things attached to an issue: a GitHub PR, a branch),
-  *checks* (conditions like "CI passes on a branch"), and the two halves of the repository
-  dependency graph (*forges*, which read files out of repositories on one host, and *dependency
-  providers*, which read dependencies out of one ecosystem's manifests) are all plugins. Each
+  *checks* (conditions like "CI passes on a branch"), *file-store backends* (how to reach one
+  kind of object storage — see [File artifacts](#file-artifacts)), and the two halves of the
+  repository dependency graph (*forges*, which read files out of repositories on one host, and
+  *dependency providers*, which read dependencies out of one ecosystem's manifests) are all
+  plugins. Each
   plugin is a module that registers a handler in an `initialize` block, so adding a kind is "add
   a module + import it" with no change to the core.
 
@@ -114,6 +116,7 @@ the server logs whether Google/GitHub OAuth are configured and the redirect URIs
 | `ISSUES_GITHUB_TOKEN` | — | Token for GitHub API calls (import, CI checks) — unrelated to the OAuth App above; see below |
 | `ISSUES_CHECK_INTERVAL` | `0` | Background check-sweep interval in seconds (`0` disables) |
 | `ISSUES_REPO_DEPS_TTL` | `3600` | How long resolved repository dependencies stay cached, in seconds (`0` disables caching) |
+| `ISSUES_FILESTORES` | — | File stores for `file` artifacts, as a JSON array (see [File artifacts](#file-artifacts)) |
 | `ISSUES_ADMIN_EMAILS` | — | Comma-separated emails granted admin on login (bootstrap) |
 | `ISSUES_DEV_LOGIN` | — | If set, enables `POST /api/auth/dev-login` for local use |
 
@@ -194,6 +197,43 @@ subject id:
 
 Google and GitHub sign-in can be enabled at the same time; an actor may have both a `googleSub` and
 a `githubId` linked (independently, via matching email on each provider's first login).
+
+## File artifacts
+
+A `file` artifact links an issue to a file held in an S3-compatible object store — a self-hosted
+[Garage](https://garagehq.deuxfleurs.fr/) or [SeaweedFS](https://github.com/seaweedfs/seaweedfs),
+an actual AWS bucket. The server never proxies file bytes: it mints **presigned URLs** (AWS
+Signature v4), so uploads and downloads go straight between the browser and the bucket, and the
+store's credentials never leave the server. Attaching a `file` artifact in the UI offers a drop
+zone; the file is uploaded under a fresh `uploads/…` key and the artifact then records the store
+name and object key. Rendering an artifact resolves that pair into a time-limited download link
+(default 1 hour, `urlTtlSeconds`; signing times are rounded for cacheability, so a link can
+outlive the TTL by up to an hour — never by more than the TTL itself), so nothing permanent or
+secret is stored anywhere.
+
+Stores are declared in `ISSUES_FILESTORES`, a JSON array — several can be configured at once, and
+the attach dialogue lets you pick one (the first is the default):
+
+```bash
+ISSUES_FILESTORES='[{"name": "primary", "kind": "s3", "endpoint": "https://s3.example.com",
+  "region": "garage", "bucket": "taxis", "accessKey": "…", "secretKey": "…", "prefix": "taxis/"}]'
+```
+
+`name` is what `file` artifacts refer to, and `kind` selects the backend (file-store kinds are a
+plugin, like artifact kinds; `s3` is built in). For `s3`: `region` is the signing region (Garage
+calls it `s3_region`; AWS, the bucket's region); `prefix` (optional) is a key prefix everything
+the tracker writes lives under; `pathStyle` (default `true`) addresses objects as
+`endpoint/bucket/key` rather than `bucket.endpoint/key`; `urlTtlSeconds` (default 3600) is how
+long download links stay valid.
+
+Direct browser uploads need a **CORS rule on the bucket** allowing `PUT` from the tracker's
+origin (with the `Content-Type` header); without one, the drop zone fails and the artifact form
+can still be filled in by hand to point at any object already in the bucket. Bots do the same via
+the API: `POST /api/filestores/primary/upload-url` with `{"filename": …, "contentType": …}`, `PUT`
+the bytes to the returned URL, then attach a `file` artifact with the returned key.
+
+Anyone who can see an issue can follow its file links while they last; the object keys carry a
+random component, so links can't be guessed, but a bucket should still not be publicly readable.
 
 ## API overview
 

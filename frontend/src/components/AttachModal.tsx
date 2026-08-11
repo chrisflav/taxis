@@ -1,5 +1,5 @@
-import { useState } from "react";
-import type { Actor, PluginKind } from "../types";
+import { useEffect, useRef, useState } from "react";
+import type { Actor, FileStore, PluginKind } from "../types";
 import { api } from "../api";
 import { Modal } from "./Modal";
 import { AutoTextarea } from "./AutoTextarea";
@@ -8,6 +8,112 @@ import { SearchableSelect } from "./SearchableSelect";
 // The issue detail view's two dialogues, kept out of that view's own module so they are not in the
 // bundle that renders the page. Nothing here is on the path to a first paint: every one of these is
 // behind a button, and the chunk arrives while the dialogue is opening.
+
+// PUT a file to a presigned URL, reporting progress. XMLHttpRequest rather than fetch because
+// fetch has no upload-progress events. The URL is the bucket, not our API: no credentials, and
+// only the headers the signature covers.
+function putFile(url: string, headers: Record<string, string>, file: File, onProgress: (frac: number) => void): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", url);
+    for (const [k, v] of Object.entries(headers)) xhr.setRequestHeader(k, v);
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) resolve();
+      else reject(new Error(`upload failed: HTTP ${xhr.status}`));
+    };
+    xhr.onerror = () => reject(new Error("upload failed: network error (is CORS configured on the bucket?)"));
+    xhr.send(file);
+  });
+}
+
+// Drop zone for the `file` artifact kind: pick a store, upload straight to it through a presigned
+// URL, and hand the resulting object coordinates back so they land in the form fields below —
+// which stay visible and editable, and are what actually gets attached.
+function FileUpload({ onUploaded, onError }: {
+  onUploaded: (payload: { store: string; key: string; name: string; mime: string; size: number }) => void;
+  onError: (msg: string) => void;
+}) {
+  // null: loading; "error": the list request failed (NOT the same as an empty list — claiming
+  // "nothing is configured" on a flaky connection would send the operator debugging the wrong
+  // thing); otherwise the configured stores.
+  const [stores, setStores] = useState<FileStore[] | "error" | null>(null);
+  const [store, setStore] = useState("");
+  const [progress, setProgress] = useState<number | null>(null);
+  const [over, setOver] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
+
+  const loadStores = () => {
+    setStores(null);
+    api.fileStores()
+      .then((s) => { setStores(s); if (s.length > 0) setStore(s[0].name); })
+      .catch(() => setStores("error"));
+  };
+  useEffect(loadStores, []);
+
+  const upload = (file: File) => {
+    if (!store || progress != null) return;
+    const mime = file.type || "application/octet-stream";
+    setProgress(0);
+    api.uploadTarget(store, file.name, mime)
+      .then((target) =>
+        putFile(target.url, target.headers, file, setProgress).then(() => {
+          setProgress(null);
+          onUploaded({ store: target.store, key: target.key, name: file.name, mime, size: file.size });
+        }))
+      .catch((e) => { setProgress(null); onError(String(e instanceof Error ? e.message : e)); });
+  };
+
+  if (stores === null) return null;
+  if (stores === "error") {
+    return (
+      <p className="muted small">
+        Couldn't load the file stores — <button type="button" className="ghost" onClick={loadStores}>retry</button>,
+        or fill the fields in by hand.
+      </p>
+    );
+  }
+  if (stores.length === 0) {
+    return <p className="muted small">No file store is configured on the server (ISSUES_FILESTORES) — fill the fields in by hand to link an already-hosted object.</p>;
+  }
+  return (
+    <div>
+      {stores.length > 1 && (
+        <>
+          <label>Upload to</label>
+          <select value={store} onChange={(e) => setStore(e.target.value)}>
+            {stores.map((s) => <option key={s.name} value={s.name}>{s.name}</option>)}
+          </select>
+        </>
+      )}
+      <div
+        className={`drop-zone${over ? " drop-zone-over" : ""}`}
+        onDragOver={(e) => { e.preventDefault(); setOver(true); }}
+        onDragLeave={() => setOver(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setOver(false);
+          const file = e.dataTransfer.files[0];
+          if (file) upload(file);
+        }}
+      >
+        {progress != null ? (
+          <div style={{ width: "100%" }}>
+            <div className="muted small">Uploading… {Math.round(progress * 100)}%</div>
+            <div className="progress"><span style={{ width: `${progress * 100}%` }} /></div>
+          </div>
+        ) : (
+          <>
+            <span className="muted small">Drop a file here, or</span>
+            <button type="button" className="ghost" onClick={() => fileInput.current?.click()}>Choose…</button>
+            <input ref={fileInput} type="file" style={{ display: "none" }}
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) upload(f); e.target.value = ""; }} />
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
 
 // Modal for attaching *or editing* an artifact or check. Renders a form derived from the selected
 // kind's field schema (from /api/plugins) and assembles the payload — no raw JSON needed.
@@ -96,6 +202,15 @@ export function AttachModal({
 
         {selected && selected.fields.length === 0 && (
           <p className="muted small">No additional fields required.</p>
+        )}
+        {selected?.kind === "file" && !existing && (
+          <FileUpload
+            onUploaded={(p) => {
+              setErr(null);
+              setValues((prev) => ({ ...prev, store: p.store, key: p.key, name: p.name, mime: p.mime, size: String(p.size) }));
+            }}
+            onError={setErr}
+          />
         )}
         {selected?.fields.map((f) => (
           <div key={f.name}>

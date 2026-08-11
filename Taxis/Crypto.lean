@@ -1,9 +1,10 @@
 /-!
-# SHA-256
+# SHA-256 and HMAC-SHA256
 
 A small, self-contained SHA-256 implementation over `ByteArray`, used to hash API tokens before
-storing them (only the digest is persisted, never the plaintext). Pure and deterministic, so it
-is exercised by the test suite against the standard NIST vectors.
+storing them (only the digest is persisted, never the plaintext), and the HMAC construction over
+it, which is what `Taxis.Sigv4` derives its signing keys with. Pure and deterministic, so both are
+exercised by the test suite against the standard NIST and RFC 4231 vectors.
 -/
 
 namespace Taxis.Crypto
@@ -90,5 +91,29 @@ def toHex (bytes : ByteArray) : String := Id.run do
 
 /-- Hex-encoded SHA-256 digest of a string (UTF-8). -/
 def sha256Hex (s : String) : String := toHex (sha256 s.toUTF8)
+
+/-- SHA-256's block size in bytes. HMAC pads the key out to it — and hashes a longer key down to a
+    digest first, which is then padded like any other short key. -/
+private def blockSize : Nat := 64
+
+/-- HMAC-SHA256 of `msg` under `key`, per RFC 2104: `H((K ⊕ opad) ‖ H((K ⊕ ipad) ‖ msg))`. -/
+def hmacSha256 (key msg : ByteArray) : ByteArray := Id.run do
+  let k := if key.size > blockSize then sha256 key else key
+  let mut inner := ByteArray.empty
+  let mut outer := ByteArray.empty
+  for i in [0:blockSize] do
+    -- Reading past the (short) key yields the zero padding the construction calls for.
+    let b := k[i]?.getD 0
+    inner := inner.push (b ^^^ 0x36)
+    outer := outer.push (b ^^^ 0x5c)
+  return sha256 (outer ++ sha256 (inner ++ msg))
+
+/-- HMAC-SHA256 of a string message under a byte-array key, as a byte array. The asymmetry is
+    deliberate: signing chains feed one digest in as the next key, while the messages being signed
+    are always text. -/
+def hmac (key : ByteArray) (msg : String) : ByteArray := hmacSha256 key msg.toUTF8
+
+/-- Hex-encoded HMAC-SHA256. -/
+def hmacHex (key : ByteArray) (msg : String) : String := toHex (hmac key msg)
 
 end Taxis.Crypto

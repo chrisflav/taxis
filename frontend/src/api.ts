@@ -5,6 +5,7 @@ import type {
   Check,
   Comment,
   Event,
+  FileStore,
   GraphData,
   Group,
   Issue,
@@ -19,6 +20,7 @@ import type {
   Session,
   ReviewRequest,
   ReviewState,
+  UploadTarget,
 } from "./types";
 import { invalidateCache } from "./cache";
 import { isNetworkError, isQueuedLocally, isOffline, noteReachable, noteUnreachable, queueWrite } from "./offline";
@@ -212,6 +214,15 @@ export const api = {
   logout: () => req<{ ok: boolean }>("/auth/logout", { method: "POST" }),
 
   plugins: () => req<Plugins>("/plugins"),
+
+  fileStores: () => req<FileStore[]>("/filestores"),
+  /** Mint a presigned upload URL in `store`. The server picks the object key; PUT the bytes to
+      the returned URL (with the returned headers), then attach a `file` artifact with the key. */
+  uploadTarget: (store: string, filename: string, contentType: string) =>
+    req<UploadTarget>(`/filestores/${encodeURIComponent(store)}/upload-url`, {
+      method: "POST",
+      body: JSON.stringify({ filename, contentType }),
+    }),
 
   listIssues: (filters: IssueFilters = {}) => req<Issue[]>(issuesPath(filters)),
   /** One page of the issue list. See `IssueListRow` for why this is not `listIssues`. */

@@ -33,22 +33,22 @@ private def githubBranchDisplay (j : Json) : ArtifactDisplay :=
 def githubPrHandler : ArtifactHandler where
   kind := "github-pr"
   fields := #[{ name := "url", label := "Pull request URL", required := true, placeholder := some "https://github.com/owner/repo/pull/123" }]
-  validate j := reqString j "url"
-  render := githubPrDisplay
+  validate j := pure (reqString j "url")
+  render j := pure (githubPrDisplay j)
 
 /-- Artifact: the source GitHub issue an imported issue came from. -/
 def githubIssueHandler : ArtifactHandler where
   kind := "github-issue"
   fields := #[{ name := "url", label := "Issue URL", required := true, placeholder := some "https://github.com/owner/repo/issues/123" }, { name := "number", label := "Issue number", type := "number" }]
-  validate j := reqString j "url"
-  render := githubIssueDisplay
+  validate j := pure (reqString j "url")
+  render j := pure (githubIssueDisplay j)
 
 /-- Artifact: a branch on a GitHub repository. -/
 def githubBranchHandler : ArtifactHandler where
   kind := "github-branch"
   fields := #[{ name := "owner", label := "Owner", required := true, placeholder := some "leanprover" }, { name := "repo", label := "Repository", required := true, placeholder := some "lean4" }, { name := "branch", label := "Branch", required := true, placeholder := some "master" }]
-  validate j := do reqString j "owner"; reqString j "repo"; reqString j "branch"
-  render := githubBranchDisplay
+  validate j := pure (do reqString j "owner"; reqString j "repo"; reqString j "branch")
+  render j := pure (githubBranchDisplay j)
 
 /-- Evaluate the GitHub combined commit status of an attached `github-branch` artifact. -/
 def githubCiEvaluate (_db : Db.Conn) (_config : Json) (_issue : Issue) (artifacts : Array Artifact) :

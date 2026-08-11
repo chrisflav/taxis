@@ -163,9 +163,121 @@ def main : IO Unit := do
   check "unknown kind absent" ((← Plugins.artifactHandler? "nope").isNone)
   match ← Plugins.artifactHandler? "github-branch" with
   | some h =>
-    check "valid payload accepted" (h.validate (Json.mkObj [("owner", "o"), ("repo", "r"), ("branch", "b")]) |>.toOption |>.isSome)
-    check "invalid payload rejected" (h.validate (Json.mkObj [("owner", "o")]) |>.toOption |>.isNone)
+    check "valid payload accepted" ((← h.validate (Json.mkObj [("owner", "o"), ("repo", "r"), ("branch", "b")])) |>.toOption |>.isSome)
+    check "invalid payload rejected" ((← h.validate (Json.mkObj [("owner", "o")])) |>.toOption |>.isNone)
   | none => check "handler present" false
+
+  IO.println "HMAC-SHA256"
+  -- RFC 4231 test cases 1, 2, and 6 (the last exercising the hash-down of an over-long key).
+  let bytes (b : UInt8) (n : Nat) : ByteArray := ⟨Array.replicate n b⟩
+  check "hmac rfc4231 case 1"
+    (Crypto.toHex (Crypto.hmac (bytes 0x0b 20) "Hi There")
+      == "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7")
+  check "hmac rfc4231 case 2"
+    (Crypto.hmacHex "Jefe".toUTF8 "what do ya want for nothing?"
+      == "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843")
+  check "hmac rfc4231 case 6 (long key)"
+    (Crypto.hmacHex (bytes 0xaa 131) "Test Using Larger Than Block-Size Key - Hash Key First"
+      == "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54")
+
+  IO.println "SigV4 presigning"
+  -- The worked example from "Authenticating Requests: Using Query Parameters" in the S3 docs:
+  -- a GET of test.txt in examplebucket, signed 2013-05-24 with the documented example keys.
+  let awsExample : Taxis.Sigv4.Request := {
+    method := "GET", host := "examplebucket.s3.amazonaws.com", path := "/test.txt"
+    accessKey := "AKIAIOSFODNN7EXAMPLE", secretKey := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+    region := "us-east-1", amzDate := "20130524T000000Z", dateStamp := "20130524"
+    expiresSeconds := 86400, headers := #[("host", "examplebucket.s3.amazonaws.com")] }
+  check "sigv4 canonical request hash matches the AWS docs example"
+    (Crypto.sha256Hex awsExample.canonicalRequest
+      == "3bfa292879f6447bbcda7001decf97f4a54dc650c8942174ae0a9121cf58ad04")
+  check "sigv4 signature matches the AWS docs example"
+    (awsExample.signature == "aeeed9bbccd4d02ee5c0109b86d86835f995330da4c265957d157751f604d404")
+  check "sigv4 url carries the signature"
+    (awsExample.url.endsWith s!"&X-Amz-Signature={awsExample.signature}")
+  check "uri-encode keeps unreserved" (Taxis.Sigv4.uriEncode "AZaz09-._~" == "AZaz09-._~")
+  check "uri-encode escapes specials" (Taxis.Sigv4.uriEncode "a b/c" == "a%20b%2Fc")
+  check "uri-encode can keep path slashes" (Taxis.Sigv4.uriEncode "a b/c" (keepSlash := true) == "a%20b/c")
+  check "uri-encode is utf-8 per byte" (Taxis.Sigv4.uriEncode "é" == "%C3%A9")
+  -- Header values are canonicalised per the spec's Trimall rule; signing the raw value would
+  -- guarantee a mismatch with what the store's verifier reconstructs.
+  check "canonical headers are trimmed" (Taxis.Sigv4.trimall "  image/png " == "image/png")
+  check "canonical headers collapse inner whitespace"
+    (Taxis.Sigv4.trimall "text/plain;\t charset=utf-8" == "text/plain; charset=utf-8")
+  check "trimmed header value signs like its clean form"
+    (({ awsExample with headers := #[("host", " examplebucket.s3.amazonaws.com ")] } : Taxis.Sigv4.Request).signature
+      == awsExample.signature)
+  check "amz timestamp epoch" (Plugins.amzTimestamp 0 == ("19700101T000000Z", "19700101"))
+  check "amz timestamp leap day" (Plugins.amzTimestamp 951782400 == ("20000229T000000Z", "20000229"))
+  check "amz timestamp recent" (Plugins.amzTimestamp 1735689600 == ("20250101T000000Z", "20250101"))
+  check "amz timestamp mid-day" (Plugins.amzTimestamp (1735689600 + 3661) == ("20250101T010101Z", "20250101"))
+
+  IO.println "File stores"
+  check "filename passes through clean" (Plugins.sanitizeFilename "report_v2.pdf" == "report_v2.pdf")
+  check "filename spaces and slashes flattened" (Plugins.sanitizeFilename "my report/2026.pdf" == "my-report-2026.pdf")
+  check "filename of only separators refused" (Plugins.sanitizeFilename ".." == "file")
+  check "size formatting bytes" (Plugins.humanSize 512 == "512 B")
+  check "size formatting mb" (Plugins.humanSize (3 * 1024 * 1024 + 512 * 1024) == "3.5 MB")
+  match ← Plugins.artifactHandler? "file" with
+  | some h =>
+    check "file payload requires store" ((← h.validate (Json.mkObj [("key", "k")])) |>.toOption |>.isNone)
+    check "file payload requires key" ((← h.validate (Json.mkObj [("store", "s")])) |>.toOption |>.isNone)
+    check "file payload rejects traversal keys"
+      ((← h.validate (Json.mkObj [("store", "s"), ("key", "a/../b")])) |>.toOption |>.isNone)
+    -- An unconfigured store is *not* a validation failure (it would make artifacts uneditable
+    -- after a store rename); it degrades in the rendered display instead.
+    check "file payload tolerates unconfigured store"
+      ((← h.validate (Json.mkObj [("store", "nope"), ("key", "k")])) |>.toOption |>.isSome)
+    let unknownStore ← h.render (Json.mkObj [("store", "nope"), ("key", "k")])
+    check "unknown store degrades in display"
+      (unknownStore.url.isNone && unknownStore.label == "k — store 'nope' not configured")
+    -- Configure a store, at which point the same payload becomes valid and renders to a link.
+    let cfgErrors ← Plugins.configureFileStores
+      "[{\"name\": \"test\", \"kind\": \"s3\", \"endpoint\": \"https://garage.example.com\", \"region\": \"garage\", \"bucket\": \"taxis\", \"accessKey\": \"GK1\", \"secretKey\": \"sk\", \"prefix\": \"taxis/\"}]"
+    check "store configuration accepted" cfgErrors.isEmpty
+    check "store lookup by name" ((← Plugins.fileStore? "test").isSome)
+    check "file payload accepted with configured store"
+      ((← h.validate (Json.mkObj [("store", "test"), ("key", "uploads/a.png")])) |>.toOption |>.isSome)
+    let display ← h.render (Json.mkObj [("store", "test"), ("key", "uploads/a.png"), ("name", "a.png"), ("size", (2048 : Nat))])
+    check "file renders name and size" (display.label == "a.png (2.0 KB)")
+    check "file renders a signed link under the store prefix"
+      (display.url.any fun url =>
+        url.startsWith "https://garage.example.com/taxis/taxis/uploads/a.png?"
+          && (url.splitOn "X-Amz-Signature=").length == 2)
+    match ← Plugins.fileStore? "test" with
+    | some store =>
+      match ← store.uploadUrl "uploads/b.png" "image/png" with
+      | .ok (url, headers) =>
+        check "upload url is a signed PUT target"
+          (url.startsWith "https://garage.example.com/taxis/taxis/uploads/b.png?"
+            && (url.splitOn "X-Amz-SignedHeaders=content-type%3Bhost").length == 2
+            && headers == #[("Content-Type", "image/png")])
+      | .error _ => check "upload url minted" false
+    | none => check "store present for upload" false
+  | none => check "file handler present" false
+  -- Expiry policy, read back out of the minted URL: clamped to AWS's one-week ceiling, and a
+  -- short TTL gets a rounding window no larger than itself rather than the default hour.
+  let s3cfg (ttl : Nat) : Plugins.S3Config :=
+    match Plugins.S3Config.parse (Json.mkObj [("endpoint", "https://s3.example.com"), ("region", "r"),
+        ("bucket", "b"), ("accessKey", "ak"), ("secretKey", "sk"), ("urlTtlSeconds", toJson ttl)]) with
+    | .ok c => c
+    | .error _ => panic! "s3 config did not parse"
+  check "expiry clamped to the aws week ceiling"
+    (((← (s3cfg 604800).downloadUrl "k").splitOn "X-Amz-Expires=604800&").length == 2)
+  check "short ttl keeps a short window"
+    (((← (s3cfg 300).downloadUrl "k").splitOn "X-Amz-Expires=600&").length == 2)
+  check "mistyped optional field rejected"
+    ((Plugins.S3Config.parse (Json.mkObj [("endpoint", "https://h"), ("region", "r"), ("bucket", "b"),
+        ("accessKey", "ak"), ("secretKey", "sk"), ("pathStyle", "false")])) matches .error _)
+  check "bad filestore json reported"
+    (!(← Plugins.configureFileStores "not json").isEmpty)
+  check "unknown backend kind reported"
+    ((← Plugins.configureFileStores "[{\"name\": \"x\", \"kind\": \"nope\"}]").any (·.startsWith "file store 'x'"))
+  check "duplicate store name reported"
+    ((← Plugins.configureFileStores "[{\"name\": \"test\", \"kind\": \"s3\"}]").any (· == "duplicate file store name 'test'"))
+  check "missing s3 field reported"
+    ((← Plugins.configureFileStores "[{\"name\": \"y\", \"kind\": \"s3\", \"endpoint\": \"https://h\"}]").any
+      (fun e => e.startsWith "file store 'y'"))
 
   IO.println "Repository references"
   let canonical (u : String) := (Repo.RepoRef.parse? u).map (·.canonical)

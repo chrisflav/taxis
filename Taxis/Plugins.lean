@@ -6,6 +6,8 @@ import Taxis.Plugins.Source
 import Taxis.Plugins.JsonCheck
 import Taxis.Plugins.Standard
 import Taxis.Plugins.Session
+import Taxis.Plugins.S3Store
+import Taxis.Plugins.FileArtifact
 
 /-!
 # Plugins

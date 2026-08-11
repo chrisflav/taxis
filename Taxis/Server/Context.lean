@@ -39,6 +39,10 @@ structure Config where
   adminEmails : List String := []
   /-- Central login password; when set, password login is enabled (`ISSUES_CENTRAL_PASSWORD`). -/
   centralPassword : Option String := none
+  /-- File stores for `file` artifacts, as the raw `ISSUES_FILESTORES` JSON. It carries store
+      credentials, so `main` consumes it (`Plugins.configureFileStores`) and blanks it before the
+      config enters the request-serving context — do not read it after startup. -/
+  fileStores : Option String := none
   /-- Log every incoming request to stderr (enabled with `--verbose`). -/
   verbose : Bool := false
 deriving Inhabited
@@ -183,6 +187,7 @@ def Config.fromEnv : IO Config := do
     githubClientSecret := ← getEnv "ISSUES_GITHUB_CLIENT_SECRET"
     githubToken := ← getEnv "ISSUES_GITHUB_TOKEN"
     centralPassword := ← getEnv "ISSUES_CENTRAL_PASSWORD"
+    fileStores := ← getEnv "ISSUES_FILESTORES"
   }
 
 end Taxis

@@ -120,6 +120,9 @@ private def schemas : Json := obj [
   ("RepoEdge", schemaObj [("source", typ "string"), ("target", typ "string"),
     ("via", typ "string"), ("detail", nullable "string")]),
   ("RepoGraph", schemaObj [("nodes", arrayOf (ref "RepoNode")), ("edges", arrayOf (ref "RepoEdge"))]),
+  ("FileStore", schemaObj [("name", typ "string"), ("kind", typ "string")]),
+  ("UploadUrl", schemaObj [("url", typ "string"), ("key", typ "string"), ("store", typ "string"),
+    ("headers", typ "object")]),
   ("Deleted", schemaObj [("deleted", typ "boolean")])
 ]
 
@@ -130,6 +133,13 @@ private def paths : Json := obj [
     [("200", jsonResp "OpenAPI spec" (typ "object"))])]),
   ("/plugins", obj [("get", operation "System" "List registered artifact and check kinds" [] none
     [("200", jsonResp "Plugin kinds" (ref "Plugins"))])]),
+  ("/filestores", obj [("get", operation "Files" "The configured file stores" [] none
+    [("200", jsonResp "File stores" (arrayOf (ref "FileStore")))])]),
+  ("/filestores/{name}/upload-url", obj [("post", operation "Files"
+    "Mint a presigned upload URL; PUT the file there, then attach a `file` artifact with the returned key"
+    [obj [("name", str "name"), ("in", str "path"), ("required", jtrue), ("schema", typ "string")]]
+    (some (jsonBody (schemaObj [("filename", typ "string"), ("contentType", typ "string")] ["filename"])))
+    [("200", jsonResp "Upload target" (ref "UploadUrl"))])]),
   ("/graph", obj [("get", operation "Issues" "Every visible issue as a graph node, carrying both edge relations (dependencies and parent)" [] none
     [("200", jsonResp "Graph" (ref "Graph"))])]),
   ("/repo-graph", obj [("get", operation "Repositories" "Dependency graph of attached repositories"

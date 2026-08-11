@@ -30,6 +30,8 @@ services:
       ISSUES_GITHUB_TOKEN: ${ISSUES_GITHUB_TOKEN:-}
       # Background check-sweep interval in seconds; 0 disables it.
       ISSUES_CHECK_INTERVAL: ${ISSUES_CHECK_INTERVAL:-0}
+      # File stores for `file` artifacts (JSON array — see the README).
+      ISSUES_FILESTORES: ${ISSUES_FILESTORES:-}
       # Set (to any value) to enable POST /api/auth/dev-login. Do not set this in production.
       ISSUES_DEV_LOGIN: ${ISSUES_DEV_LOGIN:-}
     volumes:
