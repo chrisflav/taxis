@@ -32,10 +32,14 @@ services:
       ISSUES_CHECK_INTERVAL: ${ISSUES_CHECK_INTERVAL:-0}
       # File stores for `file` artifacts (JSON array — see the README).
       ISSUES_FILESTORES: ${ISSUES_FILESTORES:-}
-      # Set (to any value) to enable POST /api/auth/dev-login. Do not set this in production.
+      # Set to 1 to enable POST /api/auth/dev-login; 0, false, no and off leave it disabled, as
+      # does leaving it empty. Do not enable this in production.
       ISSUES_DEV_LOGIN: ${ISSUES_DEV_LOGIN:-}
       # Read settings from a mounted config.toml instead of the variables above (see the volume
-      # below). Variables that are set still win over the file, so leave them empty when using it.
+      # below). Variables that are set still win over the file, so leave the ones above empty when
+      # using it — and note that host, port, db and frontendDir cannot be set from the file at all
+      # here: the Dockerfile bakes ISSUES_HOST/PORT/DB/FRONTEND_DIR into the image as real
+      # environment variables, which outrank it. Override those here, not in the file.
       # ISSUES_CONFIG: /config.toml
     volumes:
       # Bind mount: the SQLite database lives in a directory on the host (created on first run,

@@ -58,7 +58,8 @@ structure Config where
   /-- File stores for `file` artifacts, as a JSON array — either the `ISSUES_FILESTORES` document
       or the `[[filestores]]` tables. It carries store credentials, so `main` consumes it
       (`Plugins.configureFileStores`) and blanks it before the config enters the request-serving
-      context — do not read it after startup. -/
+      context, and `Config.load` keeps it out of `currentConfig` entirely — do not read it after
+      startup. -/
   fileStores : Option Json := none
   /-- Log every incoming request to stderr (enabled with `--verbose`). -/
   verbose : Bool := false
@@ -90,8 +91,33 @@ private def stripQuotes (s : String) : String :=
     else s
   | [] => s
 
-/-- Parse the contents of a `.env` file into key/value pairs. Supports `#` comments,
-    an optional `export ` prefix, and single/double-quoted values. -/
+/-- Drop a trailing ` # comment` from a `.env` value. Only a `#` that follows whitespace starts one,
+    so a `#` inside a value (`hunter#2`) survives, and one inside quotes is left alone entirely.
+
+    This used to be tolerated by accident rather than handled: a value that came out as
+    `9391 # the port` failed to parse and silently fell back to its default. Now that a setting
+    which does not parse stops startup, the comment has to actually come off. -/
+private def stripComment (v : String) : String := Id.run do
+  let quote := match v.toList with
+    | q :: _ => if q == '"' || q == '\'' then some q else none
+    | [] => none
+  let mut out := ""
+  let mut inQuote := quote.isSome
+  let mut prev : Option Char := none
+  for c in v.toList do
+    if inQuote then
+      out := out.push c
+      -- The opening quote is `prev = none`, so it cannot close the string it opens.
+      if some c == quote && prev.isSome then inQuote := false
+    else if c == '#' && (prev == some ' ' || prev == some '\t') then
+      break
+    else
+      out := out.push c
+    prev := some c
+  return out.trimAscii.toString
+
+/-- Parse the contents of a `.env` file into key/value pairs. Supports `#` comments (whole-line and
+    trailing), an optional `export ` prefix, and single/double-quoted values. -/
 private def parseDotenv (content : String) : Std.HashMap String String := Id.run do
   let mut m : Std.HashMap String String := {}
   for rawLine in content.splitOn "\n" do
@@ -100,7 +126,8 @@ private def parseDotenv (content : String) : Std.HashMap String String := Id.run
     let line := if line.startsWith "export " then (line.drop 7).toString else line
     match line.splitOn "=" with
     | key :: rest@(_ :: _) =>
-      m := m.insert key.trimAscii.toString (stripQuotes ("=".intercalate rest).trimAscii.toString)
+      let value := stripComment ("=".intercalate rest).trimAscii.toString
+      m := m.insert key.trimAscii.toString (stripQuotes value)
     | _ => pure ()
   return m
 
@@ -135,26 +162,34 @@ private def Sources.envValue (s : Sources) (key : String) : IO (Option String) :
   | some v => return some v
   | none => return s.dotenv[key]?.bind nonEmpty
 
-private def Sources.bad (s : Sources) (path : List String) (want : String) (got : Json) : IO α :=
-  throw <| IO.userError s!"{s.tomlName}: '{dotted path}' must be {want}, but is {got.compress}"
+/-- `got` is a description rather than the value itself, because the value is not always worth
+    printing back: a TOML float renders through `Json.compress` as the integer it is not, so
+    `port = 8080.0` would be refused with the baffling "must be a whole number, but is 8080". -/
+private def Sources.bad (s : Sources) (path : List String) (want got : String) : IO α :=
+  throw <| IO.userError s!"{s.tomlName}: '{dotted path}' must be {want}, but is {got}"
 
 private def Sources.str (s : Sources) (env : String) (path : List String) : IO (Option String) := do
   if let some v ← s.envValue env then return some v
   match tomlAt? s.toml path with
   | none => return none
   | some (.str v) => return nonEmpty v
-  | some v => s.bad path "a string" v
+  | some v => s.bad path "a string" v.compress
 
 private def Sources.nat (s : Sources) (env : String) (path : List String) : IO (Option Nat) := do
   if let some v ← s.envValue env then
-    match v.toNat? with
+    -- Trimmed, like every other reader: a `.env` line is whatever was left of `KEY=` after its
+    -- comment was stripped, and refusing to start over a stray space would be absurd.
+    match v.trimAscii.toString.toNat? with
     | some n => return some n
     | none => throw <| IO.userError s!"{env}: must be a whole number, but is '{v}'"
   match tomlAt? s.toml path with
   | none => return none
   | some v => match v.getNat? with
     | .ok n => return some n
-    | .error _ => s.bad path "a whole number" v
+    | .error _ =>
+      s.bad path "a whole number" <| match v with
+        | .num ⟨_, exponent⟩ => if exponent > 0 then "a decimal" else v.compress
+        | _ => v.compress
 
 private def Sources.bool (s : Sources) (env : String) (path : List String) : IO (Option Bool) := do
   if let some v ← s.envValue env then
@@ -165,22 +200,26 @@ private def Sources.bool (s : Sources) (env : String) (path : List String) : IO 
   match tomlAt? s.toml path with
   | none => return none
   | some (.bool b) => return some b
-  | some v => s.bad path "true or false" v
+  | some v => s.bad path "true or false" v.compress
 
 private def Sources.strings (s : Sources) (env : String) (path : List String) :
     IO (Option (List String)) := do
-  let split (v : String) : List String :=
-    v.splitOn "," |>.map (·.trimAscii.toString) |>.filter (!·.isEmpty)
+  -- Blanks are dropped and entries trimmed, whichever notation they arrive in. `[""]` is what a
+  -- template with an unfilled variable leaves behind, and an empty admin email is not inert: it
+  -- would match an actor created with an empty email and make it an administrator.
+  let clean (vs : List String) : List String :=
+    vs.map (·.trimAscii.toString) |>.filter (!·.isEmpty)
+  let split (v : String) : List String := clean (v.splitOn ",")
   if let some v ← s.envValue env then return some (split v)
   match tomlAt? s.toml path with
   | none => return none
-  | some (.arr xs) => return some (← xs.toList.mapM fun
+  | some (.arr xs) => return some (clean (← xs.toList.mapM fun
       | .str v => pure v
-      | v => s.bad path "an array of strings" v)
+      | v => s.bad path "an array of strings" v.compress))
   -- A comma-separated string is what the environment variable holds; accepting it here too means
   -- one less thing to rewrite when a `.env` moves into the configuration file.
   | some (.str v) => return some (split v)
-  | some v => s.bad path "an array of strings" v
+  | some v => s.bad path "an array of strings" v.compress
 
 /-- The file stores: a JSON array from the environment, an array of `[[filestores]]` tables from
     the configuration file. Either way what comes out is a JSON array, which is what the file-store
@@ -196,7 +235,7 @@ private def Sources.fileStores (s : Sources) : IO (Option Json) := do
     match tomlAt? s.toml ["filestores"] with
     | none => return none
     | some (.arr xs) => return some (.arr xs)
-    | some v => s.bad ["filestores"] "a list of [[filestores]] tables" v
+    | some v => s.bad ["filestores"] "a list of [[filestores]] tables" v.compress
 
 /-! ### Loading -/
 
@@ -271,7 +310,10 @@ def Config.load (configPath : Option System.FilePath := none)
     devLogin := (← s.bool "ISSUES_DEV_LOGIN" ["auth", "devLogin"]).getD false
     fileStores := ← s.fileStores
     verbose := (← s.bool "ISSUES_VERBOSE" ["verbose"]).getD false }
-  setCurrentConfig config
+  -- Published without the file stores, so the guarantee their field documents — that no second
+  -- plaintext copy of the credentials outlives startup — holds for every caller rather than
+  -- depending on `main` remembering to republish a blanked config.
+  setCurrentConfig { config with fileStores := none }
   return { config, path := if read then some tomlPath else none, unknown := unknownKeys toml }
 
 end Taxis

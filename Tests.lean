@@ -426,6 +426,10 @@ def main : IO Unit := do
       ((← Plugins.configureFileStores stores).isEmpty && (← Plugins.fileStore? "fromtoml").isSome)
   | none => check "[[filestores]] arrives as a json array" false
 
+  -- Store credentials must not reach the process-global config: the field is consumed at startup
+  -- and blanked, and `currentConfig` is what code without an `AppContext` reads.
+  check "file stores are kept out of the published config" ((← currentConfig).fileStores.isNone)
+
   -- `.env` sits between the environment and the file.
   IO.FS.writeFile dotenvPath "ISSUES_HOST=10.0.0.1\nISSUES_PORT=9100\n"
   let viaDotenv ← Config.load (some cfgPath) dotenvPath
@@ -433,12 +437,39 @@ def main : IO Unit := do
     (viaDotenv.config.host == "10.0.0.1" && viaDotenv.config.port == 9100)
   check "the configuration file still fills the rest"
     (viaDotenv.config.centralPassword == some "hunter2")
+  -- A trailing comment in a `.env` used to be swallowed by a silent fallback to the default; now
+  -- that a value which does not parse stops startup, it has to come off cleanly.
+  IO.FS.writeFile dotenvPath "ISSUES_PORT=9100 # the port\nISSUES_HOST=\"10.0.0.2\" # quoted\n"
+  let commented ← Config.load (some cfgPath) dotenvPath
+  check "a trailing comment in a .env is not part of the value"
+    (commented.config.port == 9100 && commented.config.host == "10.0.0.2")
+  -- ...but a `#` that is part of the value stays part of it, in or out of quotes.
+  IO.FS.writeFile dotenvPath "ISSUES_CENTRAL_PASSWORD=hunter#2\nISSUES_HOST=\"10.0.0.3 # not a comment\"\n"
+  let hashes ← Config.load (some cfgPath) dotenvPath
+  check "a # inside a .env value is kept"
+    (hashes.config.centralPassword == some "hunter#2"
+      && hashes.config.host == "10.0.0.3 # not a comment")
 
   let loadFails (lines : List String) : IO Bool := do
     writeCfg lines
     throws (discard (Config.load (some cfgPath) noDotenv))
   check "a setting of the wrong type refuses to start" (← loadFails ["port = \"nope\""])
   check "a port outside the range refuses to start" (← loadFails ["port = 70000"])
+  check "a decimal where a whole number belongs refuses to start" (← loadFails ["port = 8080.0"])
+  -- `Json.compress` renders 8080.0 back as `8080`, so the message has to name the shape rather
+  -- than print the value, or it reads "must be a whole number, but is 8080".
+  writeCfg ["port = 8080.0"]
+  let decimalMsg ←
+    try do let _ ← Config.load (some cfgPath) noDotenv; pure ""
+    catch e => pure (toString e)
+  check "the decimal is described, not printed back"
+    ((decimalMsg.splitOn "but is a decimal").length == 2)
+  -- A blank admin email is not inert: it would match an actor created with an empty email and
+  -- make it an administrator, and `[""]` is what an unfilled template variable leaves behind.
+  writeCfg ["[auth]", "adminEmails = [\"\", \" a@x.io \", \"   \"]"]
+  let blanks ← Config.load (some cfgPath) noDotenv
+  check "blank admin emails are dropped and the rest trimmed"
+    (blanks.config.adminEmails == ["a@x.io"])
   check "a non-boolean flag refuses to start" (← loadFails ["[auth]", "devLogin = \"yes\""])
   check "file stores that are not tables refuse to start" (← loadFails ["filestores = 3"])
   check "an unparseable file refuses to start" (← loadFails ["port = "])
