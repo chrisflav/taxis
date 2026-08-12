@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { isNetworkError } from "./netError";
+import { describeReadFailure, isNetworkError } from "./netError";
 import { forget, forgetPrefix, hydrate, remember } from "./readCache";
 
 // A small stale-while-revalidate cache over the API.
@@ -139,6 +139,10 @@ export interface Resource<T> {
   /** True only when there is nothing to show yet; a background revalidation does not count. */
   loading: boolean;
   error: string | null;
+  /** Whether `error` is "nothing answered" rather than something the server said. The two want
+      different words and a different tone: one is a situation the reader is in and can wait out,
+      the other is an answer they have been given. */
+  offline: boolean;
   /** Discard this key's cached value and fetch it again, leaving the current value on screen until
       the new one lands. Resolves once it has been applied, so a caller that must not act before
       then — an inline editor closing onto the text it just saved — can await it. */
@@ -160,6 +164,7 @@ export function useResource<T>(
   const [data, setData] = useState<T | undefined>(() => (key == null ? undefined : peekCached<T>(key)));
   const [loading, setLoading] = useState(key != null && peekCached<T>(key) === undefined);
   const [error, setError] = useState<string | null>(null);
+  const [offline, setOffline] = useState(false);
 
   // Held in a ref so `reload` can call the current closure without being rebuilt on every render.
   const fetcherRef = useRef(fetcher);
@@ -183,9 +188,12 @@ export function useResource<T>(
         if (!live.current) return;
         setData(fresh);
         setError(null);
+        setOffline(false);
       })
       .catch((e) => {
-        if (live.current) setError(String(e));
+        if (!live.current) return;
+        setError(describeReadFailure(e));
+        setOffline(isNetworkError(e));
       })
       .finally(() => {
         if (live.current) setLoading(false);
@@ -211,5 +219,5 @@ export function useResource<T>(
     return run(key, 0, true);
   }, [key, run]);
 
-  return { data, loading, error, reload };
+  return { data, loading, error, offline, reload };
 }

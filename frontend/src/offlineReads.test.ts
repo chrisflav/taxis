@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describeReadFailure } from "./netError";
 
 /**
  * Reading the tracker with no connection.
@@ -142,5 +143,27 @@ describe("a browser", () => {
     const cache = await loadWeb();
     await cache.cachedGet("/issues/1", () => Promise.resolve({ title: "still here" }));
     await expect(cache.cachedGet("/issues/1", offline)).resolves.toEqual({ title: "still here" });
+  });
+});
+
+describe("what a failed read says on screen", () => {
+  it("does not put a JavaScript class name in front of the reader", () => {
+    const message = describeReadFailure(new TypeError("Failed to fetch"));
+    expect(message).not.toMatch(/TypeError|fetch/i);
+    // Both halves of why the screen is empty: no connection, and nothing held locally either.
+    expect(message).toMatch(/no connection/i);
+    expect(message).toMatch(/device/i);
+  });
+
+  it("passes the server's own sentence through, without an `Error:` bolted onto it", () => {
+    expect(describeReadFailure(new Error("admin privileges required")))
+      .toBe("admin privileges required");
+    // The outdated-server explanation reaches the reader whole, which was the point of writing it.
+    expect(describeReadFailure(new Error("this server does not have the paged issue list")))
+      .toBe("this server does not have the paged issue list");
+  });
+
+  it("copes with something thrown that is not an Error at all", () => {
+    expect(describeReadFailure("just a string")).toBe("just a string");
   });
 });

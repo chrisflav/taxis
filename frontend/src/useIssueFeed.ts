@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { IssueListRow } from "./types";
 import { api, issuePagePath, type IssuePageQuery } from "./api";
 import { cachedGet } from "./cache";
-import { isNetworkError } from "./netError";
+import { describeReadFailure, isNetworkError } from "./netError";
 
 /**
  * The issue list's rows, pulled a page at a time and accumulated locally.
@@ -65,6 +65,8 @@ export interface IssueFeed {
   streaming: boolean;
   searching: boolean;
   error: string | null;
+  /** Whether `error` is "nothing answered" rather than something the server said. */
+  offline: boolean;
   reload: () => void;
   /** Ask for at least `n` rows to be held, fetching pages until there are (or the result set ends).
       What the list is about to show, plus a page of slack, so paging forward is instant without
@@ -111,6 +113,7 @@ export function useIssueFeed(query: IssuePageQuery, search: string, enabled = tr
   const [streaming, setStreaming] = useState(false);
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [offline, setOffline] = useState(false);
   const [serverMatched, setServerMatched] = useState<Set<number>>(() => new Set());
   const [nonce, setNonce] = useState(0);
   /** How many rows have been asked for. Only ever raised, and reset with the filters. */
@@ -202,7 +205,8 @@ export function useIssueFeed(query: IssuePageQuery, search: string, enabled = tr
           setComplete(true);
           return;
         }
-        setError(String(e));
+        setError(describeReadFailure(e));
+        setOffline(isNetworkError(e));
       })
       .finally(() => {
         if (generation.current !== gen) return;
@@ -239,6 +243,7 @@ export function useIssueFeed(query: IssuePageQuery, search: string, enabled = tr
   }, [search, key, complete, enabled]);
 
   return {
-    rows, serverMatched, total, complete, capped, loading, streaming, searching, error, reload, ensure,
+    rows, serverMatched, total, complete, capped, loading, streaming, searching, error, offline,
+    reload, ensure,
   };
 }

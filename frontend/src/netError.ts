@@ -13,3 +13,23 @@
 export function isNetworkError(e: unknown): boolean {
   return e instanceof TypeError;
 }
+
+/**
+ * What to put on screen when a read failed.
+ *
+ * Two things it fixes about `String(e)`, which is what the views used to show. A `fetch` rejection
+ * stringifies to "TypeError: Failed to fetch" — the name of a JavaScript class and a phrase about
+ * an internal API, in front of somebody whose actual situation is that they are on a train. And an
+ * error the server explained stringifies with an "Error: " prefix glued to the front of a sentence
+ * that was written to be read.
+ *
+ * The message deliberately says both halves of why there is nothing to show: no connection *and* no
+ * local copy. Either alone would be survivable — that is what the read cache is for — and it is the
+ * combination that leaves the screen empty.
+ */
+export function describeReadFailure(e: unknown): string {
+  if (isNetworkError(e)) {
+    return "No connection to the server, and no copy of this on this device yet.";
+  }
+  return e instanceof Error ? e.message : String(e);
+}
