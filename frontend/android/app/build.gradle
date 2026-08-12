@@ -1,0 +1,113 @@
+apply plugin: 'com.android.application'
+
+// Release signing is supplied from outside the repository — no keystore and no password is
+// committed. Set these four (`-P…` on the command line, `~/.gradle/gradle.properties`, or
+// `ORG_GRADLE_PROJECT_…` in the environment, which is how the CI workflow passes them) and the
+// release build is signed; leave them unset and it builds unsigned, which is what `./gradlew
+// assembleRelease` does on a fresh checkout.
+def hasSigning = ['TAXIS_KEYSTORE_FILE', 'TAXIS_KEYSTORE_PASSWORD', 'TAXIS_KEY_ALIAS', 'TAXIS_KEY_PASSWORD']
+    .every { project.hasProperty(it) && project.property(it)?.trim() }
+
+// Stamped by the release workflow so an installed build can be traced back to the run that made
+// it; the defaults are what a local build gets.
+def appVersionCode = (project.findProperty('TAXIS_VERSION_CODE') ?: '1') as Integer
+def appVersionName = project.findProperty('TAXIS_VERSION_NAME') ?: '1.0'
+
+android {
+    namespace "dev.merten.taxis"
+    compileSdk rootProject.ext.compileSdkVersion
+    defaultConfig {
+        applicationId "dev.merten.taxis"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode appVersionCode
+        versionName appVersionName
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        aaptOptions {
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    signingConfigs {
+        // A *shared* debug key, committed to the repository, and the reason it is here is upgrades.
+        //
+        // Gradle generates `~/.android/debug.keystore` on demand, which is fine on one developer's
+        // machine and wrong the moment builds come from CI: a fresh runner has no keystore, so every
+        // run invents a new one, every APK carries a different signature, and Android refuses to
+        // install one over another — reporting it, unhelpfully, as "App not installed". Pinning the
+        // key makes successive builds upgrade each other, which is the whole point of shipping a
+        // build somebody can install.
+        //
+        // Not a secret, and not treated as one: these are the credentials Android's own debug
+        // keystore has used forever, the certificate says "debug" in its name, and it signs only the
+        // debug build type. A release build still refuses to be signed by anything but a real key
+        // supplied from outside the repository — see `hasSigning` above.
+        debug {
+            storeFile file('../debug.keystore')
+            storePassword 'android'
+            keyAlias 'androiddebugkey'
+            keyPassword 'android'
+        }
+        if (hasSigning) {
+            release {
+                storeFile file(TAXIS_KEYSTORE_FILE)
+                storePassword TAXIS_KEYSTORE_PASSWORD
+                keyAlias TAXIS_KEY_ALIAS
+                keyPassword TAXIS_KEY_PASSWORD
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            signingConfig signingConfigs.debug
+        }
+        release {
+            // The application is web assets in an asset folder; there is no Java or Kotlin of ours
+            // for R8 to shrink, and shrinking Capacitor's own bridge only risks stripping something
+            // it reaches by reflection. Left off deliberately rather than by omission.
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            if (hasSigning) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+
+    lint {
+        // A release build must not be quietly wrong about something the tooling already knows —
+        // but a warning is not a reason to fail a build that people are waiting on an APK from.
+        abortOnError true
+        warningsAsErrors false
+    }
+}
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation project(':capacitor-android')
+    testImplementation "junit:junit:$junitVersion"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    implementation project(':capacitor-cordova-android-plugins')
+}
+
+apply from: 'capacitor.build.gradle'
+
+try {
+    def servicesJSON = file('google-services.json')
+    if (servicesJSON.text) {
+        apply plugin: 'com.google.gms.google-services'
+    }
+} catch(Exception e) {
+    logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
+}

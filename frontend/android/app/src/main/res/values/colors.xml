@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The one brand colour, shared with `frontend/public/icon.svg` and the web app's accent. -->
+    <color name="taxis_accent">#5B46D9</color>
+
+    <color name="colorPrimary">#5B46D9</color>
+    <color name="colorPrimaryDark">#4636B0</color>
+    <color name="colorAccent">#5B46D9</color>
+
+    <!-- The plate the launcher masks the mark against. -->
+    <color name="ic_launcher_background">#5B46D9</color>
+
+    <!-- The launch screen. Light by default; `values-night` swaps it, so the moment before the
+         WebView paints matches the theme the app resolves before its own first paint. -->
+    <color name="splash_background">#FBFBFE</color>
+</resources>

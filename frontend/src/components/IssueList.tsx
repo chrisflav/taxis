@@ -12,6 +12,7 @@ import {
 import { useIssueFeed } from "../useIssueFeed";
 import { learnIssueNames } from "../issueNames";
 import { PageHeader } from "./PageHeader";
+import { ReadFailure } from "./ReadFailure";
 import { LabelChip } from "./LabelChip";
 import { Markdown } from "./Markdown";
 import { Filters } from "./Filters";
@@ -238,7 +239,15 @@ export function IssueList({ me }: { me: Actor | null }) {
   // a `#123` in a title, the parent a breadcrumb needs, the chip on a chosen filter.
   useEffect(() => { learnIssueNames(issues); }, [issues]);
   const loading = feed.loading;
-  const error = feed.error ?? labelsRes.error ?? actorsRes.error;
+  // Paired rather than merged: the message and whether it was a connectivity failure have to come
+  // from the *same* read, or an offline list would be described with the server's words.
+  const readFailure = feed.error
+    ? { message: feed.error, offline: feed.offline }
+    : labelsRes.error
+      ? { message: labelsRes.error, offline: labelsRes.offline }
+      : actorsRes.error
+        ? { message: actorsRes.error, offline: actorsRes.offline }
+        : null;
   const load = feed.reload;
 
   // The breadcrumbs' "Issues" root link uses "?reset=1" to explicitly clear every filter — but
@@ -377,7 +386,9 @@ export function IssueList({ me }: { me: Actor | null }) {
         />
       )}
 
-      {error && <div className="panel error">{error}</div>}
+      {readFailure && (
+        <ReadFailure message={readFailure.message} offline={readFailure.offline} onRetry={load} />
+      )}
       {/* What is actually in hand. A list that stopped at the cap looks exactly like a list that
           reached the end, and the difference decides whether searching it is conclusive. */}
       {(feed.streaming || feed.searching || (!feed.complete && !feed.loading)) && (

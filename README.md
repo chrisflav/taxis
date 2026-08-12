@@ -9,7 +9,8 @@ taxis is an extensible issue tracker built in Lean 4, with a REST API backend an
   server, persisting to SQLite via [`leansqlite`](https://github.com/leanprover/leansqlite)
   (bundled — no system SQLite needed). JSON (de)serialisation uses `Lean.Data.Json`.
 - **Frontend** — a Vite + React + TypeScript single-page app in [`frontend/`](frontend),
-  built to static assets and served by the backend.
+  built to static assets and served by the backend. The same build, packaged with Capacitor, is the
+  **mobile app** — see [The mobile app](#the-mobile-app).
 - **Extensibility** — *artifacts* (things attached to an issue: a GitHub PR, a branch),
   *checks* (conditions like "CI passes on a branch"), *file-store backends* (how to reach one
   kind of object storage — see [File artifacts](#file-artifacts)), and the two halves of the
@@ -98,6 +99,71 @@ environment variables in `docker/docker-compose.yaml`; Compose automatically loa
 (not committed — see `docker/.env.example` for what's available and their defaults) to fill in
 the `${VAR:-default}` placeholders there. To use a `config.toml` instead, uncomment the
 `ISSUES_CONFIG` variable and the matching volume in `docker-compose.yaml`.
+
+### The mobile app
+
+The app is this same frontend, packaged with [Capacitor](https://capacitorjs.com) — the same
+components, the same bundle, the same offline queue, in a WebView. There is no second
+implementation to keep in step, and no second set of views to add a feature to twice.
+
+Two things differ between the page a taxis server serves and the app on a phone, and both live in
+[`frontend/src/server.ts`](frontend/src/server.ts):
+
+- **Where the server is.** In a browser the app was served *by* the tracker, so the API is at
+  `/api` on its own origin. Packaged, it has to be told — and since a phone is one device used
+  against several trackers, it keeps a **list** of them with one current. That is the **Servers**
+  screen (the account menu, or the tracker's name next to the wordmark), and it is the only screen
+  that exists solely in the app. Switching is one tap; each entry keeps its own token and its own
+  queue of unsent changes, so moving between two trackers never costs you work on either.
+- **How it authenticates.** In a browser, the session cookie the server set. Packaged, requests are
+  cross-origin, and the server's `Access-Control-Allow-Origin: *` cannot be combined with
+  credentials — so the app carries an **API token** (**Tokens** in the web UI) as
+  `Authorization: Bearer`, one per server — a token is issued by one tracker and means nothing to
+  another. The OAuth and password sign-ins all end in a cookie on the server's origin, which an app
+  running from your device could never send back, so it does not offer them.
+
+With no token the app still works, read-only: taxis lets anyone read.
+
+**Offline.** The app keeps what it has read, per server, and hydrates from it at startup, so opening
+it with no connection shows the issues you were last looking at rather than an error over a blank
+list. The web build does not do this and should not: there a page load is somebody asking for the
+page, whereas on a phone it is usually the system having reclaimed the WebView. What *both* now do
+is treat a read that fails because nothing answered as no news — the last answer stays on screen and
+the offline indicator says why — while a read the server refused stays an error, which is the same
+rule the write queue has always applied in the other direction. Writes made offline queue as they
+do on the web, and go out on reconnect. See [`frontend/src/readCache.ts`](frontend/src/readCache.ts).
+
+The app is also the first taxis client that ships **separately from the server** — a phone keeps the
+build it was installed with, so it can be newer than the tracker it is pointed at, which a browser
+can never be. The connect screen's *Check connection* therefore reports two things: that the address
+answers, and that the server has the endpoints this build calls. A server that is too old is named
+as such, with the commit to update past — rather than being discovered later as an empty issue list.
+
+```bash
+cd frontend
+npm install
+npm run app:sync     # build the web bundle and copy it into the native project
+npm run app:apk      # …and assemble a debug APK (needs an Android SDK)
+npm run app:open     # or open the project in Android Studio
+```
+
+The APK lands in `frontend/android/app/build/outputs/apk/`. The **Android app** workflow builds one
+on every change to `frontend/`, and uploads it as a run artifact; dispatching it with *publish* also
+attaches it to the rolling `app-latest` prerelease, which is what to send somebody who just wants to
+install it. Set the `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and
+`ANDROID_KEY_PASSWORD` repository secrets to get a signed release APK — without them the release
+build is unsigned and the debug APK is the installable one.
+
+The debug key (`frontend/android/debug.keystore`) is committed on purpose. Android refuses to
+install a package over one signed by a different key — reporting it as "App not installed" — and a
+CI runner has no keystore, so left to itself Gradle invents one per run and no build can ever
+upgrade another. It is not a secret: the credentials are the ones Android's own debug keystore has
+always used, and it signs only the debug build type. Release signing still comes from outside the
+repository. Changing which key signs a build — debug to release, or a new release key — still needs
+one uninstall on each device.
+
+iOS is the same web build: `npx cap add ios` in `frontend/`, then build it on a Mac. The platform
+is not committed because nothing in CI can compile it.
 
 ## Configuration
 

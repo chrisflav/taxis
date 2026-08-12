@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import type { Actor, Session } from "../types";
 import { api } from "../api";
+import { isNativeApp } from "../server";
 import { ActorName } from "./ActorName";
 import { Modal } from "./Modal";
 
@@ -43,8 +44,14 @@ function AccountMenu({ me, onChange }: { me: Actor; onChange: () => void }) {
           </div>
           <a role="menuitem" href="#/tokens" onClick={() => setOpen(false)}>API tokens</a>
           {me.admin && <a role="menuitem" href="#/admin" onClick={() => setOpen(false)}>Admin</a>}
-          <a role="menuitem" href="/docs" target="_blank" rel="noreferrer">API reference ↗</a>
-          <button role="menuitem" onClick={() => { setOpen(false); api.logout().then(onChange); }}>Sign out</button>
+          {isNativeApp && <a role="menuitem" href="#/servers" onClick={() => setOpen(false)}>Servers</a>}
+          <a role="menuitem" href={api.docsUrl} target="_blank" rel="noreferrer">API reference ↗</a>
+          {/* Signing out of the packaged app means giving up its token, which is a property of the
+              connection rather than of a session — so it lives on the same screen the token was
+              entered on, next to the server it belongs to. */}
+          {isNativeApp
+            ? <a role="menuitem" href="#/servers" onClick={() => setOpen(false)}>Sign out…</a>
+            : <button role="menuitem" onClick={() => { setOpen(false); api.logout().then(onChange); }}>Sign out</button>}
         </div>
       )}
     </div>
@@ -58,6 +65,15 @@ export function LoginBar({ me, auth, onChange }: { me: Actor | null; auth: Sessi
   const [showPasswordForm, setShowPasswordForm] = useState(false);
 
   if (me) return <AccountMenu me={me} onChange={onChange} />;
+
+  // Every sign-in the server offers ends with a cookie on the *server's* origin: the two OAuth
+  // flows redirect a browser there, and the password form is answered with a `Set-Cookie`. The
+  // packaged app runs from the device, so none of those cookies would ever be sent back with its
+  // requests — showing the buttons would be offering three things that cannot work. It carries an
+  // API token instead, and that is entered on the connect screen.
+  if (isNativeApp) {
+    return <a href="#/servers"><button>Sign in</button></a>;
+  }
 
   const googleEnabled = !!auth?.googleEnabled;
   const githubEnabled = !!auth?.githubEnabled;

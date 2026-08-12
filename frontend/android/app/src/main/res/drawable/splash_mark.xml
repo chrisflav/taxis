@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The favicon at launch-screen size: the mark on its own tile, exactly as `icon.svg` draws it. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="96dp"
+    android:height="96dp"
+    android:viewportWidth="32"
+    android:viewportHeight="32">
+    <path
+        android:fillColor="@color/taxis_accent"
+        android:pathData="M7,0 h18 a7,7 0 0,1 7,7 v18 a7,7 0 0,1 -7,7 h-18 a7,7 0 0,1 -7,-7 v-18 a7,7 0 0,1 7,-7 z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M11.8,7.5 a1.8,1.8 0 0,1 1.8,1.8 v13.4 a1.8,1.8 0 0,1 -3.6,0 v-13.4 a1.8,1.8 0 0,1 1.8,-1.8 z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M11.8,14.2 h8.4 a1.8,1.8 0 0,1 0,3.6 h-8.4 a1.8,1.8 0 0,1 0,-3.6 z" />
+</vector>

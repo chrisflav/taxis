@@ -24,8 +24,13 @@ import type {
 } from "./types";
 import { invalidateCache } from "./cache";
 import { isNetworkError, isQueuedLocally, isOffline, noteReachable, noteUnreachable, queueWrite } from "./offline";
+import { apiBase, authHeaders, requestCredentials, serverOrigin } from "./server";
+import { explainServerError } from "./compat";
 
-const BASE = "/api";
+/** Where the API is. A function rather than a constant because the packaged app is told at runtime
+    which server it belongs to, and can be re-pointed at another one; in a browser it is `/api` on
+    this page's own origin, every time, exactly as it was. See `server.ts`. */
+const BASE = (): string => apiBase();
 
 /**
  * Every request the application makes goes through here, which is what makes this the one place
@@ -55,19 +60,24 @@ async function req<T>(path: string, opts: RequestInit = {}): Promise<T> {
 
   let res: Response;
   try {
-    res = await fetch(BASE + path, {
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
+    res = await fetch(BASE() + path, {
+      credentials: requestCredentials(),
+      headers: { "Content-Type": "application/json", ...authHeaders() },
       ...opts,
     });
   } catch (e) {
-    if (mutating && isNetworkError(e)) {
+    if (isNetworkError(e)) {
+      // Nothing answered. That is as true of a read as of a write, and reads are most of what the
+      // app does — so noting it here is what lets the offline indicator be right in the case
+      // `navigator.onLine` gets wrong: connected to a network, no route to this server.
       noteUnreachable();
-      // Queued as *uncertain*: the request left, and a `fetch` rejection says only that no reply
-      // came back — not whether the server acted on it first. The queue holds back the two kinds
-      // where replaying a write it already has would make a second one.
-      const queued = queueWrite(method, path, opts.body, true);
-      if (queued) return queued as T;
+      if (mutating) {
+        // Queued as *uncertain*: the request left, and a `fetch` rejection says only that no reply
+        // came back — not whether the server acted on it first. The queue holds back the two kinds
+        // where replaying a write it already has would make a second one.
+        const queued = queueWrite(method, path, opts.body, true);
+        if (queued) return queued as T;
+      }
     }
     throw e;
   }
@@ -79,7 +89,11 @@ async function req<T>(path: string, opts: RequestInit = {}): Promise<T> {
   const text = await res.text();
   const data = text ? JSON.parse(text) : null;
   if (!res.ok) {
-    throw new Error(data?.error ?? res.statusText);
+    // The packaged app can be newer than the server it is pointed at — something that cannot happen
+    // in a browser, where the server serves its own frontend. When it is, a request lands on a route
+    // the server does not have and the error describes the routing accident rather than the cause.
+    // One rewrite, here, so every view that shows a server error shows the actionable sentence.
+    throw new Error(explainServerError(data?.error ?? res.statusText));
   }
   return data as T;
 }
@@ -194,8 +208,12 @@ const refreshed = (prefix: string) => <T,>(result: T): T => {
 };
 
 export const api = {
-  googleLoginUrl: BASE + "/auth/google/login",
-  githubLoginUrl: BASE + "/auth/github/login",
+  // Getters, not constants: these are browser navigations to whichever server the app is talking
+  // to, and in the packaged app that is not known until it has been configured.
+  get googleLoginUrl() { return BASE() + "/auth/google/login"; },
+  get githubLoginUrl() { return BASE() + "/auth/github/login"; },
+  /** The API reference the account menu links to — served by the same server as the API. */
+  get docsUrl() { return serverOrigin() + "/docs"; },
 
   me: () => req<Actor>("/me"),
   /** Who's signed in and which sign-in methods exist, in one request. Succeeds signed out, with a

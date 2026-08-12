@@ -1,5 +1,7 @@
 import { useSyncExternalStore } from "react";
 import { dropCached, invalidateCache, peekCached, writeCached } from "./cache";
+import { isNetworkError } from "./netError";
+import { apiBase, authHeaders, onServerForgotten, requestCredentials, serverScope } from "./server";
 import type { Issue, IssueDetail } from "./types";
 
 // Offline editing: where a write goes when there is no server to send it to.
@@ -19,10 +21,13 @@ import type { Issue, IssueDetail } from "./types";
 //   `bench/` enforces, and "am I online?" is not one of them. Recovery therefore rides on events
 //   that already happen — the `online` event, and any request that succeeds afterwards.
 //
-//   The queue is persisted, the read cache is not. These are different things and the difference
-//   matters: a cached response is a copy of something the server still has, so throwing it away on
-//   reload costs a request. A queued write is the only copy in existence, so throwing it away
-//   costs the user their work. `localStorage` is used because it is synchronous, universally
+//   The queue is always persisted; the read cache only in the packaged app. These are different
+//   things and the difference matters: a cached response is a copy of something the server still
+//   has, so throwing it away on reload costs a request. A queued write is the only copy in
+//   existence, so throwing it away costs the user their work. That asymmetry is also why the read
+//   cache yields storage to this one rather than competing with it (see `readCache.ts`), and why on
+//   a phone — where every launch is a cold load — the reads are kept too: there, starting empty
+//   meant an offline launch could show nothing at all. `localStorage` is used because it is synchronous, universally
 //   available and needs no schema; every access is wrapped, since it throws in private-mode and
 //   storage-blocked contexts. IndexedDB is the upgrade path if queues ever get big enough that a
 //   synchronous write on the main thread matters — the shape below (an array of self-contained
@@ -54,14 +59,26 @@ import type { Issue, IssueDetail } from "./types";
 //   been sent", with Send and Discard. Guessing on their behalf would either lose the work or post
 //   it twice, and there is no third answer available from here.
 
-const BASE = "/api";
+/** Where the API is — the same answer `api.ts` gets, from the same place. In a browser this is
+    `/api` on this page's own origin; in the packaged app it is whichever server the app was
+    connected to. See `server.ts`. */
+const BASE = (): string => apiBase();
 
 /** Where the queue lives between sessions. Versioned in the name so a future change of shape can
     ignore what an older build wrote rather than trying to understand it — which is what the bump
     to v2 is: v1 entries carry no actor and no `uncertain` flag, and the whole point of both is that
-    an op without them cannot be replayed safely. */
-const QUEUE_KEY = "taxis:offline-queue:v2";
-const CONFLICT_KEY = "taxis:offline-conflicts:v2";
+    an op without them cannot be replayed safely.
+
+    Suffixed by the server, because a queued `PATCH /issues/12` is a change to issue 12 *on the
+    tracker it was made against*, and the packaged app moves between several. Sending it to another
+    would edit an unrelated issue that happens to share a number. In a browser the suffix is empty
+    and these are byte-for-byte the keys they always were, so a returning reader's unsent work is
+    still theirs. */
+const QUEUE_BASE = "taxis:offline-queue:v2";
+const CONFLICT_BASE = "taxis:offline-conflicts:v2";
+
+const queueKey = (scope: string = serverScope()): string => QUEUE_BASE + scope;
+const conflictKey = (scope: string = serverScope()): string => CONFLICT_BASE + scope;
 
 /** What kind of interaction a queued request is. Kept alongside the method and path because the
     replay treats them differently — only a patch has a version to check, only a delete is content
@@ -305,8 +322,8 @@ function persist(): void {
     conflicts = conflicts.slice(conflicts.length - MAX_CONFLICTS);
   }
   try {
-    localStorage.setItem(QUEUE_KEY, JSON.stringify(queue));
-    localStorage.setItem(CONFLICT_KEY, JSON.stringify(conflicts));
+    localStorage.setItem(queueKey(), JSON.stringify(queue));
+    localStorage.setItem(conflictKey(), JSON.stringify(conflicts));
     storageFailed = false;
   } catch {
     // Storage full, or blocked. The queue still works for this session; it just will not survive a
@@ -449,9 +466,7 @@ export function noteReachable(): void {
 /** Whether a thrown value is a failure to reach the network at all, as opposed to the server
     answering with something the caller does not like. `fetch` rejects with a `TypeError` when the
     request could not be made; an HTTP 403 is not a rejection and must keep surfacing as an error. */
-export function isNetworkError(e: unknown): boolean {
-  return e instanceof TypeError;
-}
+export { isNetworkError };
 
 // ---------------------------------------------------------------------------------------------
 // The local view of a queued write
@@ -545,6 +560,37 @@ export function discardQueued(opId: string): void {
   notify();
 }
 
+/** How much unsent work a server is holding, for the interface that offers to forget it.
+ *
+ *  Reads the stored queue for a server that is *not* the current one, which is the only way to
+ *  answer "removing this will lose N changes" — the in-memory queue is the active server's. */
+export function queuedCountFor(scope: string): number {
+  return readStored(queueKey(scope), isQueuedOp).length;
+}
+
+/** Drop everything queued against one server, because that server has been forgotten.
+ *
+ *  Not an undo button — there is deliberately no interface for discarding the *current* server's
+ *  queue. This exists for the one event that leaves a queue with nowhere to go: the entry it was
+ *  scoped to being removed. Up to that point a queue simply waits, including while the app is
+ *  showing a different tracker, because each one is stored under its own key.
+ *
+ *  Takes the scope rather than reading the current one: by the time this runs the entry is being
+ *  removed, and it may or may not be the active one. */
+export function forgetQueueFor(scope: string): void {
+  try {
+    localStorage.removeItem(queueKey(scope));
+    localStorage.removeItem(conflictKey(scope));
+  } catch {
+    /* Storage is unavailable; there was nothing persisted to remove. */
+  }
+  if (scope !== serverScope()) return;
+  queue = [];
+  conflicts = [];
+  invalidateCache();
+  notify();
+}
+
 /** Send a held op after all — the reader has decided it did not reach the server the first time.
  *  Clearing `uncertain` is what lets the drain past it; discarding it instead is `discardQueued`. */
 export function confirmQueued(opId: string): void {
@@ -574,10 +620,10 @@ interface Sent {
  *
  *  Rejects only when nothing answered; an HTTP status is a result, and the caller decides. */
 async function send(method: string, path: string, body: string | null): Promise<Sent> {
-  const res = await fetch(BASE + path, {
+  const res = await fetch(BASE() + path, {
     method,
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
+    credentials: requestCredentials(),
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     ...(body == null ? {} : { body }),
   });
   const text = await res.text();
@@ -787,9 +833,14 @@ function afterPageLoad(fn: () => void): void {
 }
 
 if (typeof window !== "undefined") {
-  queue = readStored(QUEUE_KEY, isQueuedOp);
-  conflicts = readStored(CONFLICT_KEY, isConflict);
+  queue = readStored(queueKey(), isQueuedOp);
+  conflicts = readStored(conflictKey(), isConflict);
   rebuild();
+
+  // Switching servers no longer costs anybody their unsent work — each tracker keeps its own
+  // queue, under its own key. Removing one is different: there is then nowhere left to send what
+  // was queued against it, so it goes with it.
+  onServerForgotten(forgetQueueFor);
 
   // Set unconditionally, not only when there is a queue to send: a session that starts with an
   // empty queue and fills one later still needs the gate open. With nothing queued this costs the

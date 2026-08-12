@@ -4,6 +4,7 @@ import { App } from "./App";
 import { api, childrenQuery, issuePagePath, paths } from "./api";
 import { LIST_MAX_AGE, REFERENCE_MAX_AGE, cachedGet } from "./cache";
 import { preloadMarkdown } from "./components/Markdown";
+import { isConfigured } from "./server";
 import "./styles.css";
 
 // Start the reads every view needs immediately, rather than after the session resolves and the
@@ -54,9 +55,14 @@ function prefetchRoute(hash: string): void {
 
 // Who is signed in, and how one *could* sign in, in a single request — this used to be `/me` and
 // `/health`, two of the six connections a browser will open to one origin spent on 137 bytes.
-cachedGet(paths.session, api.session, 0).catch(() => {});
-prefetchReferenceData();
-prefetchRoute(window.location.hash);
+// …unless there is no server to ask yet. The packaged app starts out belonging to no tracker, and
+// every request below would resolve against the device: three failures on the critical path of a
+// screen whose whole job is to ask which tracker this is.
+if (isConfigured()) {
+  cachedGet(paths.session, api.session, 0).catch(() => {});
+  prefetchReferenceData();
+  prefetchRoute(window.location.hash);
+}
 
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

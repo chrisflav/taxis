@@ -3,6 +3,7 @@ import type { Actor, Session } from "./types";
 import { api, paths } from "./api";
 import { cachedGet, invalidateCache } from "./cache";
 import { setCurrentActor } from "./offline";
+import { activeServer, isConfigured, isNativeApp } from "./server";
 import { IssueList } from "./components/IssueList";
 import { LoginBar } from "./components/Login";
 import { NotificationBell } from "./components/NotificationBell";
@@ -31,6 +32,8 @@ const IssueForm = lazy(() => import("./components/IssueForm").then((m) => ({ def
 // data is prefetched from the URL before React mounts, so the chunk arrives alongside the response
 // it will render rather than after it.
 const IssueDetail = lazy(() => import("./components/IssueDetail").then((m) => ({ default: m.IssueDetail })));
+// Only the packaged app has servers to choose between, so in a browser this chunk is never fetched.
+const Servers = lazy(() => import("./components/Servers").then((m) => ({ default: m.Servers })));
 
 // The same mark as the favicon, so the tab and the page agree on what this is. Drawn here rather
 // than loaded from /icon.svg: it is smaller inline than the request would be.
@@ -82,7 +85,9 @@ export function App() {
       .finally(() => setMeLoaded(true));
   const refreshMe = () => loadSession(0);
 
-  useEffect(() => { loadSession(60_000); }, []);
+  // Nothing to ask when there is no server to ask: the packaged app starts out belonging to no
+  // tracker, and `/api/session` would resolve against the device rather than against anything.
+  useEffect(() => { if (isConfigured()) loadSession(60_000); else setMeLoaded(true); }, []);
 
   // Cached responses are scoped to whoever was signed in when they were fetched — issue reads are
   // visibility-filtered per actor — so a sign-in or sign-out throws the whole cache away rather
@@ -135,7 +140,12 @@ export function App() {
   };
 
   let view;
-  if (top === "graph") view = <GraphView />;
+  // Before the packaged app knows which tracker it belongs to there is nothing any other view could
+  // read, so this one stands in for all of them rather than every view learning to say "not
+  // configured". In a browser `isConfigured()` is true from the first frame and this never fires.
+  if (!isConfigured()) view = <Servers />;
+  else if (top === "servers" || top === "connect") view = <Servers />;
+  else if (top === "graph") view = <GraphView />;
   else if (top === "repos") view = <RepoGraphView />;
   else if (top === "labels") view = <LabelsPage me={me} />;
   else if (top === "notifications") view = <NotificationsPage me={me} />;
@@ -175,19 +185,33 @@ export function App() {
             <Turnstile />
             <span>taxis</span>
           </a>
-          <nav aria-label="Main">
-            <a className={navClass("issues")} aria-current={navCurrent("issues")} href="#/issues">Issues</a>
-            <a className={navClass("graph")} aria-current={navCurrent("graph")} href="#/graph">Graph</a>
-            <a className={navClass("repos")} aria-current={navCurrent("repos")} href="#/repos">Repos</a>
-            <a className={navClass("labels")} aria-current={navCurrent("labels")} href="#/labels">Labels</a>
-          </nav>
+          {/* Which tracker you are looking at. Only in the packaged app, and only once there is
+              more than nothing to say: on the web the answer is "the one that served this page",
+              which the address bar already gives you. It doubles as the way to the switcher, since
+              the name of the thing you want to change is the obvious thing to press. */}
+          {isNativeApp && activeServer() && (
+            <a className="server-tag" href="#/servers" title={activeServer()!.url}>
+              {activeServer()!.label}
+            </a>
+          )}
+          {/* Every destination in the bar is a view of a tracker, so until the packaged app has one
+              the bar carries the wordmark and the theme toggle and nothing else — four links that
+              would each land on the same "connect first" screen are four ways of not saying it. */}
+          {isConfigured() && (
+            <nav aria-label="Main">
+              <a className={navClass("issues")} aria-current={navCurrent("issues")} href="#/issues">Issues</a>
+              <a className={navClass("graph")} aria-current={navCurrent("graph")} href="#/graph">Graph</a>
+              <a className={navClass("repos")} aria-current={navCurrent("repos")} href="#/repos">Repos</a>
+              <a className={navClass("labels")} aria-current={navCurrent("labels")} href="#/labels">Labels</a>
+            </nav>
+          )}
           <div className="spacer" />
           {/* Renders nothing at all while there is a connection and nothing queued, which is the
               ordinary case — it is here to say what is *not* on the server yet. */}
-          <OfflineIndicator />
-          {meLoaded && <NotificationBell me={me} active={top === "notifications"} />}
+          {isConfigured() && <OfflineIndicator />}
+          {isConfigured() && meLoaded && <NotificationBell me={me} active={top === "notifications"} />}
           <ThemeToggle />
-          {meLoaded && <LoginBar me={me} auth={auth} onChange={refreshMe} />}
+          {isConfigured() && meLoaded && <LoginBar me={me} auth={auth} onChange={refreshMe} />}
         </div>
       </header>
       {activeNotifId != null && (

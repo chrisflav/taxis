@@ -1,0 +1,142 @@
+name: Android app
+
+# The app *is* the frontend — same components, same bundle — plus a WebView and an icon, so this
+# builds only when the web application or the native shell changed. It is a separate workflow from
+# `CI` rather than a job inside it because it is the one part of the build that needs an Android
+# SDK, and because it is the one that produces something a person downloads.
+on:
+  push:
+    branches: [master]
+    paths: ["frontend/**", ".github/workflows/android.yml"]
+  pull_request:
+    paths: ["frontend/**", ".github/workflows/android.yml"]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Attach the APK to the rolling `app-latest` prerelease"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    # The `secrets` context cannot be read from a step's `if`, so the one thing the build branches
+    # on — whether a signing key exists — is lifted to a job-level flag here.
+    env:
+      HAS_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # AGP 8.7 runs on 17 or 21; 21 is what the runner image ships as its default JDK anyway.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - run: npm ci
+        working-directory: frontend
+
+      # The same tests the `CI` workflow runs. Repeated here rather than depended on: this workflow
+      # can be dispatched on its own to cut an APK, and an APK should not be cut from a tree whose
+      # tests do not pass.
+      - run: npm test
+        working-directory: frontend
+
+      # Builds the web bundle in `app` mode and copies it into the native project. Everything the
+      # app displays comes from this step; the Gradle build below only wraps it.
+      - run: npm run app:sync
+        working-directory: frontend
+
+      # Release signing material never lives in the repository. When the secrets are set the release
+      # APK is signed with that key; when they are not, it comes out unsigned — still useful to
+      # inspect, not installable — and the debug APK is the one to sideload. The debug key *is*
+      # committed (`frontend/android/debug.keystore`), because a runner has no keystore and would
+      # otherwise invent a new one per run, making every build refuse to install over the last.
+      - name: Decode the signing keystore
+        id: keystore
+        if: env.HAS_KEYSTORE == 'true'
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          echo "$KEYSTORE" | base64 --decode > "$RUNNER_TEMP/taxis.keystore"
+          echo "path=$RUNNER_TEMP/taxis.keystore" >> "$GITHUB_OUTPUT"
+
+      - name: Build the APKs
+        working-directory: frontend/android
+        env:
+          # A monotonic version code from the run number, and a version name that names the commit
+          # the build came from — so an APK on somebody's phone can be traced back to a tree.
+          ORG_GRADLE_PROJECT_TAXIS_VERSION_CODE: ${{ github.run_number }}
+          ORG_GRADLE_PROJECT_TAXIS_VERSION_NAME: 1.0.${{ github.run_number }}+${{ github.sha }}
+          ORG_GRADLE_PROJECT_TAXIS_KEYSTORE_FILE: ${{ steps.keystore.outputs.path }}
+          ORG_GRADLE_PROJECT_TAXIS_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ORG_GRADLE_PROJECT_TAXIS_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ORG_GRADLE_PROJECT_TAXIS_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: ./gradlew --no-daemon assembleDebug assembleRelease
+
+      - name: Collect the APKs
+        id: collect
+        run: |
+          mkdir -p apk
+          cp frontend/android/app/build/outputs/apk/debug/app-debug.apk apk/taxis-debug.apk
+          release=$(find frontend/android/app/build/outputs/apk/release -name '*.apk' | head -1)
+          if [ -n "$release" ]; then
+            case "$release" in
+              *unsigned*) cp "$release" apk/taxis-release-unsigned.apk ;;
+              *)          cp "$release" apk/taxis-release.apk ;;
+            esac
+          fi
+          {
+            echo "### APKs"
+            echo
+            echo '| file | size |'
+            echo '| --- | --- |'
+            for f in apk/*.apk; do
+              echo "| \`$(basename "$f")\` | $(du -h "$f" | cut -f1) |"
+            done
+            echo
+            if [ -f apk/taxis-release.apk ]; then
+              echo "\`taxis-release.apk\` is signed and installable. Its key is not the debug one,"
+              echo "so moving between the two needs an uninstall first."
+            else
+              echo "No release signing key is configured, so the release APK is unsigned and cannot"
+              echo "be installed. Sideload \`taxis-debug.apk\`, or set the \`ANDROID_KEYSTORE_BASE64\`,"
+              echo "\`ANDROID_KEYSTORE_PASSWORD\`, \`ANDROID_KEY_ALIAS\` and \`ANDROID_KEY_PASSWORD\`"
+              echo "repository secrets to get a signed one."
+            fi
+            echo
+            echo "\`taxis-debug.apk\` is signed with the repository's shared debug key, so a build"
+            echo "from any run installs over one from any other."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: taxis-android
+          path: apk/*.apk
+          if-no-files-found: error
+
+      # A workflow artifact expires and needs a GitHub login to download. A release asset does not,
+      # which is what makes it the thing to send somebody who just wants to install the app. Only on
+      # an explicit dispatch — a pull request build has no business moving a published download.
+      - name: Publish to the rolling prerelease
+        if: github.event_name == 'workflow_dispatch' && inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete app-latest --yes --cleanup-tag || true
+          gh release create app-latest apk/*.apk \
+            --prerelease \
+            --target "$GITHUB_SHA" \
+            --title "taxis app — latest build" \
+            --notes "Built from \`$GITHUB_SHA\` by run $GITHUB_RUN_NUMBER. Sideload the APK, then open the app and point it at your taxis server."

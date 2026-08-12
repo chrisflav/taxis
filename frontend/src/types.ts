@@ -226,6 +226,16 @@ export interface GraphData {
 /** Who you are and how you could sign in — one answer to what the top bar needs, where `/me` and
  *  `/health` used to be two requests. `actor` is null when nobody is signed in, which is an answer
  *  and not an error. */
+/** `GET /health` — what a server says about itself before anybody has signed in. The packaged app's
+ *  connect screen reads it to confirm that an address really is a taxis and to say which one. */
+export interface Health {
+  status: string;
+  version: string;
+  centralPasswordEnabled: boolean;
+  googleEnabled: boolean;
+  githubEnabled: boolean;
+}
+
 export interface Session {
   actor: Actor | null;
   centralPasswordEnabled: boolean;

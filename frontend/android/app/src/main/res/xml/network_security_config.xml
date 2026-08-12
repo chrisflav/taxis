@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  taxis is self-hosted, and the address its README tells you to run is http://localhost:8080. A
+  great many instances are reachable only over plain HTTP on a home or office network, so a client
+  that refused cleartext outright could not connect to the deployment the project documents.
+
+  This is not treated as normal. The connect screen checks the address it is given and says so, in
+  the error colour, whenever a server that is *not* on a private network is reached over http — so
+  the trade is made where it is visible rather than silently here.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

@@ -10,6 +10,7 @@ import {
   applyPendingEdits, conflictFor, discardConflict, isHeld, isOffline, isQueuedLocally,
   pendingCommentsFor, pendingDeleteFor, pendingFieldsFor, queuedBody, useOfflineState,
 } from "../offline";
+import { ReadFailure } from "./ReadFailure";
 import { Modal, ConfirmModal, useConfirmClose } from "./Modal";
 import { LabelChip } from "./LabelChip";
 import { Markdown } from "./Markdown";
@@ -153,7 +154,11 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
   if (error) return <div className="panel error">{error}</div>;
   // A failed *first* load has nothing to fall back on. A failed revalidation of an issue already on
   // screen is left to the inline error paths, rather than throwing away a good page.
-  if (!detail && detailRes.error) return <div className="panel error">{detailRes.error}</div>;
+  if (!detail && detailRes.error) {
+    return (
+      <ReadFailure message={detailRes.error} offline={detailRes.offline} onRetry={detailRes.reload} />
+    );
+  }
   // Nothing to render the body from yet — but the page's structure does not depend on the body.
   // The id is in the URL and the naming index (prefetched, and usually warm) carries the title and
   // the ancestor chain, so the frame, the heading and the breadcrumbs are real from the first
