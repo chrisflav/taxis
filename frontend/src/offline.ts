@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { dropCached, invalidateCache, peekCached, writeCached } from "./cache";
+import { isNetworkError } from "./netError";
 import { apiBase, authHeaders, onServerForgotten, requestCredentials, serverScope } from "./server";
 import type { Issue, IssueDetail } from "./types";
 
@@ -20,10 +21,13 @@ import type { Issue, IssueDetail } from "./types";
 //   `bench/` enforces, and "am I online?" is not one of them. Recovery therefore rides on events
 //   that already happen — the `online` event, and any request that succeeds afterwards.
 //
-//   The queue is persisted, the read cache is not. These are different things and the difference
-//   matters: a cached response is a copy of something the server still has, so throwing it away on
-//   reload costs a request. A queued write is the only copy in existence, so throwing it away
-//   costs the user their work. `localStorage` is used because it is synchronous, universally
+//   The queue is always persisted; the read cache only in the packaged app. These are different
+//   things and the difference matters: a cached response is a copy of something the server still
+//   has, so throwing it away on reload costs a request. A queued write is the only copy in
+//   existence, so throwing it away costs the user their work. That asymmetry is also why the read
+//   cache yields storage to this one rather than competing with it (see `readCache.ts`), and why on
+//   a phone — where every launch is a cold load — the reads are kept too: there, starting empty
+//   meant an offline launch could show nothing at all. `localStorage` is used because it is synchronous, universally
 //   available and needs no schema; every access is wrapped, since it throws in private-mode and
 //   storage-blocked contexts. IndexedDB is the upgrade path if queues ever get big enough that a
 //   synchronous write on the main thread matters — the shape below (an array of self-contained
@@ -462,9 +466,7 @@ export function noteReachable(): void {
 /** Whether a thrown value is a failure to reach the network at all, as opposed to the server
     answering with something the caller does not like. `fetch` rejects with a `TypeError` when the
     request could not be made; an HTTP 403 is not a rejection and must keep surfacing as an error. */
-export function isNetworkError(e: unknown): boolean {
-  return e instanceof TypeError;
-}
+export { isNetworkError };
 
 // ---------------------------------------------------------------------------------------------
 // The local view of a queued write

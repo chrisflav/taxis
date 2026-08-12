@@ -120,6 +120,15 @@ Two things differ between the page a taxis server serves and the app on a phone,
 
 With no token the app still works, read-only: taxis lets anyone read.
 
+**Offline.** The app keeps what it has read, per server, and hydrates from it at startup, so opening
+it with no connection shows the issues you were last looking at rather than an error over a blank
+list. The web build does not do this and should not: there a page load is somebody asking for the
+page, whereas on a phone it is usually the system having reclaimed the WebView. What *both* now do
+is treat a read that fails because nothing answered as no news — the last answer stays on screen and
+the offline indicator says why — while a read the server refused stays an error, which is the same
+rule the write queue has always applied in the other direction. Writes made offline queue as they
+do on the web, and go out on reconnect. See [`frontend/src/readCache.ts`](frontend/src/readCache.ts).
+
 The app is also the first taxis client that ships **separately from the server** — a phone keeps the
 build it was installed with, so it can be newer than the tracker it is pointed at, which a browser
 can never be. The connect screen's *Check connection* therefore reports two things: that the address

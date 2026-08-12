@@ -64,13 +64,18 @@ async function req<T>(path: string, opts: RequestInit = {}): Promise<T> {
       ...opts,
     });
   } catch (e) {
-    if (mutating && isNetworkError(e)) {
+    if (isNetworkError(e)) {
+      // Nothing answered. That is as true of a read as of a write, and reads are most of what the
+      // app does — so noting it here is what lets the offline indicator be right in the case
+      // `navigator.onLine` gets wrong: connected to a network, no route to this server.
       noteUnreachable();
-      // Queued as *uncertain*: the request left, and a `fetch` rejection says only that no reply
-      // came back — not whether the server acted on it first. The queue holds back the two kinds
-      // where replaying a write it already has would make a second one.
-      const queued = queueWrite(method, path, opts.body, true);
-      if (queued) return queued as T;
+      if (mutating) {
+        // Queued as *uncertain*: the request left, and a `fetch` rejection says only that no reply
+        // came back — not whether the server acted on it first. The queue holds back the two kinds
+        // where replaying a write it already has would make a second one.
+        const queued = queueWrite(method, path, opts.body, true);
+        if (queued) return queued as T;
+      }
     }
     throw e;
   }

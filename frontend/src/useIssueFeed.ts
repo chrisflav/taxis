@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { IssueListRow } from "./types";
 import { api, issuePagePath, type IssuePageQuery } from "./api";
 import { cachedGet } from "./cache";
+import { isNetworkError } from "./netError";
 
 /**
  * The issue list's rows, pulled a page at a time and accumulated locally.
@@ -190,7 +191,19 @@ export function useIssueFeed(query: IssuePageQuery, search: string, enabled = tr
           if (held.current.size >= FEED_CAP) { exhausted.current = true; setCapped(true); }
         }
       })
-      .catch((e) => { if (generation.current === gen) setError(String(e)); })
+      .catch((e) => {
+        if (generation.current !== gen) return;
+        // Nothing answered, and rows are already on screen: this is the end of what the device
+        // holds, not a failure to report. Stopping the loop is the whole response — the top bar's
+        // offline indicator already says why, once, for the entire app. With no rows it *is* the
+        // answer to the reader's question, and stays an error.
+        if (isNetworkError(e) && rows.length > 0) {
+          exhausted.current = true;
+          setComplete(true);
+          return;
+        }
+        setError(String(e));
+      })
       .finally(() => {
         if (generation.current !== gen) return;
         fetching.current = false;

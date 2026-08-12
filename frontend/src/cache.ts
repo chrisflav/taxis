@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { isNetworkError } from "./netError";
+import { forget, forgetPrefix, hydrate, remember } from "./readCache";
 
 // A small stale-while-revalidate cache over the API.
 //
@@ -8,11 +10,18 @@ import { useCallback, useEffect, useRef, useState } from "react";
 // only updates what's already on screen. Responses carry an `ETag` and `Cache-Control: no-cache`,
 // so a revalidation the browser turns into a `304` costs a round trip but no payload.
 //
-// In memory only, and deliberately. Mirroring it into `sessionStorage` made a reload behave unlike
-// a load: a fresh page came up with every issue the tab had ever opened already in hand, which is
-// not what loading a page should mean. A page load now fetches what that page needs and nothing
-// else; the cache exists to make *navigation within* the session cheap, which is where the repeat
-// reads actually are.
+// In memory only in a browser, and deliberately. Mirroring it into `sessionStorage` made a reload
+// behave unlike a load: a fresh page came up with every issue the tab had ever opened already in
+// hand, which is not what loading a page should mean. A page load fetches what that page needs and
+// nothing else; the cache exists to make *navigation within* the session cheap, which is where the
+// repeat reads actually are.
+//
+// The packaged app is the exception, and `readCache.ts` says why at length: there a cold page load
+// is not somebody asking for the page, it is the system having reclaimed the WebView, so starting
+// empty every time meant an offline launch showed a connection error over a blank list for issues
+// that had been read a dozen times. Persisting changes when data is thrown away, not whether it is
+// trusted — a restored entry keeps its original timestamp and is therefore stale on arrival, to be
+// painted at once and revalidated at once, exactly like an old in-memory one.
 
 interface Entry {
   data: unknown;
@@ -20,7 +29,7 @@ interface Entry {
   at: number;
 }
 
-const entries = new Map<string, Entry>();
+const entries = new Map<string, Entry>(hydrate());
 const inflight = new Map<string, Promise<unknown>>();
 
 /** How long reference data (labels, actors, groups, plugins, the issue index) may be reused
@@ -46,7 +55,9 @@ export function peekCached<T>(key: string): T | undefined {
  *  Deliberately silent: mounted components hold their own copy of what they read, so this changes
  *  what the *next* read of the key sees and not what is currently on screen. */
 export function writeCached<T>(key: string, data: T): void {
-  entries.set(key, { data, at: Date.now() });
+  const entry = { data, at: Date.now() };
+  entries.set(key, entry);
+  remember(key, entry);
 }
 
 /** Drop exactly one key, where `invalidateCache` drops a prefix.
@@ -58,6 +69,7 @@ export function writeCached<T>(key: string, data: T): void {
  *  fetched back. */
 export function dropCached(key: string): void {
   entries.delete(key);
+  forget(key);
 }
 
 /** A request the page started before any of this code existed.
@@ -87,8 +99,19 @@ export function cachedGet<T>(key: string, fetcher: () => Promise<T>, maxAgeMs = 
 
   const request = (claimPreloaded<T>(key) ?? fetcher())
     .then((data) => {
-      entries.set(key, { data, at: Date.now() });
+      const entry = { data, at: Date.now() };
+      entries.set(key, entry);
+      remember(key, entry);
       return data;
+    })
+    .catch((e) => {
+      // Nothing answered, and there is a previous answer: that is what the reader should see. The
+      // rule is the one the write queue uses in the other direction — a failure to *reach* the
+      // server is not the server saying anything, so it is not news. A 403, a 409, a 500 are the
+      // server talking and go on being errors, cached copy or not.
+      const held = entries.get(key);
+      if (isNetworkError(e) && held) return held.data as T;
+      throw e;
     })
     .finally(() => inflight.delete(key));
   inflight.set(key, request);
@@ -103,6 +126,7 @@ export function invalidateCache(prefix?: string): void {
   for (const key of [...entries.keys()]) {
     if (prefix == null || key.startsWith(prefix)) entries.delete(key);
   }
+  forgetPrefix(prefix);
 }
 
 /** A stable empty array for resources that have not loaded yet, so memoised children compare
