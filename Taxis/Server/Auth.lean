@@ -67,9 +67,11 @@ private def googleUserinfoEndpoint := "https://openidconnect.googleapis.com/v1/u
 private def googleRedirectUri (ctx : AppContext) : String :=
   s!"{ctx.config.publicBaseUrl}/auth/google/callback"
 
-/-- Redirect the user agent to Google's consent screen. -/
+/-- Redirect the user agent to Google's consent screen. Refused unless the *secret* is configured
+    too: without it the exchange in `googleCallbackH` cannot succeed, and failing here costs a
+    round trip where failing there costs a trip through Google's consent screen first. -/
 def googleLoginH (ctx : AppContext) : ApiM ApiResponse := do
-  match ctx.config.googleClientId with
+  match if ctx.config.googleConfigured then ctx.config.googleClientId else none with
   | none => fail (.server "Google OAuth is not configured")
   | some clientId =>
     let params := s!"client_id={urlEncode clientId}&redirect_uri={urlEncode (googleRedirectUri ctx)}" ++
@@ -141,9 +143,9 @@ private def githubApiHeaders (accessToken : String) : Array (String × String) :
   #[("Authorization", s!"Bearer {accessToken}"), ("Accept", "application/vnd.github+json"),
     ("User-Agent", "taxis")]
 
-/-- Redirect the user agent to GitHub's consent screen. -/
+/-- Redirect the user agent to GitHub's consent screen. Gated on the pair, as `googleLoginH` is. -/
 def githubLoginH (ctx : AppContext) : ApiM ApiResponse := do
-  match ctx.config.githubClientId with
+  match if ctx.config.githubConfigured then ctx.config.githubClientId else none with
   | none => fail (.server "GitHub OAuth is not configured")
   | some clientId =>
     let params := s!"client_id={urlEncode clientId}&redirect_uri={urlEncode (githubRedirectUri ctx)}" ++
@@ -247,8 +249,8 @@ def sessionH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
   ok (Json.mkObj [
     ("actor", match req.actor with | some a => toJson a | none => Json.null),
     ("centralPasswordEnabled", Json.bool ctx.config.centralPassword.isSome),
-    ("googleEnabled", Json.bool ctx.config.googleClientId.isSome),
-    ("githubEnabled", Json.bool ctx.config.githubClientId.isSome),
+    ("googleEnabled", Json.bool ctx.config.googleConfigured),
+    ("githubEnabled", Json.bool ctx.config.githubConfigured),
     ("private", Json.bool ctx.config.privateMode),
     ("canRead", Json.bool (ctx.mayRead req.actor))])
 

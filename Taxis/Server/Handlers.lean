@@ -1008,7 +1008,7 @@ def dispatch (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
   if mutating && isAdminResource req.segments && !(req.actor.map (·.admin) |>.getD false) then
     fail (.forbidden "admin privileges required")
   match req.method, req.segments with
-  | .get, ["health"] => ok (Json.mkObj [("status", "ok"), ("version", Taxis.version), ("centralPasswordEnabled", Json.bool ctx.config.centralPassword.isSome), ("googleEnabled", Json.bool ctx.config.googleClientId.isSome), ("githubEnabled", Json.bool ctx.config.githubClientId.isSome), ("private", Json.bool ctx.config.privateMode)])
+  | .get, ["health"] => ok (Json.mkObj [("status", "ok"), ("version", Taxis.version), ("centralPasswordEnabled", Json.bool ctx.config.centralPassword.isSome), ("googleEnabled", Json.bool ctx.config.googleConfigured), ("githubEnabled", Json.bool ctx.config.githubConfigured), ("private", Json.bool ctx.config.privateMode)])
   | .get, ["openapi.json"] => ok OpenApi.spec
   | .get, ["plugins"] => pluginsH
   | .get, ["filestores"] => listFileStoresH

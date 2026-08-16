@@ -75,10 +75,22 @@ export function App() {
   // have changed in the time it took the bundle to arrive, which on a slow link is exactly when a
   // spare round trip is least affordable. After a sign-in or sign-out it is precisely what has
   // changed, so that path insists on a fresh read.
+  // A session we could not re-read is not a session. Clearing `me` alone used to leave `auth`
+  // holding the *previous* answer, `canRead: true` included — so on a private instance, signing
+  // out and then failing to re-read the session (a restart, a dropped connection) left the
+  // application unlocked for a browser that no longer had a cookie: full navigation, and every
+  // view rendering the 401 it got instead of the sign-in screen.
+  //
+  // What is kept is what the request could not have changed — that the instance is private — and
+  // what is dropped is the claim that this browser may read it. A first load that fails has no
+  // previous answer to fall back to and stays `null`, exactly as it did.
   const loadSession = (maxAgeMs: number) =>
     cachedGet(paths.session, api.session, maxAgeMs)
       .then((s) => { setAuth(s); setMe(s.actor); })
-      .catch(() => { setMe(null); })
+      .catch(() => {
+        setMe(null);
+        setAuth((prev) => (prev ? { ...prev, actor: null, canRead: !prev.private } : null));
+      })
       .finally(() => setMeLoaded(true));
   const refreshMe = () => loadSession(0);
 

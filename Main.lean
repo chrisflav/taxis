@@ -39,8 +39,8 @@ def main (args : List String) : IO Unit := do
   let ctx ← AppContext.create config
   IO.println s!"[taxis] listening on http://{config.host}:{config.port} (db: {config.dbPath})"
   IO.println s!"[taxis] configuration: {loaded.path.map (·.toString) |>.getD "environment only (no configuration file)"}"
-  IO.println s!"[taxis] google oauth: {if config.googleClientId.isSome then "configured" else "NOT configured (set auth.google.clientId/clientSecret)"}"
-  IO.println s!"[taxis] github oauth: {if config.githubClientId.isSome then "configured" else "NOT configured (set auth.github.clientId/clientSecret)"}"
+  IO.println s!"[taxis] google oauth: {if config.googleConfigured then "configured" else "NOT configured (set auth.google.clientId/clientSecret)"}"
+  IO.println s!"[taxis] github oauth: {if config.githubConfigured then "configured" else "NOT configured (set auth.github.clientId/clientSecret)"}"
   IO.println s!"[taxis] base url: {config.publicBaseUrl}  (google redirect: {config.publicBaseUrl}/auth/google/callback, github redirect: {config.publicBaseUrl}/auth/github/callback)"
   if config.centralPassword.isSome then
     IO.println "[taxis] password login: enabled"

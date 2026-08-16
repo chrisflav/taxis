@@ -508,6 +508,30 @@ def main : IO Unit := do
   check "private mode with github configured starts"
     (!(← loadFails ["[auth]", "private = true", "", "[auth.github]",
         "clientId = \"g\"", "clientSecret = \"s\""]))
+  -- Half-configured OAuth reaches the consent screen and fails the exchange after it, so a guard
+  -- that accepted a client id on its own would wave through the very lockout it exists to stop.
+  check "private mode with a client id but no secret refuses to start"
+    (← loadFails ["[auth]", "private = true", "", "[auth.google]", "clientId = \"g\""])
+  check "private mode with a github client id but no secret refuses to start"
+    (← loadFails ["[auth]", "private = true", "", "[auth.github]", "clientId = \"g\""])
+  writeCfg ["[auth.google]", "clientId = \"g\""]
+  check "a client id without its secret is not a configured sign-in method"
+    (!(← Config.load (some cfgPath) noDotenv).config.googleConfigured)
+  writeCfg ["[auth.google]", "clientId = \"g\"", "clientSecret = \"s\""]
+  check "the pair is" ((← Config.load (some cfgPath) noDotenv).config.googleConfigured)
+  -- `[]` means "no group restriction" deliberately; `[""]` is an unfilled template variable that
+  -- would mean the same thing by accident, on the one setting where naming nothing opens up.
+  check "an explicitly empty readGroups is allowed"
+    (!(← loadFails ["[auth]", "private = true", "password = \"p\"", "readGroups = []"]))
+  check "a readGroups of only blanks refuses to start"
+    (← loadFails ["[auth]", "private = true", "password = \"p\"", "readGroups = [\"\"]"])
+  check "a readGroups of only whitespace refuses to start"
+    (← loadFails ["[auth]", "private = true", "password = \"p\"", "readGroups = \"  \""])
+  check "blanks alongside a real group are still just dropped"
+    (!(← loadFails ["[auth]", "private = true", "password = \"p\"",
+        "readGroups = [\"\", \"staff\"]"]))
+  check "a blank readGroups is not an error while the instance is open"
+    (!(← loadFails ["[auth]", "readGroups = [\"\"]"]))
   check "private mode with dev login starts"
     (!(← loadFails ["[auth]", "private = true", "devLogin = true"]))
   -- The same file without `private` is a perfectly ordinary open instance, so the refusal has to
