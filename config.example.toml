@@ -39,6 +39,22 @@ adminEmails = []
 # only — never enable this on a reachable deployment.
 devLogin = false
 
+# Private mode: nothing is readable without a session — issues, comments, the graphs, the actor
+# list, the API reference, all of it. Off, only writes need one and anyone may read.
+#
+# The server refuses to start with this set and no way to sign in (see [auth.google],
+# [auth.github] or the password above), since every route would answer 401 for ever.
+private = false
+
+# Who may read a private instance, by taxis group name. Empty (the default) means every
+# authenticated actor may. Membership is managed in the admin screens, not here, so granting or
+# revoking access does not need a restart — this only names which group is the gate.
+#
+# The group is created on startup if it does not exist yet, and cannot be renamed or deleted from
+# the admin screens while it is named here, because either would silently lock the instance.
+# Administrators may always read, whatever this says. Has no effect unless private = true.
+readGroups = []
+
 # Google OAuth client, for "Sign in with Google". While neither this nor [auth.github] is set the
 # API is open (single-user/local mode); once either is, writes need a session. The authorised
 # redirect URI is <baseUrl>/auth/google/callback.

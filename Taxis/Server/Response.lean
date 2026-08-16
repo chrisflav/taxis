@@ -112,10 +112,20 @@ def buildResponse (r : ApiResponse) : Async (Response Body.Full) :=
 def etagOf (payload : String) : String :=
   "\"" ++ toString payload.hash ++ "\""
 
+/-- What every API response says about caching.
+
+    `private` because an API body belongs to whoever asked for it: the issue list is filtered per
+    actor by `issue_visibility` before it is serialised, so two readers asking the same question
+    get different answers at the same URL. `no-cache` alone leaves a shared cache free to store one
+    of them and revalidate it for the other, and `ETag` is precisely what it would revalidate with.
+    A private instance makes that sharper — there, everything is somebody's — but it was never
+    correct for a shared cache to hold these. -/
+def apiCacheControl : String := "private, no-cache"
+
 /-- A bodyless `304 Not Modified`, echoing the validator the client already holds. -/
 def notModifiedResponse (tag : String) : Async (Response Body.Full) :=
   (withCors (Response.withStatus .notModified)
     |>.header! "ETag" tag
-    |>.header! "Cache-Control" "no-cache").fromBytes ByteArray.empty
+    |>.header! "Cache-Control" apiCacheControl).fromBytes ByteArray.empty
 
 end Taxis.Server

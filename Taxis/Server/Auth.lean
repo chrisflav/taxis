@@ -236,13 +236,21 @@ def meH (req : Req) : ApiM ApiResponse := do
     and this answers it.
 
     Unlike `/me` it succeeds when nobody is signed in: `actor` is then `null`, which is an answer
-    rather than an error, and the sign-in buttons are precisely what an anonymous reader needs. -/
+    rather than an error, and the sign-in buttons are precisely what an anonymous reader needs.
+    That is also why it stays reachable on a private instance — it is what the sign-in screen of a
+    private instance is drawn from, so gating it would leave nothing to sign in with.
+
+    `private` and `canRead` are what the frontend picks between three screens with: the application
+    itself, a sign-in prompt, and "your account has no access here", which is a different message
+    with a different remedy from the other two. -/
 def sessionH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
   ok (Json.mkObj [
     ("actor", match req.actor with | some a => toJson a | none => Json.null),
     ("centralPasswordEnabled", Json.bool ctx.config.centralPassword.isSome),
     ("googleEnabled", Json.bool ctx.config.googleClientId.isSome),
-    ("githubEnabled", Json.bool ctx.config.githubClientId.isSome)])
+    ("githubEnabled", Json.bool ctx.config.githubClientId.isSome),
+    ("private", Json.bool ctx.config.privateMode),
+    ("canRead", Json.bool (ctx.mayRead req.actor))])
 
 /-- Destroy the current session. -/
 def logoutH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do

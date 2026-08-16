@@ -483,6 +483,37 @@ def main : IO Unit := do
       && bare.config.repoDepsTtlSeconds == 3600)
   check "base url follows the port it defaults to"
     (bare.config.publicBaseUrl == "http://localhost:8080")
+  check "private mode is off by default"
+    (!bare.config.privateMode && bare.config.readGroups == [])
+
+  writeCfg ["[auth]", "private = true", "password = \"hunter2\"",
+    "readGroups = [\"staff\", \"contractors\"]"]
+  let priv := (← Config.load (some cfgPath) noDotenv).config
+  check "private mode from file" priv.privateMode
+  check "read groups from an array" (priv.readGroups == ["staff", "contractors"])
+  -- The spelling the environment variable is forced into, accepted in the file too, so moving a
+  -- `.env` into the configuration file is not also a rewrite.
+  writeCfg ["[auth]", "private = true", "password = \"hunter2\"", "readGroups = \"staff\""]
+  check "read groups from a comma-separated string"
+    ((← Config.load (some cfgPath) noDotenv).config.readGroups == ["staff"])
+  -- A private instance with no way in answers 401 to everything and no route can change that: a
+  -- broken instance rather than a locked one, so it stops startup like any other unusable setting.
+  check "private mode with no way to sign in refuses to start"
+    (← loadFails ["[auth]", "private = true"])
+  check "private mode with a password starts"
+    (!(← loadFails ["[auth]", "private = true", "password = \"hunter2\""]))
+  check "private mode with google configured starts"
+    (!(← loadFails ["[auth]", "private = true", "", "[auth.google]",
+        "clientId = \"g\"", "clientSecret = \"s\""]))
+  check "private mode with github configured starts"
+    (!(← loadFails ["[auth]", "private = true", "", "[auth.github]",
+        "clientId = \"g\"", "clientSecret = \"s\""]))
+  check "private mode with dev login starts"
+    (!(← loadFails ["[auth]", "private = true", "devLogin = true"]))
+  -- The same file without `private` is a perfectly ordinary open instance, so the refusal has to
+  -- be conditional on the mode rather than on the sign-in methods alone.
+  check "no sign-in method is fine while the instance is open" (!(← loadFails ["[auth]"]))
+
   for f in [cfgPath, dotenvPath] do
     try IO.FS.removeFile f catch _ => pure ()
   -- The committed example is documentation that goes stale silently: a setting renamed in `Config`
@@ -495,6 +526,32 @@ def main : IO Unit := do
       (sample.config.port == 8080 && sample.config.host == "127.0.0.1"
         && sample.config.repoDepsTtlSeconds == 3600 && !sample.config.devLogin
         && sample.config.fileStores.isNone)
+
+  IO.println "Private mode"
+  let plainActor : Actor := { id := ⟨1⟩, email := "a@x", displayName := "A", groups := #[⟨5⟩] }
+  let adminActor : Actor := { plainActor with groups := #[], admin := true }
+  check "anonymous may not read a private instance" (!mayReadGroups #[⟨5⟩] none)
+  check "a member may read" (mayReadGroups #[⟨5⟩] (some plainActor))
+  check "a non-member may not read" (!mayReadGroups #[⟨9⟩] (some plainActor))
+  check "any one of several groups is enough" (mayReadGroups #[⟨9⟩, ⟨5⟩] (some plainActor))
+  -- Otherwise one typo in `auth.readGroups` locks out the only account that could repair it.
+  check "an admin may read whatever the groups say" (mayReadGroups #[⟨9⟩] (some adminActor))
+  -- `auth.private` with no group named is a meaningful mode of its own: signing in is the gate.
+  check "no group named admits any authenticated actor" (mayReadGroups #[] (some plainActor))
+  check "no group named still excludes anonymous" (!mayReadGroups #[] none)
+
+  -- Resolving `auth.readGroups` creates the group it names, so turning private mode on for a fresh
+  -- instance does not require creating a group you can only create by starting the instance.
+  let staff ← getOrCreateGroupByName db "staff"
+  check "a read group is created if absent" (staff.name == "staff")
+  check "resolving it again is the same group"
+    ((← getOrCreateGroupByName db "staff").id == staff.id)
+  check "a read group starts empty" ((← groupMemberCount db staff.id) == 0)
+  let reader ← createActor db { email := "reader@x.io", displayName := "Reader", groups := #[staff.id] }
+  check "membership is counted" ((← groupMemberCount db staff.id) == 1)
+  check "the member is admitted" (mayReadGroups #[staff.id] (some reader))
+  check "lookup by name finds it" (((← getGroupByName db "staff").map (·.id)) == some staff.id)
+  check "lookup by name of an absent group is none" ((← getGroupByName db "nobody").isNone)
 
   IO.println "Visibility"
   let pub : Issue := { id := ⟨1⟩, title := "p", visibility := #[], createdAt := ⟨0⟩, updatedAt := ⟨0⟩ }

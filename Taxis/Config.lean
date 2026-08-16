@@ -55,6 +55,16 @@ structure Config where
   centralPassword : Option String := none
   /-- Enables `POST /api/auth/dev-login`. Development only. -/
   devLogin : Bool := false
+  /-- Private mode: the whole instance needs a session, reads included. Off, only writes do.
+
+      Named `privateMode` rather than `private` because the latter is a Lean keyword; the setting
+      is spelled `auth.private`. -/
+  privateMode : Bool := false
+  /-- Groups whose members may read a private instance, by name. Empty means every authenticated
+      actor may read. Resolved to ids at startup (`AppContext.create`), which also creates a group
+      that does not exist yet — see `AppContext.readGroupIds`. Has no effect unless `privateMode`
+      is set. -/
+  readGroups : List String := []
   /-- File stores for `file` artifacts, as a JSON array — either the `ISSUES_FILESTORES` document
       or the `[[filestores]]` tables. It carries store credentials, so `main` consumes it
       (`Plugins.configureFileStores`) and blanks it before the config enters the request-serving
@@ -244,6 +254,7 @@ private def knownKeys : List (List String) :=
   [["port"], ["host"], ["db"], ["frontendDir"], ["baseUrl"], ["verbose"],
    ["checkInterval"], ["repoDepsTtl"], ["filestores"],
    ["auth", "password"], ["auth", "adminEmails"], ["auth", "devLogin"],
+   ["auth", "private"], ["auth", "readGroups"],
    ["auth", "google", "clientId"], ["auth", "google", "clientSecret"],
    ["auth", "github", "clientId"], ["auth", "github", "clientSecret"],
    ["github", "token"]]
@@ -308,8 +319,19 @@ def Config.load (configPath : Option System.FilePath := none)
     adminEmails := (← s.strings "ISSUES_ADMIN_EMAILS" ["auth", "adminEmails"]).getD []
     centralPassword := ← s.str "ISSUES_CENTRAL_PASSWORD" ["auth", "password"]
     devLogin := (← s.bool "ISSUES_DEV_LOGIN" ["auth", "devLogin"]).getD false
+    privateMode := (← s.bool "ISSUES_PRIVATE" ["auth", "private"]).getD false
+    readGroups := (← s.strings "ISSUES_READ_GROUPS" ["auth", "readGroups"]).getD []
     fileStores := ← s.fileStores
     verbose := (← s.bool "ISSUES_VERBOSE" ["verbose"]).getD false }
+  -- A private instance nobody can sign in to is not a locked tracker, it is a broken one: every
+  -- route answers 401 and no route can ever change that. Refused here rather than discovered from
+  -- the outside, in keeping with the rest of this file — a setting that cannot work stops startup.
+  if config.privateMode && config.googleClientId.isNone && config.githubClientId.isNone
+      && config.centralPassword.isNone && !config.devLogin then
+    throw <| IO.userError
+      "auth.private is set but no sign-in method is configured — set auth.password, \
+       auth.google.clientId/clientSecret, or auth.github.clientId/clientSecret, or nobody \
+       (including you) will be able to reach this instance"
   -- Published without the file stores, so the guarantee their field documents — that no second
   -- plaintext copy of the credentials outlives startup — holds for every caller rather than
   -- depending on `main` remembering to republish a blanked config.

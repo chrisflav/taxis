@@ -4,7 +4,7 @@ import { api, paths } from "./api";
 import { cachedGet, invalidateCache } from "./cache";
 import { setCurrentActor } from "./offline";
 import { IssueList } from "./components/IssueList";
-import { LoginBar } from "./components/Login";
+import { AccessGate, LoginBar } from "./components/Login";
 import { NotificationBell } from "./components/NotificationBell";
 import { OfflineIndicator } from "./components/OfflineIndicator";
 import { ThemeToggle } from "./components/ThemeToggle";
@@ -134,6 +134,16 @@ export function App() {
     window.location.hash = "#/notifications";
   };
 
+  // A private instance you may not read has nothing to route to: every view below would mount, ask
+  // for data and be told 401. So the gate replaces the whole of `main` rather than being a state
+  // any one view knows how to be in.
+  //
+  // It waits for the session, which means an anonymous visitor to a private instance briefly gets
+  // the issue list's skeleton first. That is the ordering the top bar already accepts deliberately
+  // (see the note on `main` below) and `/session` is the first request the page makes, so what
+  // actually shows in between is an empty skeleton rather than a failure.
+  const locked = !!auth && auth.private && !auth.canRead;
+
   let view;
   if (top === "graph") view = <GraphView />;
   else if (top === "repos") view = <RepoGraphView />;
@@ -175,17 +185,22 @@ export function App() {
             <Turnstile />
             <span>taxis</span>
           </a>
-          <nav aria-label="Main">
-            <a className={navClass("issues")} aria-current={navCurrent("issues")} href="#/issues">Issues</a>
-            <a className={navClass("graph")} aria-current={navCurrent("graph")} href="#/graph">Graph</a>
-            <a className={navClass("repos")} aria-current={navCurrent("repos")} href="#/repos">Repos</a>
-            <a className={navClass("labels")} aria-current={navCurrent("labels")} href="#/labels">Labels</a>
-          </nav>
+          {/* Every one of these leads somewhere the gate would replace, and the bell below would
+              ask for a count it will not be given — so a locked instance offers neither. What is
+              left is the account control, which is the only thing that can change the situation. */}
+          {!locked && (
+            <nav aria-label="Main">
+              <a className={navClass("issues")} aria-current={navCurrent("issues")} href="#/issues">Issues</a>
+              <a className={navClass("graph")} aria-current={navCurrent("graph")} href="#/graph">Graph</a>
+              <a className={navClass("repos")} aria-current={navCurrent("repos")} href="#/repos">Repos</a>
+              <a className={navClass("labels")} aria-current={navCurrent("labels")} href="#/labels">Labels</a>
+            </nav>
+          )}
           <div className="spacer" />
           {/* Renders nothing at all while there is a connection and nothing queued, which is the
               ordinary case — it is here to say what is *not* on the server yet. */}
           <OfflineIndicator />
-          {meLoaded && <NotificationBell me={me} active={top === "notifications"} />}
+          {meLoaded && !locked && <NotificationBell me={me} active={top === "notifications"} />}
           <ThemeToggle />
           {meLoaded && <LoginBar me={me} auth={auth} onChange={refreshMe} />}
         </div>
@@ -211,7 +226,9 @@ export function App() {
       <main key={me ? `actor-${me.id}` : "anon"}>
         {/* Keyed on the route so switching pages swaps to that page's skeleton rather than
             holding the previous page on screen until the new one is ready. */}
-        <Suspense key={top} fallback={fallback}>{view}</Suspense>
+        {locked
+          ? <AccessGate auth={auth!} onChange={refreshMe} />
+          : <Suspense key={top} fallback={fallback}>{view}</Suspense>}
       </main>
     </>
   );

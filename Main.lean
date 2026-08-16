@@ -44,8 +44,21 @@ def main (args : List String) : IO Unit := do
   IO.println s!"[taxis] base url: {config.publicBaseUrl}  (google redirect: {config.publicBaseUrl}/auth/google/callback, github redirect: {config.publicBaseUrl}/auth/github/callback)"
   if config.centralPassword.isSome then
     IO.println "[taxis] password login: enabled"
+  -- Said at boot, with the membership counted, because the failure this setting has is silent from
+  -- the inside: an administrator is admitted by `mayReadGroups` whatever the groups hold, so the
+  -- operator who just turned it on is exactly the person who cannot tell that the group is empty.
+  if config.privateMode then
+    if ctx.readGroupIds.isEmpty then
+      IO.println "[taxis] private mode: on — every authenticated actor may read"
+    else
+      let described ← ctx.withDb fun db => ctx.readGroupIds.mapM fun gid => do
+        let name := (← Db.getGroup db gid).map (·.name) |>.getD s!"#{gid.val}"
+        pure s!"\"{name}\" ({← Db.groupMemberCount db gid} member(s))"
+      IO.println s!"[taxis] private mode: on — read requires membership of {", ".intercalate described.toList} (administrators always)"
   if config.devLogin then
     IO.println "[taxis] development login: ENABLED — do not run this in production"
+    if config.privateMode then
+      IO.println "[taxis] development login signs in as any address, which defeats auth.private — local use only"
   if config.verbose then
     IO.println "[taxis] verbose request logging enabled"
   (← IO.getStdout).flush
