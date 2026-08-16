@@ -150,10 +150,11 @@ private def paths : Json := obj [
 
   ("/me", obj [("get", operation "Auth" "The current authenticated actor" [] none
     [("200", jsonResp "Actor" (ref "Actor")), ("401", emptyResp "Not authenticated")])]),
-  ("/session", obj [("get", operation "Auth" "The current actor (null when signed out) and which sign-in methods are configured" [] none
+  ("/session", obj [("get", operation "Auth" "The current actor (null when signed out), which sign-in methods are configured, and whether you may read this instance" [] none
     [("200", jsonResp "Session" (schemaObj [("actor", nullable "object"),
       ("centralPasswordEnabled", typ "boolean"), ("googleEnabled", typ "boolean"),
-      ("githubEnabled", typ "boolean")]))])]),
+      ("githubEnabled", typ "boolean"), ("private", typ "boolean"),
+      ("canRead", typ "boolean")]))])]),
   ("/auth/google/login", obj [("get", operation "Auth" "Redirect to Google consent" [] none
     [("302", emptyResp "Redirect")])]),
   ("/auth/google/callback", obj [("get", operation "Auth" "OAuth callback" [queryParam "code" "Authorization code"] none
