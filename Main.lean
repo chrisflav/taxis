@@ -55,6 +55,10 @@ def main (args : List String) : IO Unit := do
         let name := (← Db.getGroup db gid).map (·.name) |>.getD s!"#{gid.val}"
         pure s!"\"{name}\" ({← Db.groupMemberCount db gid} member(s))"
       IO.println s!"[taxis] private mode: on — read requires membership of {", ".intercalate described.toList} (administrators always)"
+  -- Inert rather than wrong, and so exactly the kind of setting that is only noticed once someone
+  -- who should not have been able to read the tracker has.
+  if !config.privateMode && !config.readGroups.isEmpty then
+    IO.eprintln "[taxis] auth.readGroups is set but auth.private is not — it has no effect while anyone may read"
   if config.devLogin then
     IO.println "[taxis] development login: ENABLED — do not run this in production"
     if config.privateMode then

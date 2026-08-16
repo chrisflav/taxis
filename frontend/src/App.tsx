@@ -138,10 +138,11 @@ export function App() {
   // for data and be told 401. So the gate replaces the whole of `main` rather than being a state
   // any one view knows how to be in.
   //
-  // It waits for the session, which means an anonymous visitor to a private instance briefly gets
-  // the issue list's skeleton first. That is the ordering the top bar already accepts deliberately
-  // (see the note on `main` below) and `/session` is the first request the page makes, so what
-  // actually shows in between is an empty skeleton rather than a failure.
+  // It waits for the session, so an anonymous visitor to a private instance gets the issue list in
+  // its loading state for one round trip first. That is the ordering the top bar already accepts
+  // deliberately (see the note on `main` below), and `/session` is the first request the page
+  // makes — so the list is still waiting on its own reads when the gate replaces it, and what
+  // shows in between is an empty list rather than an error.
   const locked = !!auth && auth.private && !auth.canRead;
 
   let view;
