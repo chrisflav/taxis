@@ -54,20 +54,28 @@ function AccountMenu({ me, onChange }: { me: Actor; onChange: () => void }) {
 // Which sign-in methods exist is server configuration, and it arrives with the answer to "who is
 // signed in" — the same request, because they are the same question about the same corner of the
 // bar. This used to be a second request to `/health` on every page load.
-export function LoginBar({ me, auth, onChange }: { me: Actor | null; auth: Session | null; onChange: () => void }) {
+// The sign-in buttons themselves, without the bar around them — the same set is offered in the top
+// bar of an open instance and in the middle of the page of a private one, and two copies would
+// drift the moment a fourth method is added.
+function SignInButtons({ auth, onChange, primary }: {
+  auth: Session | null; onChange: () => void; primary?: boolean;
+}) {
   const [showPasswordForm, setShowPasswordForm] = useState(false);
-
-  if (me) return <AccountMenu me={me} onChange={onChange} />;
-
-  const googleEnabled = !!auth?.googleEnabled;
-  const githubEnabled = !!auth?.githubEnabled;
-  const centralPasswordEnabled = !!auth?.centralPasswordEnabled;
+  // On the full-page gate these buttons are the only thing to do, so the first one leads.
+  const cls = (first: boolean) => (primary && first ? "primary" : undefined);
+  const google = !!auth?.googleEnabled;
+  const github = !!auth?.githubEnabled;
+  const password = !!auth?.centralPasswordEnabled;
 
   return (
-    <div className="row">
-      {googleEnabled && <a href={api.googleLoginUrl}><button>Sign in with Google</button></a>}
-      {githubEnabled && <a href={api.githubLoginUrl}><button>Sign in with GitHub</button></a>}
-      {centralPasswordEnabled && <button onClick={() => setShowPasswordForm(true)}>Sign in with Password</button>}
+    <>
+      {google && <a href={api.googleLoginUrl}><button className={cls(true)}>Sign in with Google</button></a>}
+      {github && <a href={api.githubLoginUrl}><button className={cls(!google)}>Sign in with GitHub</button></a>}
+      {password && (
+        <button className={cls(!google && !github)} onClick={() => setShowPasswordForm(true)}>
+          Sign in with Password
+        </button>
+      )}
       {showPasswordForm && (
         <Modal title="Sign in with Password" onClose={() => setShowPasswordForm(false)}>
           <PasswordLoginForm
@@ -75,6 +83,53 @@ export function LoginBar({ me, auth, onChange }: { me: Actor | null; auth: Sessi
             onDone={() => { setShowPasswordForm(false); onChange(); }}
           />
         </Modal>
+      )}
+    </>
+  );
+}
+
+export function LoginBar({ me, auth, onChange }: { me: Actor | null; auth: Session | null; onChange: () => void }) {
+  if (me) return <AccountMenu me={me} onChange={onChange} />;
+  return (
+    <div className="row">
+      <SignInButtons auth={auth} onChange={onChange} />
+    </div>
+  );
+}
+
+// What stands in for the whole application on a private instance you cannot read.
+//
+// The two states it covers are not the same problem and must not read as though they were. Signed
+// out, signing in is the answer and the buttons are the page. Signed in without access, signing in
+// again is precisely what will not help — the account is fine, it is simply not in the group that
+// has access — so the page says who you are (an administrator needs to be told *which* account to
+// add) and offers the way out of a wrong account rather than another way into the same one.
+export function AccessGate({ auth, onChange }: { auth: Session; onChange: () => void }) {
+  const me = auth.actor;
+  return (
+    <div className="panel" style={{ maxWidth: 460, margin: "10vh auto", textAlign: "center" }}>
+      {me ? (
+        <>
+          <h2 style={{ marginTop: 0 }}>No access</h2>
+          <p className="muted">
+            This tracker is private, and your account has not been given access to it. An
+            administrator can grant it by adding you to a group that has read access.
+          </p>
+          <p className="faint small">
+            Signed in as <ActorName name={me.displayName} bot={me.bot} /> ({me.email})
+          </p>
+          <div className="row" style={{ justifyContent: "center" }}>
+            <button onClick={() => api.logout().then(onChange)}>Sign out</button>
+          </div>
+        </>
+      ) : (
+        <>
+          <h2 style={{ marginTop: 0 }}>This tracker is private</h2>
+          <p className="muted">Sign in to continue.</p>
+          <div className="row" style={{ justifyContent: "center" }}>
+            <SignInButtons auth={auth} onChange={onChange} primary />
+          </div>
+        </>
       )}
     </div>
   );

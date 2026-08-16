@@ -119,6 +119,8 @@ repoDepsTtl = 3600                        # repository dependency cache, in seco
 password = "…"                            # central login password; enables password sign-in
 adminEmails = ["you@example.com"]         # granted admin on login (bootstrap)
 devLogin = false                          # enables POST /api/auth/dev-login — never in production
+private = false                           # nothing readable without a session — see Private mode
+readGroups = []                           # groups that may read a private instance, by name
 
 [auth.google]                             # when set, mutations require an authenticated session
 clientId = "…"
@@ -168,6 +170,8 @@ shell or placed in a `.env` file in the working directory; the full order is env
 | `ISSUES_CENTRAL_PASSWORD` | `auth.password` | Central login password; when set, password login is enabled |
 | `ISSUES_ADMIN_EMAILS` | `auth.adminEmails` | Emails granted admin on login — comma-separated in the variable, a list in the file |
 | `ISSUES_DEV_LOGIN` | `auth.devLogin` | Enables `POST /api/auth/dev-login` for local use |
+| `ISSUES_PRIVATE` | `auth.private` | Private mode: reads require a session too, not just writes |
+| `ISSUES_READ_GROUPS` | `auth.readGroups` | Groups that may read a private instance — comma-separated in the variable, a list in the file |
 | `ISSUES_GOOGLE_CLIENT_ID` | `auth.google.clientId` | Google OAuth client id; when set, mutations require auth |
 | `ISSUES_GOOGLE_CLIENT_SECRET` | `auth.google.clientSecret` | Google OAuth client secret |
 | `ISSUES_GITHUB_CLIENT_ID` | `auth.github.clientId` | GitHub OAuth App client id; when set, mutations require auth |
@@ -266,6 +270,73 @@ subject id:
 
 Google and GitHub sign-in can be enabled at the same time; an actor may have both a `googleSub` and
 a `githubId` linked (independently, via matching email on each provider's first login).
+
+## Private mode
+
+By default a taxis instance is **readable by anyone** and writable only by those who have signed
+in. `auth.private` closes the reads too:
+
+```toml
+[auth]
+private = true
+```
+
+Now every API route needs a session — issues, comments, the graphs, the actor list, `/mcp`, the
+`/docs` API reference. Three things stay reachable without one, because they are what the sign-in
+screen is made of: `GET /api/health`, `GET /api/session`, and the `/auth/**` sign-in routes
+themselves. So do the built frontend assets — there is no signing in to an instance that will not
+serve its own sign-in page.
+
+New read routes are private automatically: the check is stated as "everything except those three"
+rather than as a list of what it covers.
+
+### Restricting to a group
+
+`auth.private` on its own means *any* actor who can sign in may read. That is already the whole
+answer when the sign-in method is itself the gate — a `auth.password` shared with a small team, or
+a Google Workspace nobody outside the company has an account in.
+
+When it is not — with Google or GitHub sign-in, anyone at all can authenticate — name a group:
+
+```toml
+[auth]
+private = true
+readGroups = ["staff"]          # or ["staff", "contractors"]
+```
+
+Members of a named group may read; everyone else gets `403` however they signed in. **Membership
+lives in the database, not here** — add and remove people under *Admin → Actors*, which takes
+effect immediately and needs no restart. The setting only names which group is the gate.
+
+Some details worth knowing:
+
+- **Administrators may always read**, whatever the groups say. They can add themselves in any case,
+  and without the exemption a single typo in `readGroups` locks everyone out of the instance
+  including the one account that could repair it.
+- **The group is created at startup** if it does not exist, so turning private mode on for a fresh
+  instance is one setting rather than a chicken-and-egg.
+- **It cannot be renamed or deleted** from the admin screens while it is named here. Either would
+  silently lock the instance: the next start looks the name up, finds nothing, and creates a fresh
+  empty group. The description stays editable.
+- **Anyone can still sign in** — they simply see nothing. This is deliberate: it creates the actor
+  row for you, so onboarding is "they sign in, you tick a box" rather than hand-creating actors and
+  matching email addresses exactly.
+- **Bots** are actors like any other. A bot whose API token should keep working on a private
+  instance goes in the group too.
+- **A read group is an ordinary group**, so it can also be used to restrict individual issues under
+  *Visibility* — the two compose: the group gets you into the instance, per-issue visibility
+  narrows things further within it.
+
+The server refuses to start with `private = true` and no sign-in method configured, since every
+route would answer `401` and nothing could ever change that. At startup it prints what is in force:
+
+```
+[taxis] private mode: on — read requires membership of "staff" (7 member(s)) (administrators always)
+```
+
+The member count is there because the failure this setting has is invisible from the inside: the
+operator who just turned it on is an administrator, and administrators are admitted whatever the
+group holds — so `(0 member(s))` is the only warning that nobody else can get in.
 
 ## File artifacts
 

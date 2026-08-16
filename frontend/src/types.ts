@@ -231,6 +231,12 @@ export interface Session {
   centralPasswordEnabled: boolean;
   googleEnabled: boolean;
   githubEnabled: boolean;
+  /** Whether the instance is private: nothing is readable without a session. */
+  private: boolean;
+  /** Whether *you* may read it. False on a private instance when you are signed out, and also when
+   *  you are signed in but not in a group named by `auth.readGroups` — two states that need
+   *  different screens, which is why this is not just `actor != null`. */
+  canRead: boolean;
 }
 
 export interface FieldSpec {

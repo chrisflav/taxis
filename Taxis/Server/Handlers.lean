@@ -67,13 +67,31 @@ def getGroupH (ctx : AppContext) (id : Int64) : ApiM ApiResponse := do
   | some g => ok (toJson g)
   | none => fail (.notFound s!"group {id} not found")
 
+/-- Whether this group is one of the ones `auth.readGroups` gates read access on.
+
+    Those are matched by *name* at every startup, so renaming or deleting one locks the instance
+    without saying so: the next start looks the name up, finds nothing, creates a fresh empty group
+    and everybody but the administrators loses access. The configuration file is the wrong place to
+    find that out from, so the two operations that would cause it are refused here instead. -/
+private def isReadGroup (ctx : AppContext) (id : Int64) : Bool :=
+  ctx.readGroupIds.any (·.val == id)
+
 def updateGroupH (ctx : AppContext) (id : Int64) (req : Req) : ApiM ApiResponse := do
   let upd ← parseBody GroupUpdate req.body
+  -- Only the name is load-bearing; the description is not what the group is looked up by, so it
+  -- stays editable.
+  if isReadGroup ctx id then
+    if let some newName := upd.name then
+      let current ← ctx.readM (Db.getGroup · ⟨id⟩)
+      if current.map (·.name) != some newName then
+        fail (.forbidden "this group controls read access (auth.readGroups) and cannot be renamed")
   match ← ctx.dbM (Db.updateGroup · ⟨id⟩ upd) with
   | some g => ok (toJson g)
   | none => fail (.notFound s!"group {id} not found")
 
 def deleteGroupH (ctx : AppContext) (id : Int64) : ApiM ApiResponse := do
+  if isReadGroup ctx id then
+    fail (.forbidden "this group controls read access (auth.readGroups) and cannot be deleted")
   if ← ctx.dbM (Db.deleteGroup · ⟨id⟩) then
     ok (Json.mkObj [("deleted", true)])
   else fail (.notFound s!"group {id} not found")
@@ -958,9 +976,30 @@ private def isAdminResource : List String → Bool
   | "actors" :: _ | "groups" :: _ | "labels" :: _ | "import" :: _ => true
   | _ => false
 
+/-- The routes a private instance still answers without a session: the sign-in routes themselves,
+    and the two endpoints the sign-in screen is drawn from — `/session` says which methods exist
+    and `/health` says the server is up, and neither carries anything from the tracker.
+
+    Stated as the exception rather than by listing what private mode covers, so that a read route
+    added later is private by default instead of by someone remembering to come back here. That
+    includes `/mcp`, which is deliberately *not* exempt: it is exempt from the mutating check
+    below (one `POST` multiplexes reads and writes, so "POST ⇒ needs auth" does not fit it) but
+    an anonymous MCP read is exactly what private mode exists to refuse. -/
+private def isPublicRoute : List String → Bool
+  | "auth" :: _ => true
+  | ["session"] | ["health"] => true
+  | _ => false
+
 /-- Route a request to a handler based on method and decoded path segments. -/
 def dispatch (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
   let mutating := req.method == .post || req.method == .patch || req.method == .delete
+  -- Private mode: the whole instance needs a session, reads included.
+  if !isPublicRoute req.segments && !ctx.mayRead req.actor then
+    -- The two answers are not interchangeable. `401` means signing in would help, and the frontend
+    -- draws sign-in buttons; `403` means it would not, because this account is not in the group
+    -- that has access — which needs an administrator, not another trip through Google.
+    if req.actor.isNone then fail (.unauthorized "authentication required")
+    else fail (.forbidden "your account does not have access to this instance")
   -- Anyone may read; making changes requires an authenticated actor. Unauthenticated users are
   -- therefore read-only.
   if req.actor.isNone && !isAuthRoute req.segments && mutating then
@@ -969,7 +1008,7 @@ def dispatch (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
   if mutating && isAdminResource req.segments && !(req.actor.map (·.admin) |>.getD false) then
     fail (.forbidden "admin privileges required")
   match req.method, req.segments with
-  | .get, ["health"] => ok (Json.mkObj [("status", "ok"), ("version", Taxis.version), ("centralPasswordEnabled", Json.bool ctx.config.centralPassword.isSome), ("googleEnabled", Json.bool ctx.config.googleClientId.isSome), ("githubEnabled", Json.bool ctx.config.githubClientId.isSome)])
+  | .get, ["health"] => ok (Json.mkObj [("status", "ok"), ("version", Taxis.version), ("centralPasswordEnabled", Json.bool ctx.config.centralPassword.isSome), ("googleEnabled", Json.bool ctx.config.googleConfigured), ("githubEnabled", Json.bool ctx.config.githubConfigured), ("private", Json.bool ctx.config.privateMode)])
   | .get, ["openapi.json"] => ok OpenApi.spec
   | .get, ["plugins"] => pluginsH
   | .get, ["filestores"] => listFileStoresH

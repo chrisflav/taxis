@@ -55,6 +55,16 @@ structure Config where
   centralPassword : Option String := none
   /-- Enables `POST /api/auth/dev-login`. Development only. -/
   devLogin : Bool := false
+  /-- Private mode: the whole instance needs a session, reads included. Off, only writes do.
+
+      Named `privateMode` rather than `private` because the latter is a Lean keyword; the setting
+      is spelled `auth.private`. -/
+  privateMode : Bool := false
+  /-- Groups whose members may read a private instance, by name. Empty means every authenticated
+      actor may read. Resolved to ids at startup (`AppContext.create`), which also creates a group
+      that does not exist yet — see `AppContext.readGroupIds`. Has no effect unless `privateMode`
+      is set. -/
+  readGroups : List String := []
   /-- File stores for `file` artifacts, as a JSON array — either the `ISSUES_FILESTORES` document
       or the `[[filestores]]` tables. It carries store credentials, so `main` consumes it
       (`Plugins.configureFileStores`) and blanks it before the config enters the request-serving
@@ -64,6 +74,20 @@ structure Config where
   /-- Log every incoming request to stderr (enabled with `--verbose`). -/
   verbose : Bool := false
 deriving Inhabited
+
+/-- Whether Google sign-in is actually usable.
+
+    A client id without its secret is a sign-in method only in the sense that there is a button:
+    the consent screen appears, and the token exchange that follows it fails with "Google OAuth is
+    not configured". Asking for the pair is what keeps "configured" meaning the same thing to the
+    startup guard, to the sign-in buttons the frontend draws from `/api/session`, and to the
+    handler that has to finish the job. -/
+def Config.googleConfigured (c : Config) : Bool :=
+  c.googleClientId.isSome && c.googleClientSecret.isSome
+
+/-- Whether GitHub sign-in is actually usable. See `Config.googleConfigured`. -/
+def Config.githubConfigured (c : Config) : Bool :=
+  c.githubClientId.isSome && c.githubClientSecret.isSome
 
 /-- The configuration this process started with.
 
@@ -221,6 +245,27 @@ private def Sources.strings (s : Sources) (env : String) (path : List String) :
   | some (.str v) => return some (split v)
   | some v => s.bad path "an array of strings" v.compress
 
+/-- Whether a list setting was written with entries, all of which were blank — the state `strings`
+    cleans away to nothing.
+
+    For `adminEmails` dropping them is protective, and `[""]` becoming `[]` grants nobody admin.
+    For a setting where an empty list means *no restriction* the same cleanup inverts: `[""]` — what
+    a template with an unfilled variable leaves behind — silently becomes "no groups named", which
+    for `auth.readGroups` is the difference between a tracker restricted to one group and one that
+    any stranger who can complete a Google sign-in may read. So the caller is given the means to
+    tell those two apart rather than being handed the same `[]` for both. -/
+private def Sources.blankOnly (s : Sources) (env : String) (path : List String) : IO Bool := do
+  let written : Option (List String) ←
+    if let some v ← s.envValue env then pure (some (v.splitOn ","))
+    else match tomlAt? s.toml path with
+      | none => pure none
+      | some (.arr xs) => pure (some (xs.toList.map fun | .str v => v | v => v.compress))
+      | some (.str v) => pure (some (v.splitOn ","))
+      | some _ => pure none
+  match written with
+  | none => return false
+  | some vs => return !vs.isEmpty && vs.all (·.trimAscii.isEmpty)
+
 /-- The file stores: a JSON array from the environment, an array of `[[filestores]]` tables from
     the configuration file. Either way what comes out is a JSON array, which is what the file-store
     backends take. -/
@@ -244,6 +289,7 @@ private def knownKeys : List (List String) :=
   [["port"], ["host"], ["db"], ["frontendDir"], ["baseUrl"], ["verbose"],
    ["checkInterval"], ["repoDepsTtl"], ["filestores"],
    ["auth", "password"], ["auth", "adminEmails"], ["auth", "devLogin"],
+   ["auth", "private"], ["auth", "readGroups"],
    ["auth", "google", "clientId"], ["auth", "google", "clientSecret"],
    ["auth", "github", "clientId"], ["auth", "github", "clientSecret"],
    ["github", "token"]]
@@ -308,8 +354,31 @@ def Config.load (configPath : Option System.FilePath := none)
     adminEmails := (← s.strings "ISSUES_ADMIN_EMAILS" ["auth", "adminEmails"]).getD []
     centralPassword := ← s.str "ISSUES_CENTRAL_PASSWORD" ["auth", "password"]
     devLogin := (← s.bool "ISSUES_DEV_LOGIN" ["auth", "devLogin"]).getD false
+    privateMode := (← s.bool "ISSUES_PRIVATE" ["auth", "private"]).getD false
+    readGroups := (← s.strings "ISSUES_READ_GROUPS" ["auth", "readGroups"]).getD []
     fileStores := ← s.fileStores
     verbose := (← s.bool "ISSUES_VERBOSE" ["verbose"]).getD false }
+  -- A private instance nobody can sign in to is not a locked tracker, it is a broken one: every
+  -- route answers 401 and no route can ever change that. Refused here rather than discovered from
+  -- the outside, in keeping with the rest of this file — a setting that cannot work stops startup.
+  -- The *pair* on each provider, not just the id: half-configured OAuth is precisely what an
+  -- operator setting this up is likely to have written, and it reaches the consent screen before
+  -- failing, so it would satisfy a guard that only looked for an id while leaving the instance
+  -- exactly as unreachable as no sign-in method at all.
+  if config.privateMode && !config.googleConfigured && !config.githubConfigured
+      && config.centralPassword.isNone && !config.devLogin then
+    throw <| IO.userError
+      "auth.private is set but no sign-in method is configured — set auth.password, \
+       auth.google.clientId *and* clientSecret, or auth.github.clientId *and* clientSecret, or \
+       nobody (including you) will be able to reach this instance"
+  -- `readGroups = []` is a deliberate "no group restriction" and stays legal. `readGroups = [""]`
+  -- is an unfilled template variable that would quietly mean the same thing, on the one setting
+  -- where "nothing named" opens the instance rather than closing it.
+  if config.privateMode && (← s.blankOnly "ISSUES_READ_GROUPS" ["auth", "readGroups"]) then
+    throw <| IO.userError
+      "auth.readGroups names no group — it holds only blank entries, which would leave every \
+       authenticated actor able to read this private instance. Name a group, or remove the \
+       setting to allow that deliberately"
   -- Published without the file stores, so the guarantee their field documents — that no second
   -- plaintext copy of the credentials outlives startup — holds for every caller rather than
   -- depending on `main` remembering to republish a blanked config.

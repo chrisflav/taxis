@@ -30,6 +30,11 @@ structure AppContext where
       connections and nothing else, so it does not need to be atomic. -/
   readCursor : IO.Ref Nat
   config : Config
+  /-- The groups named by `config.readGroups`, resolved to ids once at startup. Empty unless
+      private mode is on with at least one group named, which is what makes the check on the
+      request path a comparison against an array the context already holds rather than a lookup
+      by name per request. -/
+  readGroupIds : Array GroupId := #[]
 
 namespace AppContext
 
@@ -61,14 +66,41 @@ def withRead (ctx : AppContext) (act : Db.Conn → IO α) : IO α := do
 def create (config : Config) : IO AppContext := do
   let conn ← Db.connect config.dbPath
   Db.migrate conn
+  -- Before the connection goes behind the mutex, while it is still the only one there is. Only
+  -- under private mode: naming a read group on an open instance should not conjure it into the
+  -- admin screens, where it would look like a group that gates something.
+  let readGroupIds ←
+    if config.privateMode then
+      config.readGroups.toArray.mapM fun name => do pure (← Db.getOrCreateGroupByName conn name).id
+    else pure #[]
   let db ← Std.Mutex.new conn
   -- After `migrate`: the file has to exist, with its schema, before anything opens it read-only.
   let readers ← (Array.range readerCount).mapM fun _ => do
     let reader ← Db.connectReadOnly config.dbPath
     Std.Mutex.new reader
   let readCursor ← IO.mkRef 0
-  pure { db, readers, readCursor, config }
+  pure { db, readers, readCursor, config, readGroupIds }
 
 end AppContext
+
+/-- Whether `actor` may read an instance whose read access is restricted to `readGroups`.
+
+    Separated from the configuration it is read out of below so the rule itself is a function of
+    its two inputs: an empty `readGroups` admits any authenticated actor, which is what
+    `auth.private` on its own means.
+
+    Administrators are admitted whatever the groups say. It is not a privilege they did not have —
+    an admin can add themselves to any group through the actor screens — and without it a mistyped
+    `auth.readGroups` locks every last person out of the instance, with the one account that could
+    repair it locked out too. -/
+def mayReadGroups (readGroups : Array GroupId) (actor : Option Actor) : Bool :=
+  match actor with
+  | none => false
+  | some a => a.admin || readGroups.isEmpty || readGroups.any (a.groups.contains ·)
+
+/-- Whether `actor` may read this instance at all. Always true while private mode is off: an open
+    instance restricts individual issues (`issue_visibility`), never the instance. -/
+def AppContext.mayRead (ctx : AppContext) (actor : Option Actor) : Bool :=
+  !ctx.config.privateMode || mayReadGroups ctx.readGroupIds actor
 
 end Taxis

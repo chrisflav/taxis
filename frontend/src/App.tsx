@@ -4,7 +4,7 @@ import { api, paths } from "./api";
 import { cachedGet, invalidateCache } from "./cache";
 import { setCurrentActor } from "./offline";
 import { IssueList } from "./components/IssueList";
-import { LoginBar } from "./components/Login";
+import { AccessGate, LoginBar } from "./components/Login";
 import { NotificationBell } from "./components/NotificationBell";
 import { OfflineIndicator } from "./components/OfflineIndicator";
 import { ThemeToggle } from "./components/ThemeToggle";
@@ -75,10 +75,22 @@ export function App() {
   // have changed in the time it took the bundle to arrive, which on a slow link is exactly when a
   // spare round trip is least affordable. After a sign-in or sign-out it is precisely what has
   // changed, so that path insists on a fresh read.
+  // A session we could not re-read is not a session. Clearing `me` alone used to leave `auth`
+  // holding the *previous* answer, `canRead: true` included — so on a private instance, signing
+  // out and then failing to re-read the session (a restart, a dropped connection) left the
+  // application unlocked for a browser that no longer had a cookie: full navigation, and every
+  // view rendering the 401 it got instead of the sign-in screen.
+  //
+  // What is kept is what the request could not have changed — that the instance is private — and
+  // what is dropped is the claim that this browser may read it. A first load that fails has no
+  // previous answer to fall back to and stays `null`, exactly as it did.
   const loadSession = (maxAgeMs: number) =>
     cachedGet(paths.session, api.session, maxAgeMs)
       .then((s) => { setAuth(s); setMe(s.actor); })
-      .catch(() => { setMe(null); })
+      .catch(() => {
+        setMe(null);
+        setAuth((prev) => (prev ? { ...prev, actor: null, canRead: !prev.private } : null));
+      })
       .finally(() => setMeLoaded(true));
   const refreshMe = () => loadSession(0);
 
@@ -134,6 +146,17 @@ export function App() {
     window.location.hash = "#/notifications";
   };
 
+  // A private instance you may not read has nothing to route to: every view below would mount, ask
+  // for data and be told 401. So the gate replaces the whole of `main` rather than being a state
+  // any one view knows how to be in.
+  //
+  // It waits for the session, so an anonymous visitor to a private instance gets the issue list in
+  // its loading state for one round trip first. That is the ordering the top bar already accepts
+  // deliberately (see the note on `main` below), and `/session` is the first request the page
+  // makes — so the list is still waiting on its own reads when the gate replaces it, and what
+  // shows in between is an empty list rather than an error.
+  const locked = !!auth && auth.private && !auth.canRead;
+
   let view;
   if (top === "graph") view = <GraphView />;
   else if (top === "repos") view = <RepoGraphView />;
@@ -175,17 +198,22 @@ export function App() {
             <Turnstile />
             <span>taxis</span>
           </a>
-          <nav aria-label="Main">
-            <a className={navClass("issues")} aria-current={navCurrent("issues")} href="#/issues">Issues</a>
-            <a className={navClass("graph")} aria-current={navCurrent("graph")} href="#/graph">Graph</a>
-            <a className={navClass("repos")} aria-current={navCurrent("repos")} href="#/repos">Repos</a>
-            <a className={navClass("labels")} aria-current={navCurrent("labels")} href="#/labels">Labels</a>
-          </nav>
+          {/* Every one of these leads somewhere the gate would replace, and the bell below would
+              ask for a count it will not be given — so a locked instance offers neither. What is
+              left is the account control, which is the only thing that can change the situation. */}
+          {!locked && (
+            <nav aria-label="Main">
+              <a className={navClass("issues")} aria-current={navCurrent("issues")} href="#/issues">Issues</a>
+              <a className={navClass("graph")} aria-current={navCurrent("graph")} href="#/graph">Graph</a>
+              <a className={navClass("repos")} aria-current={navCurrent("repos")} href="#/repos">Repos</a>
+              <a className={navClass("labels")} aria-current={navCurrent("labels")} href="#/labels">Labels</a>
+            </nav>
+          )}
           <div className="spacer" />
           {/* Renders nothing at all while there is a connection and nothing queued, which is the
               ordinary case — it is here to say what is *not* on the server yet. */}
           <OfflineIndicator />
-          {meLoaded && <NotificationBell me={me} active={top === "notifications"} />}
+          {meLoaded && !locked && <NotificationBell me={me} active={top === "notifications"} />}
           <ThemeToggle />
           {meLoaded && <LoginBar me={me} auth={auth} onChange={refreshMe} />}
         </div>
@@ -211,7 +239,9 @@ export function App() {
       <main key={me ? `actor-${me.id}` : "anon"}>
         {/* Keyed on the route so switching pages swaps to that page's skeleton rather than
             holding the previous page on screen until the new one is ready. */}
-        <Suspense key={top} fallback={fallback}>{view}</Suspense>
+        {locked
+          ? <AccessGate auth={auth!} onChange={refreshMe} />
+          : <Suspense key={top} fallback={fallback}>{view}</Suspense>}
       </main>
     </>
   );

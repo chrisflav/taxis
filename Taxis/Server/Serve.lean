@@ -198,12 +198,27 @@ instance : Handler AppHandler where
           let acceptsGzip :=
             (acceptedEncodings (headerValue req "Accept-Encoding")).contains "gzip"
           buildResponseWith
-            { apiResp with headers := apiResp.headers ++ #[("ETag", tag), ("Cache-Control", "no-cache")] }
+            { apiResp with headers := apiResp.headers ++ #[("ETag", tag), ("Cache-Control", apiCacheControl)] }
             payload acceptsGzip
       else buildResponse apiResp
     | none =>
       match segs with
-      | ["docs"] => Response.ok.html OpenApi.docsHtml
+      -- The API reference describes the API rather than carrying anything out of the tracker, but
+      -- a private instance has no reason to be handing its shape to anonymous readers either. It
+      -- is served outside `dispatch`, so the check the API routes get has to be made here — which
+      -- means resolving the actor, something this branch otherwise never needs to do.
+      --
+      -- The built frontend below stays public whatever the mode: the sign-in screen is one of
+      -- those files, and there is no signing in to an instance that will not serve it.
+      | ["docs"] =>
+        let actor ← (do
+          if !h.ctx.config.privateMode then pure none
+          else pure (← resolveActor h.ctx (toReq req [] "")).actor : IO (Option Actor))
+        if h.ctx.mayRead actor then Response.ok.html OpenApi.docsHtml
+        -- The same two answers the API routes give, for the same reason: `401` means signing in
+        -- would help and `403` means it would not.
+        else if actor.isNone then (Response.withStatus .unauthorized).text "authentication required"
+        else (Response.withStatus .forbidden).text "your account does not have access to this instance"
       | _ => serveStatic h.ctx segs (headerValue req "Accept-Encoding") (headerValue req "If-None-Match")
   onFailure _ err := do
     IO.eprintln s!"[issues] connection error: {err}"
