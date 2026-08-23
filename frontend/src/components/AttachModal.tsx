@@ -4,6 +4,9 @@ import { api } from "../api";
 import { Modal } from "./Modal";
 import { AutoTextarea } from "./AutoTextarea";
 import { SearchableSelect } from "./SearchableSelect";
+import { Markdown } from "./Markdown";
+import { IssueRefMenu } from "./IssueRefMenu";
+import { useIssueRefAutocomplete } from "../useIssueRefAutocomplete";
 
 // The issue detail view's two dialogues, kept out of that view's own module so they are not in the
 // bundle that renders the page. Nothing here is on the path to a first paint: every one of these is
@@ -115,6 +118,51 @@ function FileUpload({ onUploaded, onError }: {
   );
 }
 
+// A `markdown` field: the source in a generously sized editor, with a preview that renders it
+// through exactly the parser the page will use — same markdown, same KaTeX, same `#123` links. A
+// plain `text` field is an opaque string and writing it blind costs nothing; a markdown field is
+// prose that gets *displayed*, and writing it blind means finding out how it reads only after it
+// is attached. The preview is also the honest place to discover that a `$…$` did not parse.
+function MarkdownField({ value, placeholder, onChange }: {
+  value: string;
+  placeholder: string;
+  onChange: (v: string) => void;
+}) {
+  const [preview, setPreview] = useState(false);
+  const ac = useIssueRefAutocomplete<HTMLTextAreaElement>(value, onChange);
+
+  return (
+    <div className="md-field">
+      <div className="segmented compact md-field-tabs">
+        <button type="button" className={preview ? "" : "active"} onClick={() => setPreview(false)}>Write</button>
+        <button type="button" className={preview ? "active" : ""} onClick={() => setPreview(true)}>Preview</button>
+      </div>
+      {preview ? (
+        <div className="md-field-preview">
+          {value.trim()
+            ? <Markdown text={value} />
+            : <span className="rail-empty">Nothing to preview yet.</span>}
+        </div>
+      ) : (
+        <div className="issue-ref-field">
+          <AutoTextarea
+            ref={ac.elRef}
+            value={value}
+            placeholder={placeholder}
+            style={{ minHeight: 200 }}
+            onChange={ac.onChangeWrapped}
+            onKeyDown={ac.onKeyDown}
+          />
+          <IssueRefMenu options={ac.options} onChoose={ac.choose} pos={ac.menuPos} menuRef={ac.menuRef} />
+        </div>
+      )}
+      <div className="muted small">
+        Markdown and LaTeX math (KaTeX, e.g. <code>$x^2$</code>) supported. Type <code>#</code> to link another issue.
+      </div>
+    </div>
+  );
+}
+
 // Modal for attaching *or editing* an artifact or check. Renders a form derived from the selected
 // kind's field schema (from /api/plugins) and assembles the payload — no raw JSON needed.
 //
@@ -217,6 +265,8 @@ export function AttachModal({
             <label>{f.label}{f.required ? " *" : ""}</label>
             {f.type === "boolean" ? (
               <input type="checkbox" checked={!!values[f.name]} onChange={(e) => setField(f.name, e.target.checked)} />
+            ) : f.type === "markdown" ? (
+              <MarkdownField value={String(values[f.name] ?? "")} placeholder={f.placeholder ?? ""} onChange={(v) => setField(f.name, v)} />
             ) : f.type === "text" ? (
               <AutoTextarea value={String(values[f.name] ?? "")} placeholder={f.placeholder ?? ""} onChange={(e) => setField(f.name, e.target.value)} />
             ) : (

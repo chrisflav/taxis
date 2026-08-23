@@ -24,7 +24,8 @@ namespace Taxis.Plugins
 
 /-- Describes one input field of an artifact payload or check config, so the frontend can render
     a proper form instead of asking for raw JSON. `type` is one of `string`, `number`, `boolean`,
-    or `text` (multi-line). -/
+    `text` (multi-line), or `markdown` (multi-line, with a rendered preview in the form and
+    rendered markdown/LaTeX wherever the value is displayed). -/
 structure FieldSpec where
   name : String
   label : String

@@ -416,22 +416,9 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
                 {me && <button className="ghost" onClick={() => { setEditorsUsed(true); setAddArtifact(true); }}>Add</button>}
               </h3>
               {detail.attachedArtifacts.map((a) => (
-                <div key={a.id} className="attach-row">
-                  <span className="attach-main">
-                    <span className="badge">{a.kind}</span>
-                    {a.display.url
-                      ? <a href={a.display.url} target="_blank" rel="noreferrer" className="small">{a.display.label}</a>
-                      : <span className="muted small">{a.display.label}</span>}
-                  </span>
-                  {me && (
-                    <span className="attach-actions">
-                      <button className="ghost" title="Edit artifact" aria-label="Edit artifact"
-                        onClick={() => { setEditorsUsed(true); setEditArtifact(a); }}>✎</button>
-                      <button className="ghost" title="Remove artifact" aria-label="Remove artifact"
-                        onClick={() => setDelArtifact(a)}>×</button>
-                    </span>
-                  )}
-                </div>
+                <ArtifactRow key={a.id} artifact={a} canEdit={me != null}
+                  onEdit={() => { setEditorsUsed(true); setEditArtifact(a); }}
+                  onRemove={() => setDelArtifact(a)} />
               ))}
               {detail.attachedArtifacts.length === 0 && <div className="rail-empty">None attached</div>}
             </div>
@@ -679,6 +666,60 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
 // real title is already in flight.
 //
 // The panels are laid out in the same grid as the real page, so nothing jumps when it fills in.
+// One attached artifact in the rail.
+//
+// Most kinds are a pointer somewhere else, and a pointer is a line: a badge, a label, a link. The
+// `context` kind is the exception — it has nowhere to point, it *is* its text — so it folds out in
+// place, rendered as markdown the way the description and comments are. It stays folded by
+// default, which is the whole reason the kind exists: context accumulates on a long-lived issue
+// (what was tried, what the environment needs, what a previous agent run learned), and it is worth
+// keeping without being worth pushing in front of everyone who opens the page.
+function ArtifactRow({ artifact, canEdit, onEdit, onRemove }: {
+  artifact: Artifact;
+  canEdit: boolean;
+  onEdit: () => void;
+  onRemove: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  // The payload is `unknown` by kind; only `context` is read here, and only for its own text.
+  const text = artifact.kind === "context"
+    ? String((artifact.payload as { text?: unknown } | null)?.text ?? "")
+    : "";
+
+  const actions = canEdit && (
+    <span className="attach-actions">
+      <button className="ghost" title="Edit artifact" aria-label="Edit artifact" onClick={onEdit}>✎</button>
+      <button className="ghost" title="Remove artifact" aria-label="Remove artifact" onClick={onRemove}>×</button>
+    </span>
+  );
+
+  if (text) {
+    return (
+      <div className="attach-row context-artifact">
+        <button className="ghost context-toggle" aria-expanded={open} onClick={() => setOpen(!open)}>
+          <span className="context-caret">{open ? "▾" : "▸"}</span>
+          <span className="badge">{artifact.kind}</span>
+          <span className="muted small context-label">{artifact.display.label}</span>
+        </button>
+        {actions}
+        {open && <div className="context-body"><Markdown text={text} /></div>}
+      </div>
+    );
+  }
+
+  return (
+    <div className="attach-row">
+      <span className="attach-main">
+        <span className="badge">{artifact.kind}</span>
+        {artifact.display.url
+          ? <a href={artifact.display.url} target="_blank" rel="noreferrer" className="small">{artifact.display.label}</a>
+          : <span className="muted small">{artifact.display.label}</span>}
+      </span>
+      {actions}
+    </div>
+  );
+}
+
 function IssueSkeleton({ id }: { id: number }) {
   const entry = useKnownIssueName(id);
   const bar = (width: string) => <span className="skeleton-line" style={{ width }} />;
