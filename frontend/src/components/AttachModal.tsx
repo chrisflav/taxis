@@ -123,9 +123,12 @@ function FileUpload({ onUploaded, onError }: {
 // plain `text` field is an opaque string and writing it blind costs nothing; a markdown field is
 // prose that gets *displayed*, and writing it blind means finding out how it reads only after it
 // is attached. The preview is also the honest place to discover that a `$…$` did not parse.
-function MarkdownField({ value, placeholder, onChange }: {
+function MarkdownField({ value, placeholder, help, onChange }: {
   value: string;
   placeholder: string;
+  /** The field's own `help`, rendered here rather than by the caller so that it lands above the
+      syntax hint instead of stacking a second grey line underneath it. */
+  help: string | null;
   onChange: (v: string) => void;
 }) {
   const [preview, setPreview] = useState(false);
@@ -157,6 +160,7 @@ function MarkdownField({ value, placeholder, onChange }: {
         </div>
       )}
       <div className="muted small">
+        {help && <>{help}<br /></>}
         Markdown and LaTeX math (KaTeX, e.g. <code>$x^2$</code>) supported. Type <code>#</code> to link another issue.
       </div>
     </div>
@@ -266,13 +270,13 @@ export function AttachModal({
             {f.type === "boolean" ? (
               <input type="checkbox" checked={!!values[f.name]} onChange={(e) => setField(f.name, e.target.checked)} />
             ) : f.type === "markdown" ? (
-              <MarkdownField value={String(values[f.name] ?? "")} placeholder={f.placeholder ?? ""} onChange={(v) => setField(f.name, v)} />
+              <MarkdownField value={String(values[f.name] ?? "")} placeholder={f.placeholder ?? ""} help={f.help} onChange={(v) => setField(f.name, v)} />
             ) : f.type === "text" ? (
               <AutoTextarea value={String(values[f.name] ?? "")} placeholder={f.placeholder ?? ""} onChange={(e) => setField(f.name, e.target.value)} />
             ) : (
               <input type={f.type === "number" ? "number" : "text"} value={String(values[f.name] ?? "")} placeholder={f.placeholder ?? ""} onChange={(e) => setField(f.name, e.target.value)} />
             )}
-            {f.help && <div className="muted small">{f.help}</div>}
+            {f.help && f.type !== "markdown" && <div className="muted small">{f.help}</div>}
           </div>
         ))}
 

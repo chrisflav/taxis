@@ -29,11 +29,9 @@ def truncateTo (s : String) (limit : Nat := 60) : String :=
 
 /-- The one-line label a `context` artifact shows in the rail: its title, shortened to fit.
 
-    A label is what makes a rail of several context artifacts navigable — you can tell the
-    deployment notes from the repro steps without unfolding either — so the title is required
-    rather than derived. Guessing one from the text means the rail reads as whatever syntax the
-    note happens to open with, and the person best placed to say what a note is about in five
-    words is whoever just wrote it. -/
+    Naming the note is the writer's job, not this function's — which is why `title` is required.
+    A label is what makes a rail of several context artifacts navigable at all: you can tell the
+    deployment notes from the repro steps without unfolding either. -/
 def contextLabel (title : String) : String :=
   let title := title.trimAscii.toString
   if title.isEmpty then "context" else truncateTo title
@@ -52,11 +50,16 @@ def contextHandler : ArtifactHandler where
     { name := "text", label := "Context", type := "markdown", required := true,
       placeholder := some "Markdown, with $\\LaTeX$ math.",
       help := some "Background that shouldn't crowd the description — notes for whoever (or whatever) picks this up next." }]
+  -- "absent" and "present but not a string" are told apart, which the other kinds do not bother
+  -- with: this is the one kind whose stated audience writes its payload by hand against the API,
+  -- and a bot that sent `text` as a list is not helped by being told the field is missing.
   validate j := pure <| do
     for field in ["title", "text"] do
-      match str? j field with
-      | none => throw s!"missing required field '{field}'"
-      | some v => if v.trimAscii.isEmpty then throw s!"'{field}' must not be empty"
+      match j.getObjVal? field with
+      | .error _ => throw s!"missing required field '{field}'"
+      | .ok v => match v.getStr? with
+        | .error _ => throw s!"'{field}' must be a string, but is {v.compress}"
+        | .ok s => if s.trimAscii.isEmpty then throw s!"'{field}' must not be empty"
   render j := pure { label := contextLabel ((str? j "title").getD "") }
 
 initialize registerArtifactHandler contextHandler

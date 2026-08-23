@@ -843,12 +843,18 @@ code { font-size: 0.9em; }
 }
 
 /* A `context` artifact: the whole header row is the fold control, and the text unfolds beneath it
-   across the rail's full width rather than beside the badge. Capped and scrollable, because a
-   context note is written for a machine to read in full and for a person to skim — letting one
-   grow to push the rest of the rail off the screen would defeat the point of folding it away. */
-.context-artifact { flex-wrap: wrap; }
+   across the rail's full width rather than beside the badge. Capped against the viewport rather
+   than at a fixed height, and scrollable past the cap: the rail is `position: sticky`, so a rail
+   grown taller than the screen pins its top and puts its own lower half out of reach. A context
+   note is written for a machine to read in full and a person to skim, which is exactly the case
+   where an inner scrollbar costs nothing. */
+/* `row-gap: 0` because `.attach-row`'s `gap` applies between wrapped lines too, and the body
+   already sets its own `margin-top` — without this the two stack into a 14px gap. */
+.context-artifact { flex-wrap: wrap; row-gap: 0; }
 .context-toggle {
-  flex: 1 1 auto; display: flex; align-items: baseline; gap: 6px; min-width: 0;
+  /* `center`, not the row's `baseline`: `.context-label` is an `overflow: hidden` box, whose
+     baseline browsers may synthesise from its bottom edge and drop the title below the badge. */
+  flex: 1 1 auto; display: flex; align-items: center; gap: 6px; min-width: 0;
   padding: 2px 4px; margin-left: -4px; text-align: left;
 }
 .context-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -856,14 +862,15 @@ code { font-size: 0.9em; }
 .context-body {
   flex: 1 0 100%; margin-top: 6px; padding: 8px 10px;
   background: var(--panel-2); border-radius: var(--radius-sm);
-  font-size: 12.5px; max-height: 340px; overflow: auto; overflow-wrap: anywhere;
+  font-size: 12.5px; max-height: min(340px, 40vh); overflow: auto; overflow-wrap: anywhere;
 }
 
 /* A `markdown` form field: source and preview share one slot, so the editor never doubles the
-   height of the dialogue it sits in. The preview is floored at the editor's height so switching
-   tabs on a short note does not make the dialogue jump. */
+   height of the dialogue it sits in. Both are floored and capped at the same two heights as the
+   editor (`minHeight` inline, `AutoTextarea`'s default `maxHeight`), so switching tabs moves the
+   buttons under it as little as the two renderings of the same text allow. */
 .md-field-tabs { margin-bottom: 6px; }
 .md-field-preview {
-  min-height: 200px; padding: 8px 10px; overflow: auto; max-height: 360px;
+  min-height: 200px; padding: 8px 10px; overflow: auto; max-height: 480px;
   border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--panel-2);
 }

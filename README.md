@@ -409,7 +409,7 @@ Two payload fields, both required:
 
 | Field | Meaning |
 | --- | --- |
-| `title` | The one line the rail shows folded. Shortened to 60 characters for display. |
+| `title` | The one line the rail shows folded. Stored whole; shortened to 60 characters where it is displayed as a label, and ellipsised further to fit the rail. |
 | `text` | The context itself. Markdown, with `$…$` LaTeX math. |
 
 In the UI it sits in the issue's **Artifacts** rail as a single folded line — the badge and its

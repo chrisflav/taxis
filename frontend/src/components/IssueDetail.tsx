@@ -653,27 +653,11 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
   );
 }
 
-// The issue page before its response has arrived.
-//
-// The structure of an issue page is the same for every issue, so the frame, the heading and the
-// layout are all real on the first paint and only the slots that genuinely need the response are
-// placeheld. What used to happen here was a bare "Loading…", followed by the entire page appearing
-// at once.
-//
-// The title comes from the naming store when the issue is already named there — which it is
-// whenever you arrived from a list, a graph, a breadcrumb or a `#123` link, i.e. nearly always.
-// Where it isn't, the heading is a placeholder rather than a request: the response carrying the
-// real title is already in flight.
-//
-// The panels are laid out in the same grid as the real page, so nothing jumps when it fills in.
 // One attached artifact in the rail.
 //
 // Most kinds are a pointer somewhere else, and a pointer is a line: a badge, a label, a link. The
-// `context` kind is the exception — it has nowhere to point, it *is* its text — so it folds out in
-// place, rendered as markdown the way the description and comments are. It stays folded by
-// default, which is the whole reason the kind exists: context accumulates on a long-lived issue
-// (what was tried, what the environment needs, what a previous agent run learned), and it is worth
-// keeping without being worth pushing in front of everyone who opens the page.
+// `context` kind has nowhere to point — it *is* its text — so it folds out in place instead,
+// rendered as markdown the way the description and comments are, and stays folded until asked.
 function ArtifactRow({ artifact, canEdit, onEdit, onRemove }: {
   artifact: Artifact;
   canEdit: boolean;
@@ -697,9 +681,11 @@ function ArtifactRow({ artifact, canEdit, onEdit, onRemove }: {
     return (
       <div className="attach-row context-artifact">
         <button className="ghost context-toggle" aria-expanded={open} onClick={() => setOpen(!open)}>
-          <span className="context-caret">{open ? "▾" : "▸"}</span>
+          <span className="context-caret" aria-hidden="true">{open ? "▾" : "▸"}</span>
           <span className="badge">{artifact.kind}</span>
-          <span className="muted small context-label">{artifact.display.label}</span>
+          {/* The rail is narrow enough that the title ellipses well before the server's 60
+              characters, so it also goes in a tooltip — a title you cannot read is not a label. */}
+          <span className="muted small context-label" title={artifact.display.label}>{artifact.display.label}</span>
         </button>
         {actions}
         {open && <div className="context-body"><Markdown text={text} /></div>}
@@ -720,6 +706,19 @@ function ArtifactRow({ artifact, canEdit, onEdit, onRemove }: {
   );
 }
 
+// The issue page before its response has arrived.
+//
+// The structure of an issue page is the same for every issue, so the frame, the heading and the
+// layout are all real on the first paint and only the slots that genuinely need the response are
+// placeheld. What used to happen here was a bare "Loading…", followed by the entire page appearing
+// at once.
+//
+// The title comes from the naming store when the issue is already named there — which it is
+// whenever you arrived from a list, a graph, a breadcrumb or a `#123` link, i.e. nearly always.
+// Where it isn't, the heading is a placeholder rather than a request: the response carrying the
+// real title is already in flight.
+//
+// The panels are laid out in the same grid as the real page, so nothing jumps when it fills in.
 function IssueSkeleton({ id }: { id: number }) {
   const entry = useKnownIssueName(id);
   const bar = (width: string) => <span className="skeleton-line" style={{ width }} />;
