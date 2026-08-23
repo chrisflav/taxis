@@ -167,6 +167,38 @@ def main : IO Unit := do
     check "invalid payload rejected" ((← h.validate (Json.mkObj [("owner", "o")])) |>.toOption |>.isNone)
   | none => check "handler present" false
 
+  IO.println "Context artifacts"
+  -- Both payload fields are required, and the label is the title rather than anything guessed out
+  -- of the text — which leaves shortening as the only thing the server derives from a payload it
+  -- otherwise stores verbatim.
+  check "context label is the title" (Plugins.contextLabel "Repro steps" == "Repro steps")
+  check "context label is trimmed" (Plugins.contextLabel "  Repro steps \n" == "Repro steps")
+  check "context label of an empty title" (Plugins.contextLabel "   " == "context")
+  check "context label truncates" ((Plugins.truncateTo (String.ofList (List.replicate 90 'x')) 60).endsWith "…")
+  check "context label leaves short text alone" (Plugins.truncateTo "short" 60 == "short")
+  match ← Plugins.artifactHandler? "context" with
+  | some h =>
+    check "context payload requires text" ((← h.validate (Json.mkObj [("title", "t")])) |>.toOption |>.isNone)
+    check "context payload requires title" ((← h.validate (Json.mkObj [("text", "note")])) |>.toOption |>.isNone)
+    check "context payload rejects whitespace-only text"
+      ((← h.validate (Json.mkObj [("title", "t"), ("text", " \n ")])) |>.toOption |>.isNone)
+    check "context payload rejects whitespace-only title"
+      ((← h.validate (Json.mkObj [("title", " "), ("text", "note")])) |>.toOption |>.isNone)
+    -- A wrong-typed field is told apart from an absent one: a bot writing this payload by hand is
+    -- the stated audience, and "missing" would send it looking in the wrong place.
+    check "context payload rejects a non-string text"
+      (match ← h.validate (Json.mkObj [("title", "t"), ("text", (42 : Nat))]) with
+       | .error e => e == "'text' must be a string, but is 42"
+       | .ok _ => false)
+    check "context payload accepted"
+      ((← h.validate (Json.mkObj [("title", "Repro steps"), ("text", "note")])) |>.toOption |>.isSome)
+    -- Nothing to link to: a context artifact *is* its text, and the frontend renders the payload
+    -- it already has. A url here would be a promise the kind cannot keep.
+    let display ← h.render (Json.mkObj [("title", "Build environment"), ("text", "# Notes\nbody")])
+    check "context renders its title and no link"
+      (display.url.isNone && display.label == "Build environment")
+  | none => check "context handler present" false
+
   IO.println "HMAC-SHA256"
   -- RFC 4231 test cases 1, 2, and 6 (the last exercising the hash-down of an over-long key).
   let bytes (b : UInt8) (n : Nat) : ByteArray := ⟨Array.replicate n b⟩

@@ -242,7 +242,7 @@ export interface Session {
 export interface FieldSpec {
   name: string;
   label: string;
-  type: string; // "string" | "number" | "boolean" | "text"
+  type: string; // "string" | "number" | "boolean" | "text" | "markdown"
   required: boolean;
   placeholder: string | null;
   help: string | null;

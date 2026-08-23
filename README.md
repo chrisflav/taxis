@@ -53,6 +53,10 @@ taxis is an extensible issue tracker built in Lean 4, with a REST API backend an
   `github-ci` and `json-endpoint` (fetch a JSON URL and assert a condition on a value at a path).
   The `json-endpoint` check can send an authentication header (`authValue`, optionally under a
   custom `authHeader`) so it can reach a protected endpoint.
+- **Context** — a `context` artifact holds free-form prose *beside* an issue rather than in it:
+  what was already tried, where the flake actually lives, what the build environment needs. It is
+  folded away in the rail behind its title and unfolds as rendered markdown/LaTeX, so it
+  keeps accumulating without crowding the description. See [Context artifacts](#context-artifacts).
 - **API tokens** — bots authenticate with a personal access token (`Authorization: Bearer …`).
   Only a SHA-256 hash is stored; the secret is shown once, at creation. Manage your own under
   **Tokens** in the UI (`GET|POST /api/me/tokens`, `DELETE /api/me/tokens/:id`); an **admin** can
@@ -392,6 +396,42 @@ the bytes to the returned URL, then attach a `file` artifact with the returned k
 
 Anyone who can see an issue can follow its file links while they last; the object keys carry a
 random component, so links can't be guessed, but a bucket should still not be publicly readable.
+
+## Context artifacts
+
+A `context` artifact attaches a block of prose to an issue without putting it *in* the issue. The
+description says what the issue is and stays the thing a person reads; a context artifact carries
+the material that would otherwise have to be rediscovered — the approach that was tried and
+abandoned, the environment variable the build needs, what the last automated run learned. It is
+mostly written by agents, for whoever (or whatever) picks the issue up next.
+
+Two payload fields, both required:
+
+| Field | Meaning |
+| --- | --- |
+| `title` | The one line the rail shows folded. Stored whole; shortened to 60 characters where it is displayed as a label, and ellipsised further to fit the rail. |
+| `text` | The context itself. Markdown, with `$…$` LaTeX math. |
+
+In the UI it sits in the issue's **Artifacts** rail as a single folded line — the badge and its
+label — and unfolds in place, rendered exactly as descriptions and comments are: markdown, KaTeX
+math, and `#123` issue references resolved to their titles. Folded is the default, and the point:
+context accumulates over the life of an issue, and none of it should compete with the description
+for a reader's attention. The **Add**/**✎** dialogue gives it a full editor with a *Preview* tab
+and `#`-reference autocomplete, so it can be written and revised by hand as easily as by a bot.
+
+Nothing is interpreted server-side — the payload is stored and handed back verbatim, and the rail's
+label is the title, not a guess made out of the text. Naming a note is the one thing whoever wrote
+it can do in five words and a reader cannot do without unfolding it, which is why the title is
+required. Bots attach and revise context through the ordinary artifact endpoints:
+
+```bash
+curl -X POST http://localhost:8080/api/issues/42/artifacts \
+  -H "Authorization: Bearer $TAXIS_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"kind": "context", "payload": {"title": "Repro", "text": "Fails only with `--jobs 1`.\n\nThe fixture leaks a temp dir; see #91."}}'
+```
+
+Context is not a hiding place: it is as visible as the issue it hangs off, subject to the same
+visibility groups and to nothing else. Anything genuinely secret belongs somewhere else.
 
 ## API overview
 
