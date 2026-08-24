@@ -158,6 +158,22 @@ def createArtifact (cfg : Config) (id : IssueId) (kind : String) (payload : Json
   | .error e => return .error e
   | .ok j => return decode j
 
+/-- `PATCH /artifacts/:id`. Replaces the payload, which the handler for the artifact's kind
+    validates exactly as it validated the first one.
+
+    Only the payload: a kind is fixed at attach time, and the server refuses a request that tries
+    to change it rather than reinterpreting the payload under a new handler. Revising in place is
+    what makes an artifact whose payload is *written* — a `context` note accumulating what an
+    issue's later readers would otherwise rediscover — editable without losing its id, its place
+    in the rail, or the activity trail that records it as an edit rather than as a removal and an
+    unrelated addition. -/
+def updateArtifact (cfg : Config) (id : ArtifactId) (payload : Json) :
+    IO (Except String ArtifactView) := do
+  let body := Json.mkObj [("payload", payload)]
+  match ← send cfg "PATCH" s!"/artifacts/{id.val}" body with
+  | .error e => return .error e
+  | .ok j => return decode j
+
 /-- `DELETE /artifacts/:id`. -/
 def deleteArtifact (cfg : Config) (id : ArtifactId) : IO (Except String Unit) := do
   match ← sendNoBody cfg "DELETE" s!"/artifacts/{id.val}" with
