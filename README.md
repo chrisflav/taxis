@@ -451,7 +451,7 @@ served at **`/docs`**, backed by the OpenAPI spec at `GET /api/openapi.json`.
   should ask for
 - `GET /issues/:id/ancestors` — the containment path above an issue, root first
 - `POST /issues/:id/artifacts`, `PATCH|DELETE /artifacts/:id`
-- `GET|POST /issues/:id/checks`, `POST /checks/:id/run`, `DELETE /checks/:id`
+- `GET|POST /issues/:id/checks`, `POST /checks/:id/run`, `PATCH|DELETE /checks/:id`
 - `GET|POST /issues/:id/comments`, `PATCH|DELETE /comments/:id`
 - `GET|POST /me/tokens`, `DELETE /me/tokens/:id`, `GET|POST /actors/:id/tokens` (admin)
 - `POST /import/github`, `POST /import/gdoc`
