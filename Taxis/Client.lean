@@ -158,6 +158,23 @@ def createArtifact (cfg : Config) (id : IssueId) (kind : String) (payload : Json
   | .error e => return .error e
   | .ok j => return decode j
 
+/-- `PATCH /artifacts/:id`. Replaces the payload; the handler registered for the artifact's kind
+    validates the new one exactly as it validated the first.
+
+    A kind is fixed at attach time and this cannot change it. Pass `kind` to assert the one the
+    artifact is expected to have: the endpoint rejects a body whose kind disagrees, which turns a
+    stale or mistaken `ArtifactId` into an error instead of a payload written over some unrelated
+    artifact. Worth doing — a kind that does not override `validate` accepts anything, so the
+    payload validator cannot be relied on to catch it. Omitted, no kind is sent and no such check
+    happens. -/
+def updateArtifact (cfg : Config) (id : ArtifactId) (payload : Json)
+    (kind : Option String := none) : IO (Except String ArtifactView) := do
+  let body := Json.mkObj <|
+    (match kind with | some k => [("kind", Json.str k)] | none => []) ++ [("payload", payload)]
+  match ← send cfg "PATCH" s!"/artifacts/{id.val}" body with
+  | .error e => return .error e
+  | .ok j => return decode j
+
 /-- `DELETE /artifacts/:id`. -/
 def deleteArtifact (cfg : Config) (id : ArtifactId) : IO (Except String Unit) := do
   match ← sendNoBody cfg "DELETE" s!"/artifacts/{id.val}" with

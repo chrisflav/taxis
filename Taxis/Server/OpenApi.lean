@@ -64,6 +64,11 @@ private def schemas : Json := obj [
   ("LabelInput", schemaObj [("name", typ "string"), ("description", typ "string"), ("color", typ "string")] ["name"]),
   ("Artifact", schemaObj [("id", typ "integer"), ("kind", typ "string"), ("payload", typ "object")]),
   ("ArtifactInput", schemaObj [("kind", typ "string"), ("payload", typ "object")] ["kind"]),
+  -- The patch body is not the input body: a kind is fixed at attach time, so `payload` is the
+  -- whole of what an edit carries and `kind`, when sent at all, is an assertion that it still
+  -- agrees. Declaring `ArtifactInput` here made the one field the endpoint does not want the
+  -- one field the spec demanded.
+  ("ArtifactPatch", schemaObj [("kind", typ "string"), ("payload", typ "object")] []),
   ("Check", schemaObj [("id", typ "integer"), ("kind", typ "string"), ("config", typ "object"),
     ("status", enumStr ["pending", "passing", "failing", "error"]), ("detail", nullable "string"),
     ("lastRun", nullable "integer")]),
@@ -227,7 +232,7 @@ private def paths : Json := obj [
     [idParam] (some (jsonBody (ref "ArtifactInput"))) [("201", jsonResp "Created" (ref "Artifact")), ("422", jsonResp "Unknown kind or invalid payload" (ref "Error"))])]),
   ("/artifacts/{id}", obj [
     ("patch", operation "Artifacts" "Replace an artifact's payload (its kind cannot change)"
-      [idParam] (some (jsonBody (ref "ArtifactInput"))) [("200", jsonResp "Updated" (ref "Artifact")), ("422", jsonResp "Changed kind or invalid payload" (ref "Error"))]),
+      [idParam] (some (jsonBody (ref "ArtifactPatch"))) [("200", jsonResp "Updated" (ref "Artifact")), ("422", jsonResp "Changed kind or invalid payload" (ref "Error"))]),
     ("delete", operation "Artifacts" "Delete an artifact" [idParam] none [("200", jsonResp "Deleted" (ref "Deleted"))])]),
 
   ("/issues/{id}/checks", obj [
