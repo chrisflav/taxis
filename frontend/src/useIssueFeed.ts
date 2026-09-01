@@ -2,7 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { IssueListRow } from "./types";
 import { api, issuePagePath, type IssuePageQuery } from "./api";
 import { cachedGet } from "./cache";
+import { mirrorPage } from "./mirror";
 import { describeReadFailure, isNetworkError } from "./netError";
+import { isNativeApp } from "./server";
 
 /**
  * The issue list's rows, pulled a page at a time and accumulated locally.
@@ -22,6 +24,13 @@ import { describeReadFailure, isNetworkError } from "./netError";
  * Searching stays local where it can. Typing filters the rows already held, with no request at
  * all; a server search reaches what is *not* held — see `shouldAskServer` for the conditions that
  * have to hold before one is sent, all of which exist to keep that rare.
+ *
+ * And in the packaged app, a page that cannot be fetched is read off the device instead. `mirror.ts`
+ * holds every issue the reader can see and answers the same query in the same shape, cursors
+ * included, so the list goes on paging through a tracker whose connection dropped mid-scroll rather
+ * than stopping at whatever the response cache happened to be holding. That fallback is guarded by
+ * `isNativeApp`, a build-time constant, so the web build folds the branch away and never carries
+ * the mirror at all.
  */
 
 /** Rows per request. Large enough that a tracker of a few hundred arrives in one or two, small
@@ -67,6 +76,10 @@ export interface IssueFeed {
   error: string | null;
   /** Whether `error` is "nothing answered" rather than something the server said. */
   offline: boolean;
+  /** True once any of these rows came off the device rather than off the server — the packaged
+      app reading its mirror because nothing answered. Worth saying: the rows are as current as the
+      last sync and no more, and a search over them matches titles only. */
+  local: boolean;
   reload: () => void;
   /** Ask for at least `n` rows to be held, fetching pages until there are (or the result set ends).
       What the list is about to show, plus a page of slack, so paging forward is instant without
@@ -114,6 +127,7 @@ export function useIssueFeed(query: IssuePageQuery, search: string, enabled = tr
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [offline, setOffline] = useState(false);
+  const [local, setLocal] = useState(false);
   const [serverMatched, setServerMatched] = useState<Set<number>>(() => new Set());
   const [nonce, setNonce] = useState(0);
   /** How many rows have been asked for. Only ever raised, and reset with the filters. */
@@ -147,6 +161,7 @@ export function useIssueFeed(query: IssuePageQuery, search: string, enabled = tr
     setComplete(false);
     setCapped(false);
     setError(null);
+    setLocal(false);
     setWant(PAGE_SIZE);
     setLoading(enabled);
     setStreaming(false);
@@ -172,12 +187,30 @@ export function useIssueFeed(query: IssuePageQuery, search: string, enabled = tr
     // The first page goes through the cache so it can adopt the request `index.html` already
     // started — which is the difference between the rows arriving with the bundle and arriving a
     // round trip after it. Later pages are plain reads: nothing preloads a cursor.
-    const pending = first
+    const pageQuery = { ...query, limit: PAGE_SIZE, cursor: cursor.current };
+    const fromServer = first
       ? cachedGet(path, () => api.issuePage({ ...query, limit: PAGE_SIZE }))
-      : api.issuePage({ ...query, limit: PAGE_SIZE, cursor: cursor.current });
+      : api.issuePage(pageQuery);
+    // Set by the fallback below and read once the generation has been checked, so a mirror page
+    // that arrives after the filters changed cannot label the new query's rows as local.
+    let fromMirror = false;
+    const pending = fromServer.catch((e) => {
+      // Nothing answered, and this device holds a copy of the tracker. Reading the page out of it
+      // is not a degraded mode: it is the same query answered from the same rows, so the list keeps
+      // paging, filtering and sorting over every issue rather than over the handful that happen to
+      // be in the response cache. A mirror that has nothing to say returns null, and the original
+      // failure carries on to the handler below exactly as it did before.
+      if (!isNetworkError(e) || !isNativeApp) throw e;
+      return mirrorPage(pageQuery).then((page) => {
+        if (!page) throw e;
+        fromMirror = true;
+        return page;
+      });
+    });
     pending
       .then((page) => {
         if (generation.current !== gen) return;
+        if (fromMirror) setLocal(true);
         const fresh = page.issues.filter((r) => !held.current.has(r.id));
         fresh.forEach((r) => held.current.add(r.id));
         setRows((prev) => (prev === EMPTY_ROWS ? fresh : prev.concat(fresh)));
@@ -226,9 +259,22 @@ export function useIssueFeed(query: IssuePageQuery, search: string, enabled = tr
     const gen = generation.current;
     const timer = setTimeout(() => {
       setSearching(true);
+      let searchedMirror = false;
       api.issuePage({ ...query, q, limit: PAGE_SIZE })
+        .catch((e) => {
+          // The same substitution the paging path makes, for the same reason: offline, the rows
+          // this search is trying to reach are on the device, and the only thing missing is
+          // somebody to ask. Matching titles only, which is what a stored list row can support.
+          if (!isNetworkError(e) || !isNativeApp) throw e;
+          return mirrorPage({ ...query, q, limit: PAGE_SIZE }).then((page) => {
+            if (!page) throw e;
+            searchedMirror = true;
+            return page;
+          });
+        })
         .then((page) => {
           if (generation.current !== gen) return;
+          if (searchedMirror) setLocal(true);
           asked.current.set(q, page.issues.length);
           const fresh = page.issues.filter((r) => !held.current.has(r.id));
           fresh.forEach((r) => held.current.add(r.id));
@@ -244,6 +290,6 @@ export function useIssueFeed(query: IssuePageQuery, search: string, enabled = tr
 
   return {
     rows, serverMatched, total, complete, capped, loading, streaming, searching, error, offline,
-    reload, ensure,
+    local, reload, ensure,
   };
 }

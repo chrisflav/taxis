@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import type { Health } from "../types";
 import { api } from "../api";
 import { checkCompatibility, type Compatibility } from "../compat";
-import { queuedCountFor } from "../offline";
+import { mirrorAvailable } from "../mirror";
+import { queuedCountFor, useOfflineState } from "../offline";
 import { activeServer, type ServerProfile } from "../server";
 import {
   isPrivateHost,
@@ -13,6 +14,7 @@ import {
   servers,
   switchToServer,
 } from "../serverList";
+import { syncNow, useSyncState } from "../sync";
 import { Modal } from "./Modal";
 import { PageHeader } from "./PageHeader";
 
@@ -308,6 +310,61 @@ function ServerRow({
   );
 }
 
+/** "5m", "3h", "2d" — enough to answer "is this copy from today or from last week?". */
+function since(ms: number): string {
+  const s = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+  if (s < 60) return "just now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
+/**
+ * What of the active tracker is held on the device.
+ *
+ * Here rather than in the top bar because it is a fact about a *server*, and this is the screen
+ * about servers. The top bar says what is not on the server yet; this says what is not on the
+ * server *only* — the copy that makes the issue list work in a tunnel.
+ *
+ * The button exists for the case the triggers cannot cover: somebody about to get on a plane, who
+ * would rather not find out in the air whether the last sync was five minutes or five days ago.
+ */
+function OfflineCopy() {
+  const { syncing, stored, complete, syncedAt, error } = useSyncState();
+  const { offline } = useOfflineState();
+  if (!mirrorAvailable) return null;
+  return (
+    <div className="panel">
+      <div className="row">
+        <strong>On this device</strong>
+        {syncing && <span className="badge">Syncing…</span>}
+      </div>
+      <p className="small muted">
+        {stored === 0
+          ? "No issues stored yet. This app keeps a copy of every issue you can see, so the list, its filters and its search go on working with no connection."
+          : `${stored} issue${stored === 1 ? "" : "s"} stored${
+              complete ? "" : ", the most recently updated ones — this tracker is larger than the app keeps"
+            }.${syncedAt ? ` Synced ${since(syncedAt)}.` : ""}`}
+      </p>
+      {error && <p className="small error">The last sync did not finish: {error}</p>}
+      <div className="row">
+        {/* Disabled rather than silently doing nothing while there is no connection: a sync needs a
+            server to walk, and a button that answers a tap with no change is worse than one that
+            says why it cannot. */}
+        <button
+          onClick={() => void syncNow(true)}
+          disabled={syncing || offline}
+          title={offline ? "No connection to the server." : "Bring the copy on this device up to date."}
+        >
+          {syncing ? "Syncing…" : "Sync now"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function Servers() {
   const configured = servers();
   const active = activeServer();
@@ -366,6 +423,7 @@ export function Servers() {
           onRemove={() => setRemoving(s)}
         />
       ))}
+      <OfflineCopy />
       {removing && (
         <Modal title={`Remove ${removing.label}?`} onClose={() => setRemoving(null)}>
           <p>

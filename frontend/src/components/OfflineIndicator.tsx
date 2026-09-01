@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { Conflict, QueuedOp } from "../offline";
 import { confirmQueued, discardConflict, discardQueued, isHeld, useOfflineState } from "../offline";
+import { mirrorAvailable } from "../mirror";
+import { useSyncState } from "../sync";
 
 // What the top bar says about work that is not on the server yet.
 //
@@ -37,6 +39,7 @@ const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
 
 export function OfflineIndicator() {
   const { offline, queue, conflicts, storageFailed } = useOfflineState();
+  const { stored } = useSyncState();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const chipRef = useRef<HTMLButtonElement>(null);
@@ -161,6 +164,15 @@ export function OfflineIndicator() {
             <div className="offline-menu-head small muted">
               Nothing is waiting. Changes made from here are stored on this device until the
               connection returns.
+            </div>
+          )}
+          {/* The other half of the same reassurance, and the one that answers the question somebody
+              offline is actually asking: not "will my edit survive?" but "can I still look things
+              up?". Only in the packaged app, which is the only place a copy is kept. */}
+          {mirrorAvailable && stored > 0 && (
+            <div className="offline-menu-head small muted">
+              {count(stored, "issue")} {stored === 1 ? "is" : "are"} stored on this device, so the
+              issue list works without a connection. <a href="#/servers">Servers</a> has the details.
             </div>
           )}
         </div>

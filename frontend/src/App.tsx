@@ -3,6 +3,7 @@ import type { Actor, Session } from "./types";
 import { api, paths } from "./api";
 import { cachedGet, invalidateCache } from "./cache";
 import { setCurrentActor } from "./offline";
+import { setSyncActor } from "./sync";
 import { activeServer, isConfigured, isNativeApp } from "./server";
 import { IssueList } from "./components/IssueList";
 import { LoginBar } from "./components/Login";
@@ -103,6 +104,11 @@ export function App() {
     // over from a previous session — it waits for the answer to this request rather than sending
     // somebody's work under whatever account happens to be signed in now.
     setCurrentActor(identity);
+    // And the mirror, for the same reason and off the same answer: which issues exist is a question
+    // about who is asking, so a copy of the tracker is a copy of *this* reader's tracker. In the
+    // packaged app this is also the first sync's trigger — the session landing is the earliest
+    // moment a walk would store the right rows. On the web it does nothing.
+    setSyncActor(identity);
   }, [me?.id, meLoaded]);
 
   // e.g. "#/issues/3/edit" -> ["issues", "3", "edit"]; a trailing "?..." (view-state query params,

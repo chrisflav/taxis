@@ -129,6 +129,43 @@ the offline indicator says why — while a read the server refused stays an erro
 rule the write queue has always applied in the other direction. Writes made offline queue as they
 do on the web, and go out on reconnect. See [`frontend/src/readCache.ts`](frontend/src/readCache.ts).
 
+**Every issue, on the device.** A cache holds what you happened to read; the app also keeps a
+**copy of the tracker itself**, so the issue list works offline over *all* of it — every filter,
+every sort, and search — rather than over the one page of one filter that was cached. Tapping an
+issue you have never opened still needs the server for its description, comments and history: what
+is mirrored is the list row, which is what the list, the tree and the pickers draw. See
+[`frontend/src/mirror.ts`](frontend/src/mirror.ts) and
+[`frontend/src/sync.ts`](frontend/src/sync.ts).
+
+Keeping that copy current is cheap because of the order it is filled in.
+`GET /issues/page?sort=updated` returns issues newest-changed first and resumes from a cursor the
+server seeks through an index, so:
+
+- the **first** sync walks the whole tracker, five hundred rows a request — ten requests at most,
+  once;
+- every sync after that walks the same order and **stops at the first issue older than the last
+  sync's newest one**, because nothing beyond that point can have changed. In a tracker where a
+  handful of issues moved since this morning, that is one request.
+
+Deletions are the one thing no walk can show — a deleted issue appears in no page of any order — so
+the count the server sends with the first page is compared against what is stored, and a
+disagreement triggers a full walk that reconciles. Noticing costs nothing; only acting on it costs a
+request.
+
+Syncing happens on events that already occur — the app finishing its load, the session resolving,
+connectivity returning, the offline write queue draining — so nothing polls and nothing pings to ask
+whether the connection is back. **Servers** shows how many issues are held and when they were last
+synced, with a *Sync now* button for the moment before a flight. Issues are visibility-filtered per
+actor, so the copy records who it was built for and is rebuilt rather than extended when a different
+account signs in. Trackers larger than 5,000 issues keep their most recently updated 5,000 — the
+same budget the list holds in memory — and the app says so rather than implying it has everything.
+
+The mirror is IndexedDB rather than `localStorage`: an origin gets about 5 MB of the latter in
+total, and its other two tenants there are the read cache and the only copy of your unsent writes,
+which is not a quota to compete for. None of this exists in the web build, where the tracker serves
+the page and there is no launch without it — `isNativeApp` is a build-time constant, so the whole
+thing folds away and the browser bundle carries no part of it.
+
 The app is also the first taxis client that ships **separately from the server** — a phone keeps the
 build it was installed with, so it can be newer than the tracker it is pointed at, which a browser
 can never be. The connect screen's *Check connection* therefore reports two things: that the address

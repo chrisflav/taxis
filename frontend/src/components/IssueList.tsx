@@ -389,6 +389,15 @@ export function IssueList({ me }: { me: Actor | null }) {
       {readFailure && (
         <ReadFailure message={readFailure.message} offline={readFailure.offline} onRetry={load} />
       )}
+      {/* Where these rows came from, when it is not the server. The list looks and behaves the
+          same either way, which is the point of the mirror — but "as current as the last sync" and
+          "as current as a moment ago" are different claims, and only one of them is being made. */}
+      {feed.local && (
+        <div className="feed-status small muted" role="status">
+          Showing the copy of this tracker stored on your device. <a href="#/servers">Servers</a>{" "}
+          says when it was last synced; searching it matches titles only.
+        </div>
+      )}
       {/* What is actually in hand. A list that stopped at the cap looks exactly like a list that
           reached the end, and the difference decides whether searching it is conclusive. */}
       {(feed.streaming || feed.searching || (!feed.complete && !feed.loading)) && (
