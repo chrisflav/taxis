@@ -1,4 +1,5 @@
 import Taxis.Db
+import Std.Http
 import Std.Sync.Mutex
 import Std.Data.HashMap
 
@@ -60,6 +61,18 @@ structure AppContext where
   /-- Rotates through `readers`. A lost update under contention costs an uneven spread across the
       connections and nothing else, so it does not need to be atomic. -/
   readCursor : IO.Ref Nat
+  /-- Open `GET /api/changes/stream` connections, each waiting to be told the tracker moved.
+
+      The whole point of the change feed is that a client does not have to ask repeatedly whether
+      anything happened; this is what closes the loop, so it does not have to ask at all. Held as
+      the response bodies themselves — a chunk written here is a chunk on the wire — with an id
+      apiece so a connection that has gone away can be forgotten by name. -/
+  listeners : IO.Ref (Array (Nat × Std.Http.Body.Stream))
+  /-- Hands out listener ids. Monotonic; never reused. -/
+  listenerSeq : IO.Ref Nat
+  /-- The change-log head listeners have already been told about, so a write that changed nothing
+      does not nudge anybody. -/
+  lastNotified : IO.Ref Int64
   config : Config
 
 namespace AppContext
@@ -68,6 +81,72 @@ namespace AppContext
     page load uses most of them, so this is enough to overlap a page's worth of reads without
     holding open handles that nothing is waiting on. -/
 def readerCount : Nat := 4
+
+/-! ### Change notifications
+
+Server-sent events, and deliberately the thinnest possible ones: a frame carries no payload beyond
+"something moved". A client that is nudged has to ask `/api/changes` anyway — only that endpoint
+knows which of the changes are *theirs* to see — so a head sequence number in the frame would save
+no request, and would tell every listener the rate at which private issues are being edited. The
+nudge says the least that is still useful.
+-/
+
+/-- The frame sent on a change, and the one sent to keep an idle connection open. A comment line
+    (`:`) is data-less by definition, so a client's event handler never sees the heartbeat. -/
+private def nudgeFrame : String := "event: change\ndata: 1\n\n"
+private def heartbeatFrame : String := ": keep-alive\n\n"
+
+/-- Register a stream to be nudged, returning the id it can be forgotten by. -/
+def addListener (ctx : AppContext) (stream : Std.Http.Body.Stream) : IO Nat := do
+  let id ← ctx.listenerSeq.modifyGet (fun n => (n, n + 1))
+  ctx.listeners.modify (·.push (id, stream))
+  pure id
+
+def removeListener (ctx : AppContext) (id : Nat) : IO Unit :=
+  ctx.listeners.modify (·.filter (fun (i, _) => i != id))
+
+/--
+Write `frame` to every open stream, forgetting the ones that have gone away.
+
+Sent only to a stream that is *waiting* for data, and this is the load-bearing detail rather than
+an optimisation. A body stream's `send` blocks until a consumer takes the chunk, so writing
+unconditionally would hold up whichever request did the changing until the slowest reader on the
+other side of the internet caught up — and a second concurrent send to one stream is an error.
+
+Skipping a busy stream loses nothing, because of what a frame says. A stream is busy exactly when
+it has a frame in flight that the client has not read yet, every frame is the same content-free
+nudge, and a client that receives one asks `/api/changes` for everything since its cursor. So the
+undelivered nudge and the pending one would have produced the same request. Dropping it is not a
+missed update; it is the same update, once.
+
+A disconnected client is discovered by writing to it — there is no event for "the other end went
+away" that arrives on its own — so a send that fails drops the listener rather than being retried.
+-/
+private def broadcast (ctx : AppContext) (frame : String) : Std.Async.Async Unit := do
+  let current ← ctx.listeners.get
+  if current.isEmpty then return
+  let mut alive : Array (Nat × Std.Http.Body.Stream) := #[]
+  for (id, stream) in current do
+    if ← Std.Http.Body.Stream.isClosed stream then continue
+    if !(← Std.Http.Body.Stream.hasInterest stream) then
+      -- Nothing is reading yet, or a nudge is already on its way to this one.
+      alive := alive.push (id, stream)
+      continue
+    let ok ← (do
+      Std.Http.Body.Stream.send stream (Std.Http.Chunk.ofByteArray frame.toUTF8)
+      pure true) <|> pure false
+    if ok then alive := alive.push (id, stream)
+  ctx.listeners.set alive
+
+/-- Tell every open stream that the tracker moved. -/
+def notifyChanged (ctx : AppContext) : Std.Async.Async Unit :=
+  broadcast ctx nudgeFrame
+
+/-- Hold idle connections open. An SSE connection that says nothing for minutes is liable to be
+    closed by whatever is between the client and here, and a client that reconnects re-reads its
+    cursor — correct, but a round trip and a query for nothing. -/
+def heartbeat (ctx : AppContext) : Std.Async.Async Unit :=
+  broadcast ctx heartbeatFrame
 
 /-- Run a database action while holding the write connection's mutex. -/
 def withDb (ctx : AppContext) (act : Db.Conn → IO α) : IO α :=
@@ -88,6 +167,19 @@ def withRead (ctx : AppContext) (act : Db.Conn → IO α) : IO α := do
       Db.withReadTransaction conn (act conn)
   | none => ctx.withDb act
 
+/-- Nudge listeners, but only if the change log actually moved.
+
+    Called after a request that might have written. The alternative — nudging on every non-GET —
+    would wake every open client for a failed login or a no-op save, and each of those wake-ups
+    costs a request back. One indexed `MAX(seq)` on a write path is the cheaper half of that
+    trade. -/
+def notifyIfChanged (ctx : AppContext) : Std.Async.Async Unit := do
+  let head ← (ctx.withRead Db.changesHead : IO Int64)
+  let last ← ctx.lastNotified.get
+  if head > last then
+    ctx.lastNotified.set head
+    notifyChanged ctx
+
 /-- Build a context: open and migrate the database, then wrap it in a mutex. -/
 def create (config : Config) : IO AppContext := do
   let conn ← Db.connect config.dbPath
@@ -98,7 +190,12 @@ def create (config : Config) : IO AppContext := do
     let reader ← Db.connectReadOnly config.dbPath
     Std.Mutex.new reader
   let readCursor ← IO.mkRef 0
-  pure { db, readers, readCursor, config }
+  let listeners ← IO.mkRef #[]
+  let listenerSeq ← IO.mkRef 0
+  -- Where the log already stands: a server that restarts has nothing to announce about what
+  -- happened before it started.
+  let lastNotified ← IO.mkRef (← Db.changesHead conn)
+  pure { db, readers, readCursor, listeners, listenerSeq, lastNotified, config }
 
 end AppContext
 

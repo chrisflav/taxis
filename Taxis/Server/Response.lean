@@ -81,7 +81,7 @@ def parseBody (α) [FromJson α] (body : String) : ApiM α := do
     | .ok v => pure v
 
 /-- The permissive CORS headers every API response carries. -/
-private def withCors (b : Response.Builder) : Response.Builder :=
+def withCors (b : Response.Builder) : Response.Builder :=
   b |>.header! "Access-Control-Allow-Origin" "*"
     |>.header! "Access-Control-Allow-Headers" "Content-Type, Authorization"
     |>.header! "Access-Control-Allow-Methods" "GET, POST, PATCH, DELETE, OPTIONS"

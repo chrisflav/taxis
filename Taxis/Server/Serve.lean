@@ -162,14 +162,48 @@ def serveStatic (ctx : AppContext) (segs : List String) (acceptEncoding : Option
     else
       Response.notFound.text s!"frontend not built (expected assets in {ctx.config.frontendDir})"
 
+/-- A finished, fully-buffered response, erased so it can share a return type with the change
+    stream. Every route but that one produces its whole body before it answers. -/
+private def toAny (r : Response Body.Full) : Response Body.Any :=
+  { line := r.line, body := Body.Any.ofBody r.body, extensions := r.extensions }
+
+/--
+`GET /api/changes/stream`: an open connection that says when the tracker moved.
+
+The response body is a stream rather than a buffer, which is the whole difference — it is handed
+back before there is anything to put in it, and the writes come later, from
+`AppContext.notifyChanged`, on whichever request did the changing.
+
+It carries no payload. A nudged client has to ask `/api/changes` regardless, because only that
+endpoint knows which changes are its own to see, so anything more here would be a number nobody
+acts on and a hint about activity on issues the listener cannot read.
+
+No authentication, for the same reason: this says only that *something* happened, and the endpoint
+that says what is filtered per reader as it always was.
+-/
+private def changeStream (ctx : AppContext) : Async (Response Body.Any) := do
+  let stream ← Body.mkStream
+  let _ ← ctx.addListener stream
+  -- Nothing is written here. `send` waits for a consumer to take the chunk, and the consumer is
+  -- the connection loop, which has not been handed this response yet — so an opening frame written
+  -- from here would wait for a reader that is waiting for it to return. The response head is what
+  -- opens the connection as far as the client is concerned; the first frame is the first nudge or
+  -- the heartbeat, whichever comes first.
+  pure ((withCors (Response.withStatus .ok)
+    |>.header! "Content-Type" "text/event-stream"
+    |>.header! "Cache-Control" "no-cache"
+    -- Reverse proxies buffer a response body by default, which turns "as it happens" into
+    -- "eventually, in one lump".
+    |>.header! "X-Accel-Buffering" "no").body (Body.Any.ofBody stream))
+
 instance : Handler AppHandler where
-  ResponseBody := Body.Full
+  ResponseBody := Body.Any
   onRequest h req := do
     if h.ctx.config.verbose then
       let path := "/" ++ "/".intercalate (req.line.uri.path.toDecodedSegments.filter (· ≠ "")).toList
       IO.eprintln s!"[taxis] {req.line.method} {path}"
     if req.line.method == .options then
-      return ← buildResponse { status := .noContent, body := Json.mkObj [] }
+      return toAny (← buildResponse { status := .noContent, body := Json.mkObj [] })
     let segs := (req.line.uri.path.toDecodedSegments.filter (· ≠ "")).toList
     -- Dispatch to the API for `/api/*`, and also for the browser-facing OAuth routes at the top
     -- level (`/auth/...`, which Google/GitHub redirect to per the registered redirect URI) and
@@ -179,10 +213,19 @@ instance : Handler AppHandler where
       | "auth" :: _ => some segs
       | "mcp" :: _ => some segs
       | _ => none
+    -- Before the API dispatch, because this one answers with a body that is still being written
+    -- when it is returned, which `ApiResponse` has no way to represent.
+    if req.line.method == .get && apiSegs? == some ["changes", "stream"] then
+      return ← changeStream h.ctx
     match apiSegs? with
     | some apiSegs =>
       let body ← req.body.readAll (maximumSize := some (8 * 1024 * 1024 : UInt64))
       let apiResp ← (runApi h.ctx (toReq req apiSegs body) : IO ApiResponse)
+      -- Anything that was not a read may have moved the log; `notifyIfChanged` checks before it
+      -- wakes anybody, so a rejected write or a save that changed nothing costs no round trips
+      -- across every open client.
+      if req.line.method != .get && req.line.method != .head then
+        h.ctx.notifyIfChanged
       -- Successful reads get an `ETag` over their serialised body, so a client that already holds
       -- that exact payload can revalidate into a bodyless `304`. The issue list is re-fetched on
       -- almost every navigation, and is by far the largest thing the API returns.
@@ -193,18 +236,18 @@ instance : Handler AppHandler where
         -- response is what keeps that honest for a shared cache.
         let tag := etagOf payload
         if headerValue req "If-None-Match" == some tag then
-          notModifiedResponse tag
+          pure (toAny (← notModifiedResponse tag))
         else
           let acceptsGzip :=
             (acceptedEncodings (headerValue req "Accept-Encoding")).contains "gzip"
-          buildResponseWith
+          pure (toAny (← buildResponseWith
             { apiResp with headers := apiResp.headers ++ #[("ETag", tag), ("Cache-Control", "no-cache")] }
-            payload acceptsGzip
-      else buildResponse apiResp
+            payload acceptsGzip))
+      else pure (toAny (← buildResponse apiResp))
     | none =>
       match segs with
-      | ["docs"] => Response.ok.html OpenApi.docsHtml
-      | _ => serveStatic h.ctx segs (headerValue req "Accept-Encoding") (headerValue req "If-None-Match")
+      | ["docs"] => pure (toAny (← Response.ok.html OpenApi.docsHtml))
+      | _ => pure (toAny (← serveStatic h.ctx segs (headerValue req "Accept-Encoding") (headerValue req "If-None-Match")))
   onFailure _ err := do
     IO.eprintln s!"[issues] connection error: {err}"
 
@@ -215,6 +258,27 @@ partial def sweeperLoop (ctx : AppContext) : Async Unit := do
   let n ← (ctx.withDb Checks.sweep : IO Nat)
   IO.eprintln s!"[issues] check sweep evaluated {n} check(s)"
   sweeperLoop ctx
+
+/-- How often an idle change stream is written to.
+
+    A change stream spends almost all of its life saying nothing, and a connection that says
+    nothing gets closed: while a request is being processed — which an open stream is, for as long
+    as it is open — `Std.Http`'s `lingeringTimeout` of ten seconds governs, not the longer
+    keep-alive one. So this has to sit under that, with room for a slow link, and the number below
+    is chosen against it rather than picked for comfort.
+
+    Raising the library's timeout instead would buy a quieter heartbeat at the cost of holding
+    every half-sent request open four times as long, which is a poor trade for fifteen bytes. -/
+def heartbeatSeconds : Nat := 5
+
+/-- Keep open change streams open. Without it an idle connection is eventually dropped by whatever
+    sits between the client and here, and the client reconnects — correct, but a round trip and a
+    catch-up query in exchange for nothing. -/
+partial def heartbeatLoop (ctx : AppContext) : Async Unit := do
+  let ms : Std.Time.Millisecond.Offset := ⟨Int.ofNat (heartbeatSeconds * 1000)⟩
+  Std.Async.sleep ms
+  ctx.heartbeat
+  heartbeatLoop ctx
 
 /-- Start the HTTP server bound to the configured port on localhost, plus the check sweeper
     if `checkIntervalSeconds > 0`. -/
@@ -230,6 +294,7 @@ def serve (ctx : AppContext) : Async Server := do
   let server ← Std.Http.Server.serve addr (AppHandler.mk ctx) httpConfig
   if ctx.config.checkIntervalSeconds > 0 then
     background (sweeperLoop ctx)
+  background (heartbeatLoop ctx)
   return server
 
 end Taxis.Server

@@ -41,6 +41,17 @@ taxis is an extensible issue tracker built in Lean 4, with a REST API backend an
   default branch is read and the providers detect the ecosystem themselves. Reading manifests
   costs network requests, so results are cached (`ISSUES_REPO_DEPS_TTL`) and the view has a
   **Refresh** button. Only repositories on issues you can see enter the graph.
+- **Changes** — `GET /api/changes?since=<seq>` is an append-only feed of issues whose list row has
+  moved, so a client keeping a local copy follows the tracker instead of re-reading it. Each entry
+  carries the issue's current row, or `null` meaning drop it — deleted, or no longer visible to
+  you. `upTo` is the next cursor and is exhaustive; `more` means the page was capped; `reset` means
+  the cursor predates the retained log and the tracker should be read again. Called without
+  `since` it answers only with `upTo`, which is what to take *before* a full read so nothing falls
+  between the two. `GET /api/changes/stream` is the same news pushed: an event stream that nudges
+  (with no payload — only `/changes` knows which changes are yours) whenever the tracker moves.
+  The log is written by database triggers, so no write path can forget to file one, and cascades
+  are covered for free; deletions leave a tombstone that outlives the row, which is the one thing
+  no ordinary query can report.
 - **Comments** — a discussion thread on each issue; anyone signed in may comment, and a comment
   can be edited or removed by its author or an admin. Every issue is edited **inline** — clicking
   a field's pencil replaces just that block with an editor, leaving the rest of the page in place.

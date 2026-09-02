@@ -137,6 +137,9 @@ private def paths : Json := obj [
     [("200", jsonResp "Changes" (schemaObj [
       ("changes", arrayOf (schemaObj [("seq", typ "integer"), ("id", typ "integer"), ("issue", nullable "object")])),
       ("upTo", typ "integer"), ("reset", typ "boolean"), ("more", typ "boolean")]))])]),
+  ("/changes/stream", obj [("get", operation "Issues"
+    "An open connection (`text/event-stream`) that emits a `change` event whenever the tracker moves, so a client following `/changes` need not ask repeatedly whether anything has happened. The event carries no payload: only `/changes` knows which changes are yours to see, so a nudged client asks it. Comment lines arrive periodically to hold the connection open."
+    [] none [("200", jsonResp "An event stream" (typ "string"))])]),
   ("/graph", obj [("get", operation "Issues" "Every visible issue as a graph node, carrying both edge relations (dependencies and parent)" [] none
     [("200", jsonResp "Graph" (ref "Graph"))])]),
   ("/repo-graph", obj [("get", operation "Repositories" "Dependency graph of attached repositories"
