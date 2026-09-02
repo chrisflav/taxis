@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { IssueListRow } from "./types";
 import { api, issuePagePath, type IssuePageQuery } from "./api";
 import { cachedGet } from "./cache";
-import { mirrorPage } from "./mirror";
+import { mirrorAvailable, mirrorList, mirrorPage, mirrorRevision, subscribeMirror } from "./mirror";
 import { describeReadFailure, isNetworkError } from "./netError";
 import { isNativeApp } from "./server";
+import { syncNow, useSyncState } from "./sync";
 
 /**
  * The issue list's rows, pulled a page at a time and accumulated locally.
@@ -25,12 +26,27 @@ import { isNativeApp } from "./server";
  * all; a server search reaches what is *not* held — see `shouldAskServer` for the conditions that
  * have to hold before one is sent, all of which exist to keep that rare.
  *
- * And in the packaged app, a page that cannot be fetched is read off the device instead. `mirror.ts`
- * holds every issue the reader can see and answers the same query in the same shape, cursors
- * included, so the list goes on paging through a tracker whose connection dropped mid-scroll rather
- * than stopping at whatever the response cache happened to be holding. That fallback is guarded by
- * `isNativeApp`, a build-time constant, so the web build folds the branch away and never carries
- * the mirror at all.
+ * ## Where the rows come from
+ *
+ * On the web, from the server, a page at a time, as above.
+ *
+ * In the packaged app they come **from the device**, and that is not a fallback — it is the normal
+ * path. `mirror.ts` holds every issue this reader can see and `sync.ts` keeps it current by
+ * following the tracker's change feed, so asking the server for a page it has already been given
+ * would be a round trip to learn what is in hand. Reading locally is what makes the list appear at
+ * once, work identically with no connection, and search the whole tracker rather than the page that
+ * happened to be cached; the network becomes a background reconciler instead of the thing the view
+ * waits on. When the sync applies something the mirror bumps a revision and the list re-reads it.
+ *
+ * Two seams are worth knowing about. Before the first sync has filled the mirror there is nothing
+ * to read, so the app falls back to reading pages from the server exactly as the web does — and
+ * waits for local storage to answer first (`known`), because assuming "nothing stored" would cost a
+ * page request on every launch for a tracker already sitting on the device. And when the mirror
+ * *is* the source, a page that cannot be fetched still falls back to it, which is what a connection
+ * dropping mid-scroll on the web-shaped path looks like.
+ *
+ * All of it is guarded by `isNativeApp`, a build-time constant, so the web build folds the branches
+ * away and carries no part of the mirror.
  */
 
 /** Rows per request. Large enough that a tracker of a few hundred arrives in one or two, small
@@ -118,6 +134,16 @@ export function useIssueFeed(query: IssuePageQuery, search: string, enabled = tr
   // when the caller happens to rebuild the object.
   const key = JSON.stringify(query);
 
+  // What the device holds, and a counter that moves whenever the sync changes it.
+  const { stored, known } = useSyncState();
+  const revision = useSyncExternalStore(subscribeMirror, mirrorRevision, mirrorRevision);
+  // Read locally once there is something to read. `isNativeApp` folds to false on the web, taking
+  // the whole branch — and the mirror it names — out of that build.
+  const fromDevice = isNativeApp && mirrorAvailable && known && stored > 0;
+  // Nothing to show and nothing to ask for yet: local storage has not said what it holds, so a
+  // request now might be for rows already on the device.
+  const undecided = isNativeApp && mirrorAvailable && !known;
+
   const [rows, setRows] = useState<IssueListRow[]>(EMPTY_ROWS);
   const [total, setTotal] = useState<number | null>(null);
   const [complete, setComplete] = useState(false);
@@ -144,10 +170,19 @@ export function useIssueFeed(query: IssuePageQuery, search: string, enabled = tr
   // Bumped on every restart; an in-flight response carrying a stale generation is discarded.
   const generation = useRef(0);
 
-  const reload = useCallback(() => setNonce((n) => n + 1), []);
+  const reload = useCallback(() => {
+    // Reading the device again would show exactly what is already on screen. Somebody asking for a
+    // refresh is asking the *server*, so the sync is the refresh; the mirror's revision brings the
+    // answer back here.
+    if (fromDevice) void syncNow(true);
+    setNonce((n) => n + 1);
+  }, [fromDevice]);
   const ensure = useCallback((n: number) => setWant((w) => (n > w ? n : w)), []);
 
-  // Start over: new filters, or an explicit reload.
+  // Start over: new filters, an explicit reload — or the moment the first sync finishes and the
+  // rows stop coming from the server and start coming from the device. That last one has to reset
+  // like the others: without it a page still in flight from the bootstrap read lands *after* the
+  // mirror has replaced the row set, and appends what is already on screen a second time.
   useEffect(() => {
     generation.current++;
     held.current = new Set();
@@ -165,11 +200,41 @@ export function useIssueFeed(query: IssuePageQuery, search: string, enabled = tr
     setWant(PAGE_SIZE);
     setLoading(enabled);
     setStreaming(false);
-  }, [key, nonce, enabled]);
+  }, [key, nonce, enabled, fromDevice]);
+
+  /**
+   * The device's copy, read whole.
+   *
+   * One read rather than a page at a time: paging exists to bound a *response*, and there is no
+   * response here. `FEED_CAP` still bounds what is held in memory, and a mirror larger than it
+   * comes back marked capped exactly as a server walk would.
+   */
+  useEffect(() => {
+    if (!fromDevice || !enabled) return;
+    const gen = generation.current;
+    void mirrorList(query, FEED_CAP).then((page) => {
+      if (generation.current !== gen) return;
+      if (!page) return; // Emptied underneath us; the network effect takes over on the next render.
+      held.current = new Set(page.issues.map((r) => r.id));
+      exhausted.current = true;
+      setRows(page.issues);
+      setTotal(page.total);
+      setComplete(!page.nextCursor);
+      setCapped(!!page.nextCursor);
+      setLocal(true);
+      setError(null);
+      setOffline(false);
+      setLoading(false);
+      setStreaming(false);
+    });
+    // `query` is derived from `key`, and `revision` is what says the mirror moved underneath us.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, nonce, enabled, fromDevice, revision]);
 
   // Pull one page whenever fewer rows are held than have been asked for. Re-running as `rows`
   // grows is what makes this a loop; stopping when the demand is met is what makes it a short one.
   useEffect(() => {
+    if (fromDevice || undecided) { setStreaming(false); return; }
     if (!enabled) { setLoading(false); setStreaming(false); return; }
     if (fetching.current || exhausted.current) return;
     if (rows.length >= want || rows.length >= FEED_CAP) { setStreaming(false); return; }
@@ -248,14 +313,14 @@ export function useIssueFeed(query: IssuePageQuery, search: string, enabled = tr
         setStreaming(false);
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, nonce, enabled, want, rows]);
+  }, [key, nonce, enabled, want, rows, fromDevice, undecided]);
 
   // Reach the rows the feed has not pulled, once typing has stopped. This is what makes fetching
   // on demand safe rather than a way to lose rows: what is not held is one request away, and the
   // request only happens when a query is specific enough to be worth it.
   useEffect(() => {
     const q = search.trim();
-    if (!enabled || !shouldAskServer(q, complete, asked.current)) return;
+    if (!enabled || undecided || !shouldAskServer(q, complete, asked.current)) return;
     const gen = generation.current;
     const timer = setTimeout(() => {
       setSearching(true);

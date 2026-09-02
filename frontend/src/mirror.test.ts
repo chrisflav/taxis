@@ -269,23 +269,21 @@ describe("what survives the app being killed", () => {
     await mirror.writeMeta({
       scope: `:${SERVER}`,
       actorId: 7,
-      highUpdatedAt: 1_700,
-      highId: 42,
+      cursor: 1_700,
       count: 3,
       complete: true,
       syncedAt: 123,
     });
 
     mirror = await relaunch();
-    expect(await mirror.readMeta()).toMatchObject({ actorId: 7, highUpdatedAt: 1_700, count: 3 });
+    expect(await mirror.readMeta()).toMatchObject({ actorId: 7, cursor: 1_700, count: 3 });
   });
 
   it("takes a tracker's copy with it when the tracker is forgotten", async () => {
     const mirror = await relaunch();
     await mirror.putRows([row(1), row(2)]);
     await mirror.writeMeta({
-      scope: `:${SERVER}`, actorId: null, highUpdatedAt: 1, highId: 1, count: 2,
-      complete: true, syncedAt: 1,
+      scope: `:${SERVER}`, actorId: null, cursor: 1, count: 2, complete: true, syncedAt: 1,
     });
 
     await mirror.forgetScope(`:${SERVER}`);

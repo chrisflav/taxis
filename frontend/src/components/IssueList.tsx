@@ -9,6 +9,7 @@ import {
   emptyFilters, filtersFromParams, filtersToParams, isOverdue, matchesStructuralFilters, matchesText,
   loadStoredViewState, VIEW_STATE_STORAGE_KEY, type IssueFilterState,
 } from "../filters";
+import { useOfflineState } from "../offline";
 import { useIssueFeed } from "../useIssueFeed";
 import { learnIssueNames } from "../issueNames";
 import { PageHeader } from "./PageHeader";
@@ -232,6 +233,8 @@ export function IssueList({ me }: { me: Actor | null }) {
   const labelsRes = useResource<Label[]>(paths.labels, api.listLabels, REFERENCE_MAX_AGE);
   const actorsRes = useResource<Actor[]>(paths.actors, api.listActors, REFERENCE_MAX_AGE);
 
+  const { offline } = useOfflineState();
+
   const issues = feed.rows;
   const labels = labelsRes.data ?? EMPTY;
   const actors = actorsRes.data ?? EMPTY;
@@ -389,13 +392,15 @@ export function IssueList({ me }: { me: Actor | null }) {
       {readFailure && (
         <ReadFailure message={readFailure.message} offline={readFailure.offline} onRetry={load} />
       )}
-      {/* Where these rows came from, when it is not the server. The list looks and behaves the
-          same either way, which is the point of the mirror — but "as current as the last sync" and
-          "as current as a moment ago" are different claims, and only one of them is being made. */}
-      {feed.local && (
+      {/* Where these rows came from, said only when it changes what they mean. In the app the list
+          is always drawn from the device — that is the design, not an exception, and saying so on
+          every screen would be noise. With no connection it *is* news: nothing is arriving, so
+          these rows are as current as the last sync and a search over them reaches titles only. */}
+      {feed.local && offline && (
         <div className="feed-status small muted" role="status">
-          Showing the copy of this tracker stored on your device. <a href="#/servers">Servers</a>{" "}
-          says when it was last synced; searching it matches titles only.
+          No connection — showing the copy of this tracker stored on your device.{" "}
+          <a href="#/servers">Servers</a> says when it was last synced; searching it matches titles
+          only.
         </div>
       )}
       {/* What is actually in hand. A list that stopped at the cap looks exactly like a list that

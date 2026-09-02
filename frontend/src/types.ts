@@ -110,6 +110,25 @@ export interface IssuePage {
   stateCounts: { open: number; closed: number; completed: number } | null;
 }
 
+/** One issue's worth of change from `/api/changes`. `issue` is null for "drop this" — deleted, or
+ *  no longer visible to you, which for a client holding a copy is the same instruction. */
+export interface IssueChange {
+  seq: number;
+  id: number;
+  issue: IssueListRow | null;
+}
+
+/** An answer from `/api/changes`. `upTo` is the next cursor and is exhaustive: everything at or
+ *  below it is accounted for in `changes`. `more` means the page was capped, not that the client
+ *  should wait. `reset` means the cursor predates the retained log, so the tracker has to be read
+ *  again from scratch. */
+export interface ChangesPage {
+  changes: IssueChange[];
+  upTo: number;
+  reset: boolean;
+  more: boolean;
+}
+
 export interface Comment {
   id: number;
   issueId: number;

@@ -2,6 +2,7 @@ import type {
   Actor,
   ApiToken,
   ApiTokenCreated,
+  ChangesPage,
   Check,
   Comment,
   Event,
@@ -342,6 +343,14 @@ export const api = {
     req<Label>(`/labels/${id}`, { method: "PATCH", body: JSON.stringify(body) }).then(refreshed("/labels")),
   deleteLabel: (id: number) =>
     req<unknown>(`/labels/${id}`, { method: "DELETE" }).then(refreshed("/labels")),
+
+  /** Where the change log stands right now, with no changes. Taken *before* reading the tracker in
+      full, so that whatever moves while it is being read is replayed afterwards rather than
+      falling between the two reads. */
+  changesHead: () => req<ChangesPage>("/changes"),
+  /** Issues changed since `since`, each as its current row — or null, meaning drop it. */
+  changes: (since: number, limit = 500) =>
+    req<ChangesPage>("/changes" + qs({ since, limit })),
 
   graph: () => req<GraphData>(paths.graph),
   repoGraph: (external = false) => req<RepoGraphData>("/repo-graph" + (external ? "?external=1" : "")),

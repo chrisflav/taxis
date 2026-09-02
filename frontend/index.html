@@ -97,8 +97,13 @@
           get("/api/graph");
         } else if (hash.indexOf("#/repos") === 0) {
           get("/api/repo-graph");
-        } else if (hash.indexOf("#/labels") !== 0) {
-          // The issue list. Its query depends on filters and a sort that live in the app and in
+        } else if (!packaged && hash.indexOf("#/labels") !== 0) {
+          // The issue list — on the web only. The packaged app draws it from the copy of the
+          // tracker on the device (see `mirror.ts`), so a page fetched here would answer a
+          // question nothing is going to ask. Only the very first launch reads the list over the
+          // network, and paying a request on every launch after it to save one is a bad trade.
+          //
+          // Its query depends on filters and a sort that live in the app and in
           // localStorage, so rather than reimplement that here — and drift from it — the app
           // writes down the path it last read, and this replays it. Worst case after a filter
           // change: one page fetched that the app then asks for under a different name.

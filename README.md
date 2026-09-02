@@ -148,28 +148,31 @@ is mirrored is the list row, which is what the list, the tree and the pickers dr
 [`frontend/src/mirror.ts`](frontend/src/mirror.ts) and
 [`frontend/src/sync.ts`](frontend/src/sync.ts).
 
-Keeping that copy current is cheap because of the order it is filled in.
-`GET /issues/page?sort=updated` returns issues newest-changed first and resumes from a cursor the
-server seeks through an index, so:
+The copy is not a fallback: in the app it is **where the issue list is read from**. Asking the
+server for a page it has already handed over is a round trip to learn what is in hand, so the list
+appears at once, behaves identically with no connection, and searches the whole tracker rather than
+the page that happened to be cached. The network became a background reconciler instead of the
+thing the view waits on. Only the very first launch reads the list over the network, because there
+is nothing on the device yet.
 
-- the **first** sync walks the whole tracker, five hundred rows a request — ten requests at most,
-  once;
-- every sync after that walks the same order and **stops at the first issue older than the last
-  sync's newest one**, because nothing beyond that point can have changed. In a tracker where a
-  handful of issues moved since this morning, that is one request.
+Keeping the copy true is the [change feed](#concepts) above:
 
-Deletions are the one thing no walk can show — a deleted issue appears in no page of any order — so
-the count the server sends with the first page is compared against what is stored, and a
-disagreement triggers a full walk that reconciles. Noticing costs nothing; only acting on it costs a
-request.
+- the **first** sync walks the issue list, five hundred rows a request — ten requests at most, once.
+  The change-log cursor is taken *before* that walk starts, so anything that moves while it runs is
+  replayed rather than falling between the two reads;
+- every sync after that is one call to `/api/changes?since=<cursor>`, which carries the issues that
+  moved and — unlike any walk — the ones that were **deleted**;
+- and it usually is not asked for at all. `/api/changes/stream` stays open and says when the
+  tracker moves, so an edit made by somebody else appears on screen with nothing polling and no
+  reload.
 
-Syncing happens on events that already occur — the app finishing its load, the session resolving,
-connectivity returning, the offline write queue draining — so nothing polls and nothing pings to ask
-whether the connection is back. **Servers** shows how many issues are held and when they were last
-synced, with a *Sync now* button for the moment before a flight. Issues are visibility-filtered per
-actor, so the copy records who it was built for and is rebuilt rather than extended when a different
-account signs in. Trackers larger than 5,000 issues keep their most recently updated 5,000 — the
-same budget the list holds in memory — and the app says so rather than implying it has everything.
+The remaining triggers are events that already happen: the app finishing its load, the session
+resolving, connectivity returning, the offline write queue draining. **Servers** shows how many
+issues are held, when they were last synced and whether the stream is connected, with a *Sync now*
+button for the moment before a flight. Issues are visibility-filtered per actor, so the copy
+records who it was built for and is read again rather than extended when a different account signs
+in. Trackers larger than 5,000 issues keep their most recently updated 5,000 — the same budget the
+list holds in memory — and the app says so rather than implying it has everything.
 
 The mirror is IndexedDB rather than `localStorage`: an origin gets about 5 MB of the latter in
 total, and its other two tenants there are the read cache and the only copy of your unsent writes,

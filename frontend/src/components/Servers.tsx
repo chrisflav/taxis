@@ -332,7 +332,7 @@ function since(ms: number): string {
  * would rather not find out in the air whether the last sync was five minutes or five days ago.
  */
 function OfflineCopy() {
-  const { syncing, stored, complete, syncedAt, error } = useSyncState();
+  const { syncing, stored, complete, syncedAt, live, error } = useSyncState();
   const { offline } = useOfflineState();
   if (!mirrorAvailable) return null;
   return (
@@ -340,6 +340,9 @@ function OfflineCopy() {
       <div className="row">
         <strong>On this device</strong>
         {syncing && <span className="badge">Syncing…</span>}
+        {/* Whether changes arrive by themselves. Worth saying because it is the difference between
+            a copy that is current and one that is as old as the last time something asked. */}
+        {!syncing && live && <span className="badge">Live</span>}
       </div>
       <p className="small muted">
         {stored === 0
@@ -348,6 +351,11 @@ function OfflineCopy() {
               complete ? "" : ", the most recently updated ones — this tracker is larger than the app keeps"
             }.${syncedAt ? ` Synced ${since(syncedAt)}.` : ""}`}
       </p>
+      {stored > 0 && live && (
+        <p className="small muted">
+          Connected to this tracker's change stream, so edits made elsewhere arrive as they happen.
+        </p>
+      )}
       {error && <p className="small error">The last sync did not finish: {error}</p>}
       <div className="row">
         {/* Disabled rather than silently doing nothing while there is no connection: a sync needs a

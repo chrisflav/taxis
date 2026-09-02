@@ -58,20 +58,19 @@ interface StoredRow {
   row: IssueListRow;
 }
 
-/** Where a sync got to, per tracker. Read before a walk to decide what kind of walk it is. */
+/** Where a sync got to, per tracker. Read before a sync to decide what kind of sync it is. */
 export interface MirrorMeta {
   scope: string;
   /** The actor the mirror was filled for. Issues are visibility-filtered per actor, so a mirror
       built by somebody else is not this reader's to show — it is rebuilt rather than extended. */
   actorId: number | null;
-  /** The newest `updatedAt` seen by a completed walk, and the id that broke its tie. Together they
-      are where the next incremental walk stops. Null before the first successful sync. */
-  highUpdatedAt: number | null;
-  highId: number | null;
-  /** How many issues are stored, so a sync can tell that the server holds a different number —
-      which is the only evidence available that something was *deleted*. */
+  /** The server's change-log cursor: everything at or below it is already here. Null before the
+      first full read, which is the state that asks for one. */
+  cursor: number | null;
+  /** How many issues are stored. Shown, not relied on — deletions arrive as changes now, so this
+      is no longer evidence of anything. */
   count: number;
-  /** False when the walk stopped at `MIRROR_CAP` rather than at the end of the tracker. */
+  /** False when the first read stopped at `MIRROR_CAP` rather than at the end of the tracker. */
   complete: boolean;
   /** When the last successful sync finished. */
   syncedAt: number;
@@ -168,6 +167,30 @@ function inTransaction<T>(
   });
 }
 
+/** Bumped whenever what is stored changes.
+ *
+ *  The mirror is what the issue list reads in the packaged app, so "the sync applied something" has
+ *  to reach a mounted view somehow. This is that signal, in the shape `useSyncExternalStore`
+ *  wants — the same arrangement `offline.ts` uses, and for the same reason. */
+let revision = 0;
+const watchers = new Set<() => void>();
+
+export function mirrorRevision(): number {
+  return revision;
+}
+
+export function subscribeMirror(fn: () => void): () => void {
+  watchers.add(fn);
+  return () => { watchers.delete(fn); };
+}
+
+/** Note that stored rows changed: drop the in-memory copy and tell anyone reading it. */
+function changed(): void {
+  held = null;
+  revision += 1;
+  watchers.forEach((f) => f());
+}
+
 /** The rows of the current scope, held in memory once read.
  *
  *  The feed pages through the mirror — a page at a time, the same way it pages through the server —
@@ -221,7 +244,7 @@ function putBatch(rows: IssueListRow[], scope: string): Promise<boolean> {
 /** Store or replace rows. Used by the walk, which knows what changed and nothing more. */
 export async function putRows(rows: IssueListRow[], scope: string = serverScope()): Promise<boolean> {
   if (rows.length === 0) return true;
-  held = null;
+  changed();
   let ok = true;
   for (let i = 0; i < rows.length; i += WRITE_BATCH) {
     ok = (await putBatch(rows.slice(i, i + WRITE_BATCH), scope)) && ok;
@@ -275,12 +298,19 @@ async function deleteKeys(keys: string[]): Promise<boolean> {
  * that usually none of them has gone anywhere, where this is one request plus one per issue that
  * actually went.
  */
+/** Remove exactly these issues, because the feed said they are gone or no longer visible. */
+export async function removeRows(ids: number[], scope: string = serverScope()): Promise<boolean> {
+  if (ids.length === 0) return true;
+  changed();
+  return deleteKeys(ids.map((id) => `${scope}|${id}`));
+}
+
 export async function retainOnly(keep: Iterable<number>, scope: string = serverScope()): Promise<boolean> {
   const wanted = new Set<string>();
   for (const id of keep) wanted.add(`${scope}|${id}`);
   const stale = (await allKeys(scope)).filter((key) => !wanted.has(key));
   if (stale.length === 0) return true;
-  held = null;
+  changed();
   return deleteKeys(stale);
 }
 
@@ -327,7 +357,7 @@ export function writeMeta(meta: MirrorMeta): Promise<boolean> {
  *  and the read cache follow, for the same reason: it was a copy of that server and there is no
  *  longer a server it is a copy of. */
 export function forgetScope(scope: string): Promise<boolean> {
-  if (held && held.scope === scope) held = null;
+  if (held && held.scope === scope) changed();
   return Promise.all([
     allKeys(scope).then(deleteKeys),
     inTransaction<boolean>([META], "readwrite", (tx) => { tx.objectStore(META).delete(scope); return () => true; }, false),
@@ -337,7 +367,7 @@ export function forgetScope(scope: string): Promise<boolean> {
 /** Forget the in-memory copy without touching what is stored. For tests, and for the one caller
  *  that changes the store behind this module's back. */
 export function dropHeld(): void {
-  held = null;
+  changed();
 }
 
 // -----------------------------------------------------------------------------------------------
@@ -468,8 +498,8 @@ function encodeNext(rows: IssueListRow[], sort: IssuePageQuery["sort"], cursor: 
  * `total` and `stateCounts` are filled only for the first page of a query, which is what the server
  * does — and here it costs nothing either way, since the whole set was in hand to page it.
  */
-export function pageOf(rows: IssueListRow[], query: IssuePageQuery): IssuePage {
-  const limit = Math.min(500, query.limit ?? 100);
+export function pageOf(rows: IssueListRow[], query: IssuePageQuery, maxLimit = 500): IssuePage {
+  const limit = Math.min(maxLimit, query.limit ?? 100);
   const cursor = decodeCursor(query.cursor);
   const all = sortRows(rows.filter((r) => matches(r, query)), query.sort);
   const remaining = afterCursor(all, query.sort, cursor);
@@ -493,6 +523,22 @@ export function pageOf(rows: IssueListRow[], query: IssuePageQuery): IssuePage {
  * matching this" and "this device has no copy of the tracker" are different answers, and only the
  * first one is something to show a reader. The caller falls back to whatever it would have done.
  */
+/**
+ * Everything stored that matches a query, up to `limit`.
+ *
+ * The read the packaged app's issue list is drawn from. It ignores the server's page ceiling on
+ * purpose: that number exists to bound a *response*, and there is no response here — the rows are
+ * already on the device, so handing back a page at a time would cost several passes over the same
+ * array to deliver what one pass could. The bound that matters is the caller's, and it is the same
+ * `FEED_CAP` the list has always been willing to hold in memory.
+ */
+export function mirrorList(query: IssuePageQuery, limit: number): Promise<IssuePage | null> {
+  if (!mirrorAvailable) return Promise.resolve(null);
+  return allRows()
+    .then((rows) => (rows.length === 0 ? null : pageOf(rows, { ...query, limit }, limit)))
+    .catch(() => null);
+}
+
 export function mirrorPage(query: IssuePageQuery): Promise<IssuePage | null> {
   if (!mirrorAvailable) return Promise.resolve(null);
   return allRows()
