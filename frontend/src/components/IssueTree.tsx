@@ -2,10 +2,15 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { LockedMark } from "./Icon";
 import type { IssueListRow, Label } from "../types";
 import { api, type IssuePageQuery } from "../api";
+import { mirrorList } from "../mirror";
+import { useLocalFirst, useMirrorRevision } from "../useMirror";
 import { LabelChip } from "./LabelChip";
 import { Markdown } from "./Markdown";
 
-// Hierarchical view over the single `parent` (containment) relation, read one level at a time.
+// Hierarchical view over the single `parent` (containment) relation, read one level at a time —
+// from the device in the packaged app, where the whole tracker is already stored, and from the
+// server on the web. A level is a plain `parent = …` query either way, so the two answer the same
+// question in the same shape and nothing below here knows which one did.
 //
 // The tree used to be assembled in the browser out of every issue in the tracker, so it could not
 // be drawn until all of them had arrived — the deepest possible dependency on a number that only
@@ -22,28 +27,34 @@ interface Level {
   total: number | null;
 }
 
-/** Levels of the tree, fetched on demand and kept for as long as the view stays open. */
+/** How many children one level shows at once — see the note on `Level.total`. */
+const LEVEL_SIZE = 200;
+
+/** Levels of the tree, read on demand and kept for as long as the view stays open. */
 function useTreeLevels(query: IssuePageQuery) {
   const [levels, setLevels] = useState<Map<string, Level>>(() => new Map());
   const requested = useRef<Set<string>>(new Set());
   const key = JSON.stringify(query);
-  // Bumped when the filters change, so a level fetched under the previous ones is discarded rather
+  // Bumped when the filters change, so a level read under the previous ones is discarded rather
   // than left hanging under a tree that no longer means the same thing.
   const generation = useRef(0);
+  const local = useLocalFirst();
+  const revision = useMirrorRevision();
 
   useEffect(() => {
     generation.current++;
     requested.current = new Set();
     setLevels(new Map());
-  }, [key]);
+  }, [key, local]);
 
-  const load = useCallback((parent: number | "none") => {
+  const read = useCallback((parent: number | "none", gen: number) => {
     const id = String(parent);
-    if (requested.current.has(id)) return;
-    requested.current.add(id);
-    const gen = generation.current;
-    setLevels((prev) => new Map(prev).set(id, { rows: [], loading: true, total: null }));
-    api.issuePage({ ...query, parent, limit: 200 })
+    const q = { ...query, parent, limit: LEVEL_SIZE };
+    const pending = local
+      ? mirrorList(q, LEVEL_SIZE).then((page) =>
+          page ?? { issues: [], nextCursor: null, total: 0, stateCounts: null })
+      : api.issuePage(q);
+    pending
       .then((page) => {
         if (generation.current !== gen) return;
         setLevels((prev) => new Map(prev).set(id, { rows: page.issues, loading: false, total: page.total }));
@@ -53,7 +64,25 @@ function useTreeLevels(query: IssuePageQuery) {
         setLevels((prev) => new Map(prev).set(id, { rows: [], loading: false, total: 0 }));
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
+  }, [key, local]);
+
+  const load = useCallback((parent: number | "none") => {
+    const id = String(parent);
+    if (requested.current.has(id)) return;
+    requested.current.add(id);
+    setLevels((prev) => new Map(prev).set(id, { rows: [], loading: true, total: null }));
+    read(parent, generation.current);
+  }, [read]);
+
+  // The copy on the device moved, so every level already unfolded is showing something older than
+  // what is stored. Re-reading all of them is what keeps an open tree honest when somebody else
+  // files an issue under a node being looked at — and it costs nothing, because they are local
+  // reads. On the web there is no such signal and this never runs.
+  useEffect(() => {
+    if (!local) return;
+    const gen = generation.current;
+    for (const id of requested.current) read(id === "none" ? "none" : Number(id), gen);
+  }, [local, revision, read]);
 
   return { levels, load };
 }

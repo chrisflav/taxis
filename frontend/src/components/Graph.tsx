@@ -5,6 +5,8 @@ import { PAGE_META } from "../pages";
 import type { Actor, GraphData, GraphNode as GraphIssue, Label } from "../types";
 import { api, paths } from "../api";
 import { EMPTY, LIST_MAX_AGE, REFERENCE_MAX_AGE, useResource } from "../cache";
+import { mirrorGraph } from "../mirror";
+import { useLocalFirst, useMirrorRevision } from "../useMirror";
 import { emptyFilters, filtersFromParams, filtersToParams, matchesFilters, type IssueFilterState } from "../filters";
 import { learnIssueNames } from "../issueNames";
 import { Filters } from "./Filters";
@@ -66,15 +68,35 @@ export function GraphView() {
   // the tracker — so this reads `/graph`, whose nodes carry what a card draws and what the filter
   // bar narrows by, rather than `/issues?summary=1`, which carried creators, timestamps, visibility
   // groups and attachment counts that no graph has ever drawn.
-  const graphRes = useResource<GraphData>(paths.graph, api.graph, LIST_MAX_AGE);
+  //
+  // In the packaged app it reads none of that from the server. A graph node is a projection of a
+  // list row, and the mirror holds every list row this reader can see, so the graph is already on
+  // the device — which is what lets it be drawn at once and with no connection, over the whole
+  // tracker rather than whatever was last cached. `useResource` is passed a null key in that case,
+  // which is how it is told to fetch nothing.
+  const local = useLocalFirst();
+  const revision = useMirrorRevision();
+  const [fromDevice, setFromDevice] = useState<GraphData | null>(null);
+  useEffect(() => {
+    if (!local) { setFromDevice(null); return; }
+    let live = true;
+    void mirrorGraph().then((g) => { if (live) setFromDevice(g); });
+    return () => { live = false; };
+  }, [local, revision]);
+
+  const graphRes = useResource<GraphData>(local ? null : paths.graph, api.graph, LIST_MAX_AGE);
   const labelsRes = useResource<Label[]>(paths.labels, api.listLabels, REFERENCE_MAX_AGE);
   const actorsRes = useResource<Actor[]>(paths.actors, api.listActors, REFERENCE_MAX_AGE);
 
-  const issues = graphRes.data?.nodes ?? EMPTY;
+  const issues = (local ? fromDevice?.nodes : graphRes.data?.nodes) ?? EMPTY;
   const labels = labelsRes.data ?? EMPTY;
   const actors = actorsRes.data ?? EMPTY;
-  const loading = graphRes.loading;
-  const error = graphRes.error ?? labelsRes.error ?? actorsRes.error;
+  const loading = local ? fromDevice == null : graphRes.loading;
+  // Reading the device cannot fail the way a request can, so the only errors left are the two
+  // decorations — the label and actor names a node draws. Offline and uncached those are simply
+  // missing, and a graph with unnamed chips is worth a great deal more than an error page over a
+  // graph that is sitting right there.
+  const error = local ? null : (graphRes.error ?? labelsRes.error ?? actorsRes.error);
   // The nodes name every issue in the tracker, so anything else on the page that has to name one
   // — a `#123` in a title, a chosen filter's chip — is answered without a request.
   useEffect(() => { learnIssueNames(issues); }, [issues]);

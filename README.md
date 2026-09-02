@@ -148,12 +148,23 @@ is mirrored is the list row, which is what the list, the tree and the pickers dr
 [`frontend/src/mirror.ts`](frontend/src/mirror.ts) and
 [`frontend/src/sync.ts`](frontend/src/sync.ts).
 
-The copy is not a fallback: in the app it is **where the issue list is read from**. Asking the
-server for a page it has already handed over is a round trip to learn what is in hand, so the list
-appears at once, behaves identically with no connection, and searches the whole tracker rather than
-the page that happened to be cached. The network became a background reconciler instead of the
-thing the view waits on. Only the very first launch reads the list over the network, because there
-is nothing on the device yet.
+The copy is not a fallback: in the app it is **where the issue list, the tree and the graph are
+read from**. Asking the server for something it has already handed over is a round trip to learn
+what is in hand, so those views appear at once, behave identically with no connection, and search
+the whole tracker rather than the page that happened to be cached. The network became a background
+reconciler instead of the thing the view waits on. Only the very first launch reads over the
+network, because there is nothing on the device yet.
+
+The three fit because they want the same thing. A tree level is a `parent = …` query, which the
+copy answers exactly as the server does. A graph node is a *projection of a list row* — `/graph`
+exists to send less than `/issues` does, not to send anything more — and the graph needs every
+issue rather than a filtered slice, which is precisely what the mirror is. When a sync applies
+something, all three re-read; an issue filed by somebody else under a node you have unfolded shows
+up there without a reload.
+
+The **Repos** view is the exception and stays on the server: its edges come from reading package
+manifests out of repositories on GitHub, so they are not derived from issue data and there is
+nothing local to derive them from.
 
 Keeping the copy true is the [change feed](#concepts) above:
 

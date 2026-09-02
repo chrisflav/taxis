@@ -292,6 +292,57 @@ describe("what survives the app being killed", () => {
   });
 });
 
+describe("the views built from the whole tracker", () => {
+  it("gives the tree one level at a time, the same query the server answers", async () => {
+    const mirror = await relaunch();
+    await mirror.putRows([
+      row(1, { parent: null }),
+      row(2, { parent: 1 }),
+      row(3, { parent: 1 }),
+      row(4, { parent: 2 }),
+    ]);
+
+    const roots = await mirror.mirrorList({ parent: "none" }, 200);
+    expect(roots!.issues.map((r) => r.id)).toEqual([1]);
+    const under1 = await mirror.mirrorList({ parent: 1 }, 200);
+    expect(under1!.issues.map((r) => r.id).sort()).toEqual([2, 3]);
+    expect(under1!.total).toBe(2);
+    expect((await mirror.mirrorList({ parent: 4 }, 200))!.issues).toEqual([]);
+  });
+
+  it("reads past the server's page ceiling, because there is no page to bound", async () => {
+    const mirror = await relaunch();
+    await mirror.putRows(Array.from({ length: 700 }, (_, i) => row(i + 1)));
+    // `mirrorPage` keeps the server's 500 to stay interchangeable with it; `mirrorList` is a local
+    // read with a caller-chosen bound, and the list asks for far more than 500.
+    expect((await mirror.mirrorPage({ limit: 700 }))!.issues).toHaveLength(500);
+    expect((await mirror.mirrorList({}, 700))!.issues).toHaveLength(700);
+  });
+
+  it("gives the graph every issue, projected to what a node draws", async () => {
+    const mirror = await relaunch();
+    await mirror.putRows([
+      row(1, { parent: null, dependencies: [2], labels: [7], assignees: [3], deadline: 99 }),
+      row(2, { parent: 1, state: "completed", locked: true }),
+    ]);
+
+    const graph = await mirror.mirrorGraph();
+    expect(graph!.nodes.map((n) => n.id).sort()).toEqual([1, 2]);
+    const one = graph!.nodes.find((n) => n.id === 1)!;
+    // Every field a node carries, and nothing a list row has that it does not.
+    expect(one).toEqual({
+      id: 1, title: "Issue 1", state: "open", locked: false, labels: [7],
+      parent: null, dependencies: [2], assignees: [3], deadline: 99,
+    });
+    expect(graph!.nodes.find((n) => n.id === 2)!.locked).toBe(true);
+  });
+
+  it("says nothing rather than an empty graph when it holds no copy", async () => {
+    const mirror = await relaunch();
+    expect(await mirror.mirrorGraph()).toBeNull();
+  });
+});
+
 describe("the web build", () => {
   it("keeps no copy at all — the tracker serves the page, so there is no launch without it", async () => {
     const mirror = await loadWeb();
@@ -299,5 +350,7 @@ describe("the web build", () => {
     await mirror.putRows([row(1)]);
     expect(await mirror.allRows()).toEqual([]);
     expect(await mirror.mirrorPage({ limit: 10 })).toBeNull();
+    expect(await mirror.mirrorList({}, 10)).toBeNull();
+    expect(await mirror.mirrorGraph()).toBeNull();
   });
 });

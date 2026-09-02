@@ -94,7 +94,9 @@
           get("/api/issues/" + issue[1]);
           get("/api/issues/page?parent=" + issue[1] + "&limit=100");
         } else if (hash.indexOf("#/graph") === 0) {
-          get("/api/graph");
+          // Web only, for the same reason as the issue list below: the packaged app builds the
+          // graph out of the copy of the tracker on the device, so this would answer nothing.
+          if (!packaged) get("/api/graph");
         } else if (hash.indexOf("#/repos") === 0) {
           get("/api/repo-graph");
         } else if (!packaged && hash.indexOf("#/labels") !== 0) {

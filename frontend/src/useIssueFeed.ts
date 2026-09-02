@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { IssueListRow } from "./types";
 import { api, issuePagePath, type IssuePageQuery } from "./api";
 import { cachedGet } from "./cache";
-import { mirrorAvailable, mirrorList, mirrorPage, mirrorRevision, subscribeMirror } from "./mirror";
+import { mirrorList, mirrorPage } from "./mirror";
 import { describeReadFailure, isNetworkError } from "./netError";
 import { isNativeApp } from "./server";
-import { syncNow, useSyncState } from "./sync";
+import { syncNow } from "./sync";
+import { useLocalFirst, useLocalUndecided, useMirrorRevision } from "./useMirror";
 
 /**
  * The issue list's rows, pulled a page at a time and accumulated locally.
@@ -134,15 +135,10 @@ export function useIssueFeed(query: IssuePageQuery, search: string, enabled = tr
   // when the caller happens to rebuild the object.
   const key = JSON.stringify(query);
 
-  // What the device holds, and a counter that moves whenever the sync changes it.
-  const { stored, known } = useSyncState();
-  const revision = useSyncExternalStore(subscribeMirror, mirrorRevision, mirrorRevision);
-  // Read locally once there is something to read. `isNativeApp` folds to false on the web, taking
-  // the whole branch — and the mirror it names — out of that build.
-  const fromDevice = isNativeApp && mirrorAvailable && known && stored > 0;
-  // Nothing to show and nothing to ask for yet: local storage has not said what it holds, so a
-  // request now might be for rows already on the device.
-  const undecided = isNativeApp && mirrorAvailable && !known;
+  // Where the rows come from, and a counter that moves whenever the sync changes what is stored.
+  const fromDevice = useLocalFirst();
+  const undecided = useLocalUndecided();
+  const revision = useMirrorRevision();
 
   const [rows, setRows] = useState<IssueListRow[]>(EMPTY_ROWS);
   const [total, setTotal] = useState<number | null>(null);

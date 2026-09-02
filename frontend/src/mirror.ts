@@ -32,7 +32,7 @@
  * of this away and the bundler drops it.
  */
 
-import type { IssuePage, IssueListRow, IssueState } from "./types";
+import type { GraphData, IssuePage, IssueListRow, IssueState } from "./types";
 import type { IssuePageQuery } from "./api";
 import { isNativeApp, onServerForgotten, serverScope } from "./server";
 
@@ -514,6 +514,33 @@ export function pageOf(rows: IssueListRow[], query: IssuePageQuery, maxLimit = 5
     total: cursor ? null : all.length,
     stateCounts: cursor ? null : counts,
   };
+}
+
+/**
+ * The dependency graph, from the device.
+ *
+ * A graph node is a projection of a list row and nothing more — `/api/graph` exists to send less
+ * than `/issues` does, not to send anything the list does not have — so the whole view is already
+ * here. That is what makes the graph work offline at all: it needs *every* issue, because an edge
+ * may point at one the current filters hide, and "every issue" is exactly what the mirror is.
+ */
+export function mirrorGraph(): Promise<GraphData | null> {
+  if (!mirrorAvailable) return Promise.resolve(null);
+  return allRows()
+    .then((rows) => (rows.length === 0 ? null : {
+      nodes: rows.map((r) => ({
+        id: r.id,
+        title: r.title,
+        state: r.state,
+        locked: r.locked,
+        labels: r.labels,
+        parent: r.parent,
+        dependencies: r.dependencies,
+        assignees: r.assignees,
+        deadline: r.deadline,
+      })),
+    }))
+    .catch(() => null);
 }
 
 /**
