@@ -254,6 +254,128 @@ def main : IO Unit := do
   check "private visible to member" (visibleTo (some member) priv)
   check "private hidden from outsider" (!visibleTo (some outsider) priv)
 
+  IO.println "Change feed"
+  -- A separate database, so the sequence numbers are this section's alone and the assertions can
+  -- talk about "one change" rather than "one more than whatever the tests above left behind".
+  let cpath : System.FilePath := "/tmp/issues-selftest-changes.sqlite"
+  for suffix in ["", "-wal", "-shm"] do
+    try IO.FS.removeFile (cpath.toString ++ suffix) catch _ => pure ()
+  let cdb ← connect cpath
+  migrate cdb
+  -- Everything below reads as a signed-in reader belonging to no group, i.e. one who sees exactly
+  -- the public issues. `since`/`upTo` are threaded by hand the way a client threads them.
+  let anyone : Option (Array GroupId) := some #[]
+  let feed (since : Int64) : IO ChangesPage := changesSince cdb since anyone 500
+  let touched (p : ChangesPage) : Array Int64 := p.changes.map (·.id.val)
+  let dropped (p : ChangesPage) : Array Int64 :=
+    (p.changes.filter (·.row.isNone)).map (·.id.val)
+
+  let cLabel ← createLabel cdb { name := "flaky" }
+  let cParent ← createIssue cdb { title := "Parent" }
+  let cDep ← createIssue cdb { title := "Dependency" }
+  let afterSeed ← changesHead cdb
+  check "creating an issue is a change" (afterSeed > 0)
+
+  -- A child: the child is new, and the parent's child count moved with it.
+  let cChild ← createIssue cdb { title := "Child", parent := some cParent.id, dependencies := #[cDep.id], labels := #[cLabel.id] }
+  let p1 ← feed afterSeed
+  check "a new child is reported" ((touched p1).contains cChild.id.val)
+  check "its parent is reported too, for the child count" ((touched p1).contains cParent.id.val)
+  check "the feed carries the row, not just the id"
+    ((p1.changes.find? (·.id.val == cChild.id.val)).bind (·.row) |>.map (·.title) |> (· == some "Child"))
+  check "the row carries its relations" ((p1.changes.find? (·.id.val == cChild.id.val)).bind (·.row)
+    |>.map (·.labels) |> (· == some #[cLabel.id]))
+  check "one entry per issue however many tables moved"
+    ((touched p1).size == (touched p1).toList.eraseDups.length)
+
+  -- A save that changes nothing files nothing: the relation setters diff rather than rewrite.
+  let afterChild ← changesHead cdb
+  let _ ← updateIssue cdb cChild.id { labels := some #[cLabel.id] }
+  let p2 ← feed afterChild
+  -- The issue row itself is always stamped, so the issue appears; what must *not* appear is a
+  -- storm of label rows, and the parent must not be dragged in.
+  check "an unchanged relation does not drag in the parent" (!(touched p2).contains cParent.id.val)
+
+  -- Attachments are counts on the row, so they move it.
+  let afterNoop ← changesHead cdb
+  let art ← createArtifact cdb cChild.id
+    { kind := "context", payload := Json.mkObj [("title", Json.str "t"), ("body", Json.str "b")] }
+  let p3 ← feed afterNoop
+  check "attaching an artifact is a change" ((touched p3).contains cChild.id.val)
+  check "the artifact count is in the row" ((p3.changes.find? (·.id.val == cChild.id.val)).bind (·.row)
+    |>.map (·.artifactCount) |> (· == some 1))
+  let afterArtifact ← changesHead cdb
+  let _ ← deleteArtifact cdb art.id
+  check "detaching one is a change too" ((touched (← feed afterArtifact)).contains cChild.id.val)
+
+  -- Deleting a label takes it off every issue carrying it, through a foreign-key cascade that no
+  -- Lean code here can see. The trigger does.
+  let afterDetach ← changesHead cdb
+  let _ ← deleteLabel cdb cLabel.id
+  check "deleting a label moves the issues that carried it"
+    ((touched (← feed afterDetach)).contains cChild.id.val)
+
+  -- Deletion: a tombstone that outlives the row, and a change for everything that pointed at it.
+  let afterLabel ← changesHead cdb
+  let _ ← deleteIssue cdb cDep.id
+  let p4 ← feed afterLabel
+  check "a deleted issue is reported as gone" ((dropped p4).contains cDep.id.val)
+  check "and what depended on it is reported as changed" ((touched p4).contains cChild.id.val)
+  check "the depender is an upsert, not a drop" (!(dropped p4).contains cChild.id.val)
+  check "the dropped issue really is gone from the tracker" ((← getIssue cdb cDep.id).isNone)
+
+  -- Visibility. A private issue is not this reader's news at all; one that *becomes* private is,
+  -- because they were holding it a moment ago.
+  let cGroup ← createGroup cdb { name := "secret" }
+  let afterDelete ← changesHead cdb
+  let hidden ← createIssue cdb { title := "Hidden", visibility := #[cGroup.id] }
+  let p5 ← feed afterDelete
+  check "an issue created private is never mentioned" (!(touched p5).contains hidden.id.val)
+  let insider : Option (Array GroupId) := some #[cGroup.id]
+  let p5m ← changesSince cdb afterDelete insider 500
+  check "but a member of its group is told about it" ((p5m.changes.map (·.id.val)).contains hidden.id.val)
+
+  let afterHidden ← changesHead cdb
+  let exposed ← createIssue cdb { title := "Was public" }
+  let afterExposed ← changesHead cdb
+  let _ ← updateIssue cdb exposed.id { visibility := some #[cGroup.id] }
+  let p6 ← feed afterExposed
+  check "an issue that becomes private is reported as gone to whoever could see it"
+    ((dropped p6).contains exposed.id.val)
+  let p6m ← changesSince cdb afterExposed insider 500
+  check "and as an upsert to whoever now can"
+    (((p6m.changes.find? (·.id.val == exposed.id.val)).bind (·.row)).isSome)
+  check "no news for the issue that was already private"
+    (!(touched (← feed afterHidden)).contains hidden.id.val)
+
+  -- The cursor contract: complete up to `upTo`, and honest when it cannot help.
+  let head ← changesHead cdb
+  let level ← feed head
+  check "a client level with the log is told nothing" (level.changes.isEmpty)
+  check "and its cursor moves to the head" (level.upTo == head)
+  let small ← changesSince cdb afterSeed anyone 1
+  check "a capped page says there is more" small.more
+  check "and stops at a sequence it is complete through" (small.upTo < head)
+  -- Pages are not disjoint by issue and should not be: an issue touched twice appears once in each
+  -- page that holds one of its rows. What has to hold is that walking in small steps ends where one
+  -- big read ends, and misses nothing on the way.
+  let big ← changesSince cdb afterSeed anyone 500
+  let mut cursor := afterSeed
+  let mut walked : Array Int64 := #[]
+  for _ in [0:500] do
+    let page ← changesSince cdb cursor anyone 1
+    walked := walked ++ page.changes.map (·.id.val)
+    cursor := page.upTo
+    if !page.more then break
+  check "paging one row at a time ends where one big read ends" (cursor == big.upTo)
+  check "and misses none of what the big read saw"
+    ((big.changes.map (·.id.val)).all (fun i => walked.contains i))
+  let pruned ← pruneChanges cdb 1
+  check "pruning drops all but the rows kept" (pruned > 0)
+  let stale ← feed 0
+  check "a cursor older than the log asks for a fresh read" stale.reset
+  check "and a reset page carries no changes" stale.changes.isEmpty
+
   let n ← failures.get
   IO.println ""
   if n > 0 then

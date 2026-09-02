@@ -15,7 +15,7 @@ the FTS5 extension.
 namespace Taxis.Db
 
 /-- The schema version this build expects. -/
-def schemaVersion : Int64 := 14
+def schemaVersion : Int64 := 15
 
 /-- The complete DDL, safe to run repeatedly. -/
 def schemaSql : String :=
@@ -153,6 +153,144 @@ def schemaSql : String :=
   CREATE INDEX IF NOT EXISTS idx_events_issue ON events(issue_id);
   CREATE INDEX IF NOT EXISTS idx_events_author ON events(actor_id);
 
+  -- The change log a client follows to keep a local copy of the tracker current.
+  --
+  -- Deliberately not `events`. That table is history *for people* — attributed, worded, and
+  -- cascade-deleted with its issue, which is exactly wrong here: the one thing a replicating
+  -- client cannot work out for itself is that an issue is *gone*, and a log that disappears along
+  -- with the row can never say so. So this one holds no foreign key, and a tombstone outlives what
+  -- it describes.
+  --
+  -- `visibility` is the group ids the issue carried at the moment it was deleted, comma-separated,
+  -- empty for a public one. It exists because the tombstone has to be filtered like the issue was:
+  -- by the time anyone reads it there is no issue left to ask, and telling every reader the id of
+  -- a private issue that vanished is a small leak of exactly the thing private mode is for.
+  CREATE TABLE IF NOT EXISTS issue_changes (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    issue_id INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    visibility TEXT NOT NULL DEFAULT '',
+    at INTEGER NOT NULL DEFAULT (unixepoch())
+  );
+  CREATE INDEX IF NOT EXISTS idx_issue_changes_issue ON issue_changes(issue_id);
+
+  -- The log is written by triggers rather than by the code that does the writing, and that is the
+  -- point rather than a shortcut. A list row is assembled from six tables — the issue, its labels,
+  -- assignees, dependencies, and the counts of its artifacts and checks — and it also moves when
+  -- something *else* changes: a new child raises its parent's `childCount`, deleting an issue
+  -- removes it from the dependency list of everything that depended on it, deleting a label takes
+  -- it off every issue carrying it. Hand-written calls would have to be added at every one of
+  -- those sites and at every site added later, and the failure mode of missing one is silent: a
+  -- client goes on showing something that is no longer true, with nothing to notice it. A trigger
+  -- cannot be forgotten by a new code path, and it runs inside the same transaction as the write,
+  -- so the log commits with the change or not at all.
+  --
+  -- Foreign-key cascades fire these too, which is what makes the indirect cases above free rather
+  -- than a second list to maintain.
+
+  -- 'create' rather than 'upsert' for the issue's own row, because the difference matters to the
+  -- visibility rule below: an issue created private is inserted public and made private a
+  -- statement later, so the log honestly records a moment when everyone could see it. Nobody was
+  -- holding it during that moment — it did not exist before the transaction — and knowing which
+  -- rows are creations is what lets `changesSince` tell that apart from a real loss of access.
+  CREATE TRIGGER IF NOT EXISTS trg_issue_changes_ins AFTER INSERT ON issues BEGIN
+    INSERT INTO issue_changes (issue_id, kind) VALUES (new.id, 'create');
+    INSERT INTO issue_changes (issue_id, kind)
+      SELECT new.parent_id, 'upsert' WHERE new.parent_id IS NOT NULL;
+  END;
+
+  -- A reparenting changes three rows: the issue, the parent that lost a child, the one that gained
+  -- one. The `IS NOT` comparisons treat NULL as a value, so moving to or from the top level counts.
+  CREATE TRIGGER IF NOT EXISTS trg_issue_changes_upd AFTER UPDATE ON issues BEGIN
+    INSERT INTO issue_changes (issue_id, kind) VALUES (new.id, 'upsert');
+    INSERT INTO issue_changes (issue_id, kind)
+      SELECT old.parent_id, 'upsert'
+      WHERE old.parent_id IS NOT NULL AND old.parent_id IS NOT new.parent_id;
+    INSERT INTO issue_changes (issue_id, kind)
+      SELECT new.parent_id, 'upsert'
+      WHERE new.parent_id IS NOT NULL AND old.parent_id IS NOT new.parent_id;
+  END;
+
+  -- BEFORE, so the visibility rows this reads are still there to be read.
+  CREATE TRIGGER IF NOT EXISTS trg_issue_changes_del BEFORE DELETE ON issues BEGIN
+    INSERT INTO issue_changes (issue_id, kind, visibility)
+      VALUES (old.id, 'delete',
+        COALESCE((SELECT group_concat(group_id) FROM issue_visibility WHERE issue_id = old.id), ''));
+    INSERT INTO issue_changes (issue_id, kind)
+      SELECT old.parent_id, 'upsert' WHERE old.parent_id IS NOT NULL;
+  END;
+
+  -- The join tables a list row reads. Each `DELETE` side is guarded on the issue still existing,
+  -- so tearing an issue down does not file an 'upsert' for it behind its own tombstone.
+  CREATE TRIGGER IF NOT EXISTS trg_issue_labels_changes_ins AFTER INSERT ON issue_labels BEGIN
+    INSERT INTO issue_changes (issue_id, kind) VALUES (new.issue_id, 'upsert');
+  END;
+  CREATE TRIGGER IF NOT EXISTS trg_issue_labels_changes_del AFTER DELETE ON issue_labels BEGIN
+    INSERT INTO issue_changes (issue_id, kind)
+      SELECT old.issue_id, 'upsert' WHERE EXISTS (SELECT 1 FROM issues WHERE id = old.issue_id);
+  END;
+
+  CREATE TRIGGER IF NOT EXISTS trg_issue_assignees_changes_ins AFTER INSERT ON issue_assignees BEGIN
+    INSERT INTO issue_changes (issue_id, kind) VALUES (new.issue_id, 'upsert');
+  END;
+  CREATE TRIGGER IF NOT EXISTS trg_issue_assignees_changes_del AFTER DELETE ON issue_assignees BEGIN
+    INSERT INTO issue_changes (issue_id, kind)
+      SELECT old.issue_id, 'upsert' WHERE EXISTS (SELECT 1 FROM issues WHERE id = old.issue_id);
+  END;
+
+  CREATE TRIGGER IF NOT EXISTS trg_issue_deps_changes_ins AFTER INSERT ON issue_dependencies BEGIN
+    INSERT INTO issue_changes (issue_id, kind) VALUES (new.issue_id, 'upsert');
+  END;
+  CREATE TRIGGER IF NOT EXISTS trg_issue_deps_changes_del AFTER DELETE ON issue_dependencies BEGIN
+    INSERT INTO issue_changes (issue_id, kind)
+      SELECT old.issue_id, 'upsert' WHERE EXISTS (SELECT 1 FROM issues WHERE id = old.issue_id);
+  END;
+
+  -- Visibility is not drawn in a list row, but it decides whether the row reaches a given reader at
+  -- all, so a change to it is a change that has to be delivered — and to the one audience the rest
+  -- of this log cannot describe.
+  --
+  -- Every other change can be filtered by asking the issue who may see it *now*: a reader who
+  -- cannot see it now could not see it before either, so there is nothing to tell them and nothing
+  -- is said. That reasoning fails exactly here. Somebody who could see an issue until this moment
+  -- has a copy of it and must be told to drop that copy, and by then the issue no longer admits
+  -- them. So these rows carry the group set as it stood a moment ago, and `changesSince` reports
+  -- the loss to whoever matches it. An empty string is the encoding for public, here and on a
+  -- tombstone alike: everyone could see it.
+  CREATE TRIGGER IF NOT EXISTS trg_issue_visibility_changes_ins AFTER INSERT ON issue_visibility BEGIN
+    INSERT INTO issue_changes (issue_id, kind, visibility)
+      VALUES (new.issue_id, 'visibility',
+        COALESCE((SELECT group_concat(group_id) FROM issue_visibility
+                  WHERE issue_id = new.issue_id AND group_id <> new.group_id), ''));
+  END;
+  CREATE TRIGGER IF NOT EXISTS trg_issue_visibility_changes_del AFTER DELETE ON issue_visibility BEGIN
+    INSERT INTO issue_changes (issue_id, kind, visibility)
+      SELECT old.issue_id, 'visibility',
+        CASE WHEN (SELECT COUNT(*) FROM issue_visibility WHERE issue_id = old.issue_id) = 0
+             THEN CAST(old.group_id AS TEXT)
+             ELSE (SELECT group_concat(group_id) FROM issue_visibility
+                   WHERE issue_id = old.issue_id) || ',' || old.group_id
+        END
+      WHERE EXISTS (SELECT 1 FROM issues WHERE id = old.issue_id);
+  END;
+
+  -- Attachments and checks, which a list row carries as counts.
+  CREATE TRIGGER IF NOT EXISTS trg_artifacts_changes_ins AFTER INSERT ON artifacts BEGIN
+    INSERT INTO issue_changes (issue_id, kind) VALUES (new.issue_id, 'upsert');
+  END;
+  CREATE TRIGGER IF NOT EXISTS trg_artifacts_changes_del AFTER DELETE ON artifacts BEGIN
+    INSERT INTO issue_changes (issue_id, kind)
+      SELECT old.issue_id, 'upsert' WHERE EXISTS (SELECT 1 FROM issues WHERE id = old.issue_id);
+  END;
+
+  CREATE TRIGGER IF NOT EXISTS trg_checks_changes_ins AFTER INSERT ON checks BEGIN
+    INSERT INTO issue_changes (issue_id, kind) VALUES (new.issue_id, 'upsert');
+  END;
+  CREATE TRIGGER IF NOT EXISTS trg_checks_changes_del AFTER DELETE ON checks BEGIN
+    INSERT INTO issue_changes (issue_id, kind)
+      SELECT old.issue_id, 'upsert' WHERE EXISTS (SELECT 1 FROM issues WHERE id = old.issue_id);
+  END;
+
   CREATE TABLE IF NOT EXISTS api_tokens (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     actor_id INTEGER NOT NULL REFERENCES actors(id) ON DELETE CASCADE,
@@ -238,6 +376,10 @@ def migrate (db : Conn) : IO Unit := do
   -- v14: sorting the issue list by deadline. Created here rather than in `schemaSql` because the
   -- column it indexes is one of the `ALTER`s above.
   try db.exec "CREATE INDEX IF NOT EXISTS idx_issues_deadline ON issues(deadline, id)" catch _ => pure ()
+  -- v15: the `issue_changes` log and the triggers that write it, both in `schemaSql` above. An
+  -- existing database gets them empty, which is the right starting point rather than a gap: a
+  -- client with no cursor does a full read anyway, and one carrying a cursor from before the log
+  -- existed is told to start over (see `changesSince`).
   let rows ← (← db query!"SELECT version FROM schema_version LIMIT 1" as VersionRow).toArray
   if rows.isEmpty then
     db exec!"INSERT INTO schema_version (version) VALUES ({schemaVersion})"

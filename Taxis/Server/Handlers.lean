@@ -176,6 +176,52 @@ def issuePageH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
     ("total", match page.total with | some t => toJson t | none => Json.null),
     ("stateCounts", match page.stateCounts with | some c => toJson c | none => Json.null)])
 
+/-! ## The change feed -/
+
+/-- One entry. `issue` is `null` for "you no longer hold this" — deleted, or no longer visible to
+    you, which to a client keeping a copy is the same instruction. The absence of a row *is* the
+    instruction, so no separate flag says it twice. -/
+private def changeToJson (c : Db.IssueChange) : Json :=
+  Json.mkObj [
+    ("seq", toJson c.seq),
+    ("id", toJson c.id),
+    ("issue", match c.row with | some r => toJson r | none => Json.null)]
+
+/-- Log rows one request will resolve. Bounded because coalescing them means loading the issues
+    they name; a client that is far behind pages, which is what `more` is for. -/
+private def changesMaxLimit : Nat := 1000
+
+/--
+What has changed since a client last asked.
+
+The endpoint a replica follows instead of re-reading the tracker. Two shapes:
+
+- **Without `since`** it answers only with `upTo`: where the log is *now*. That is what a client
+  takes before reading the tracker in full, so that anything which changes while it reads is
+  replayed to it afterwards rather than falling between the two.
+- **With `since`** it answers with the issues that have changed, each carrying its current row —
+  or `null`, meaning drop it.
+
+`upTo` is the new cursor and is exhaustive: every change at or below it is accounted for in
+`changes`. `more` means the page was capped, not that the client should wait. `reset` means the
+cursor is older than the retained log, and the honest answer is to read the tracker again.
+-/
+def changesH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
+  let limit := min changesMaxLimit ((req.query "limit").bind (·.toNat?) |>.getD 500)
+  match (req.query "since").bind (·.toInt?) with
+  | none =>
+    let head ← ctx.readM Db.changesHead
+    ok (Json.mkObj [("changes", Json.arr #[]), ("upTo", toJson head),
+                    ("reset", Json.bool false), ("more", Json.bool false)])
+  | some since =>
+    let page ← ctx.readM (fun db =>
+      Db.changesSince db (Int64.ofInt since) (req.actor.map (·.groups)) limit)
+    ok (Json.mkObj [
+      ("changes", Json.arr (page.changes.map changeToJson)),
+      ("upTo", toJson page.upTo),
+      ("reset", Json.bool page.reset),
+      ("more", Json.bool page.more)])
+
 /-- The default and maximum number of matches a search of the index returns. A picker shows a
     dozen rows and nobody scrolls a thousand; past this the answer is "type more", not "send
     more". -/
@@ -967,6 +1013,8 @@ def dispatch (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
   | .get, ["labels", id] => getLabelH ctx (← Req.parseId id)
   | .patch, ["labels", id] => updateLabelH ctx (← Req.parseId id) req
   | .delete, ["labels", id] => deleteLabelH ctx (← Req.parseId id)
+
+  | .get, ["changes"] => changesH ctx req
 
   | .get, ["issues"] => listIssuesH ctx req
   | .post, ["issues"] => createIssueH ctx req

@@ -130,6 +130,13 @@ private def paths : Json := obj [
     [("200", jsonResp "OpenAPI spec" (typ "object"))])]),
   ("/plugins", obj [("get", operation "System" "List registered artifact and check kinds" [] none
     [("200", jsonResp "Plugin kinds" (ref "Plugins"))])]),
+  ("/changes", obj [("get", operation "Issues"
+    "Issues changed since a cursor, for a client keeping a local copy. Without `since`, answers only with `upTo` \u2014 where the log is now, to be taken before reading the tracker in full. With `since`, each entry carries the issue's current list row, or `null` meaning drop it (deleted, or no longer visible to you). `upTo` is the next cursor and is exhaustive; `more` means the page was capped; `reset` means the cursor predates the retained log and the tracker should be read again."
+    [queryParam "since" "The `upTo` from the previous call. Omit to ask only where the log is.",
+     queryParam "limit" "Log rows to resolve, default 500, maximum 1000"] none
+    [("200", jsonResp "Changes" (schemaObj [
+      ("changes", arrayOf (schemaObj [("seq", typ "integer"), ("id", typ "integer"), ("issue", nullable "object")])),
+      ("upTo", typ "integer"), ("reset", typ "boolean"), ("more", typ "boolean")]))])]),
   ("/graph", obj [("get", operation "Issues" "Every visible issue as a graph node, carrying both edge relations (dependencies and parent)" [] none
     [("200", jsonResp "Graph" (ref "Graph"))])]),
   ("/repo-graph", obj [("get", operation "Repositories" "Dependency graph of attached repositories"

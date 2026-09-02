@@ -211,28 +211,41 @@ private def setParent (db : Conn) (child : IssueId) (parent : Option IssueId) : 
   | none => pure ()
   db exec!"UPDATE issues SET parent_id = {parent} WHERE id = {child}"
 
+/-- Bring one issue's rows in a relation table to exactly `wanted`, touching only what differs.
+
+    A diff rather than the obvious "delete them all, insert the set", because these tables are what
+    the change log in `Changes.lean` is written from. A wholesale rewrite files a change for every
+    row on every save even when nothing moved — and for `issue_visibility` it is worse than noisy:
+    between the delete and the insert the issue has no visibility rows at all, which is the
+    encoding for *public*, and a log written by triggers records that moment faithfully. Deleting
+    only what is unwanted never passes through it, and `INSERT OR IGNORE` over a row that is
+    already there inserts nothing, so it fires nothing.
+
+    The values are `Int64`s that arrived as ids, and the table and column are constants of this
+    module, so both are interpolated rather than bound — the same rule the list query follows. -/
+private def syncRelation (db : Conn) (table col : String) (issue : IssueId)
+    (wanted : Array Int64) : IO Unit := do
+  if wanted.isEmpty then
+    db.exec s!"DELETE FROM {table} WHERE issue_id = {issue.val}"
+  else
+    db.exec s!"DELETE FROM {table} WHERE issue_id = {issue.val} AND {col} NOT IN {idTuple wanted}"
+    for v in wanted do
+      db.exec s!"INSERT OR IGNORE INTO {table} (issue_id, {col}) VALUES ({issue.val}, {v})"
+
 /-- Replace the dependency set of `issue`. Self-dependencies are dropped; no acyclicity is
     imposed (the dependency graph may contain cycles). -/
-private def setDependencies (db : Conn) (issue : IssueId) (deps : Array IssueId) : IO Unit := do
-  db exec!"DELETE FROM issue_dependencies WHERE issue_id = {issue}"
-  for d in deps do
-    if d.val != issue.val then
-      db exec!"INSERT OR IGNORE INTO issue_dependencies (issue_id, depends_on_id) VALUES ({issue}, {d})"
+private def setDependencies (db : Conn) (issue : IssueId) (deps : Array IssueId) : IO Unit :=
+  syncRelation db "issue_dependencies" "depends_on_id" issue
+    ((deps.filter (·.val != issue.val)).map (·.val))
 
-private def setAssignees (db : Conn) (issue : IssueId) (actors : Array ActorId) : IO Unit := do
-  db exec!"DELETE FROM issue_assignees WHERE issue_id = {issue}"
-  for a in actors do
-    db exec!"INSERT OR IGNORE INTO issue_assignees (issue_id, actor_id) VALUES ({issue}, {a})"
+private def setAssignees (db : Conn) (issue : IssueId) (actors : Array ActorId) : IO Unit :=
+  syncRelation db "issue_assignees" "actor_id" issue (actors.map (·.val))
 
-private def setVisibility (db : Conn) (issue : IssueId) (groups : Array GroupId) : IO Unit := do
-  db exec!"DELETE FROM issue_visibility WHERE issue_id = {issue}"
-  for g in groups do
-    db exec!"INSERT OR IGNORE INTO issue_visibility (issue_id, group_id) VALUES ({issue}, {g})"
+private def setVisibility (db : Conn) (issue : IssueId) (groups : Array GroupId) : IO Unit :=
+  syncRelation db "issue_visibility" "group_id" issue (groups.map (·.val))
 
-private def setLabels (db : Conn) (issue : IssueId) (labels : Array LabelId) : IO Unit := do
-  db exec!"DELETE FROM issue_labels WHERE issue_id = {issue}"
-  for l in labels do
-    db exec!"INSERT OR IGNORE INTO issue_labels (issue_id, label_id) VALUES ({issue}, {l})"
+private def setLabels (db : Conn) (issue : IssueId) (labels : Array LabelId) : IO Unit :=
+  syncRelation db "issue_labels" "label_id" issue (labels.map (·.val))
 
 /-- Fetch an issue by id, with all relations loaded. -/
 def getIssue (db : Conn) (id : IssueId) : IO (Option Issue) := do
@@ -414,6 +427,38 @@ private def orderSql : IssueSort → String
   | .deadline => "i.deadline IS NULL, i.deadline ASC, i.id ASC"
   | .id => "i.id DESC"
 
+/-- Assemble a list row from a base row and the bulk-loaded relations. -/
+private def toListRow (idx : RelationIndex) (r : ListRowBase) : IssueListRow :=
+  let rel (m : Std.HashMap Int64 (Array Int64)) : Array Int64 := m.getD r.id.val #[]
+  { id := r.id, title := r.title, state := r.state, locked := r.locked, parent := r.parent,
+    deadline := r.deadline, updatedAt := r.updatedAt,
+    labels := (rel idx.labels).map (⟨·⟩),
+    assignees := (rel idx.assignees).map (⟨·⟩),
+    dependencies := (rel idx.dependencies).map (⟨·⟩),
+    artifactCount := r.artifactCount.toNatClampNeg, checkCount := r.checkCount.toNatClampNeg,
+    childCount := r.childCount.toNatClampNeg }
+
+/-- The columns a list row is built from. Shared so the list and the change feed cannot drift into
+    reading different things and calling both an `IssueListRow`. -/
+private def listRowSelect : String :=
+  "SELECT i.id, i.title, i.state, i.locked, i.parent_id, i.deadline, i.updated_at,
+     (SELECT COUNT(*) FROM artifacts a WHERE a.issue_id = i.id),
+     (SELECT COUNT(*) FROM checks c WHERE c.issue_id = i.id),
+     (SELECT COUNT(*) FROM issues ch WHERE ch.parent_id = i.id)
+   FROM issues i "
+
+/-- List rows for a named set of ids, each with the visibility groups that decide who may see it.
+
+    For the change feed, which is handed ids by the log rather than a filter to search by — and
+    which needs the visibility alongside the row, because it has to answer "is this still yours to
+    see?" and not only "what does it say now?". Ids with no row are simply absent from the result,
+    which is how the feed learns an issue is gone. -/
+def listRowsByIds (db : Conn) (ids : Array IssueId) : IO (Array (IssueListRow × Array GroupId)) := do
+  if ids.isEmpty then return #[]
+  let base ← queryAll db ListRowBase (listRowSelect ++ s!" WHERE i.id IN {idTuple (ids.map (·.val))}")
+  let idx ← loadRelationIndex db (base.map (·.id.val))
+  pure (base.map fun r => (toListRow idx r, (idx.visibility.getD r.id.val #[]).map (⟨·⟩)))
+
 /-- Read one page of the issue list.
 
     `cursor` resumes after a previous page and belongs to the default order; the client sends it
@@ -457,25 +502,13 @@ def listIssuePage (db : Conn) (state : Option IssueState) (labelId : Option Labe
     SQLite.NullableQueryParam.bind stmt 5 (parent.map (·.val))
 
   let stmt ← SQLite.prepare db (
-    "SELECT i.id, i.title, i.state, i.locked, i.parent_id, i.deadline, i.updated_at,
-       (SELECT COUNT(*) FROM artifacts a WHERE a.issue_id = i.id),
-       (SELECT COUNT(*) FROM checks c WHERE c.issue_id = i.id),
-       (SELECT COUNT(*) FROM issues ch WHERE ch.parent_id = i.id)
-     FROM issues i " ++ whereSql ++ cursorSql ++
+    listRowSelect ++ whereSql ++ cursorSql ++
     s!" ORDER BY {orderSql sort} LIMIT {Int64.ofNat limit}" ++ offsetSql)
   bindFilters stmt
   let base ← (stmt.resultsAs ListRowBase).toArray
 
   let idx ← loadRelationIndex db (base.map (·.id.val))
-  let rows := base.map fun r =>
-    let rel (m : Std.HashMap Int64 (Array Int64)) : Array Int64 := m.getD r.id.val #[]
-    ({ id := r.id, title := r.title, state := r.state, locked := r.locked, parent := r.parent,
-       deadline := r.deadline, updatedAt := r.updatedAt,
-       labels := (rel idx.labels).map (⟨·⟩),
-       assignees := (rel idx.assignees).map (⟨·⟩),
-       dependencies := (rel idx.dependencies).map (⟨·⟩),
-       artifactCount := r.artifactCount.toNatClampNeg, checkCount := r.checkCount.toNatClampNeg,
-       childCount := r.childCount.toNatClampNeg } : IssueListRow)
+  let rows := base.map (toListRow idx)
 
   -- A short page is the end of the result set. A full one may or may not be; saying "there may be
   -- more" costs at worst one empty request, where being certain would cost a count on every page.

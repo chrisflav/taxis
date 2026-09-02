@@ -8,6 +8,7 @@ import Taxis.Db.Checks
 import Taxis.Db.Notifications
 import Taxis.Db.ReviewRequests
 import Taxis.Db.Issues
+import Taxis.Db.Changes
 import Taxis.Db.Comments
 import Taxis.Db.Events
 import Taxis.Db.Sessions
