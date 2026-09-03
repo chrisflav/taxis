@@ -10,6 +10,7 @@ import {
   loadStoredViewState, VIEW_STATE_STORAGE_KEY, type IssueFilterState,
 } from "../filters";
 import { useOfflineState } from "../offline";
+import { NARROW_MAX_PX, useNarrow } from "../viewport";
 import { useIssueFeed } from "../useIssueFeed";
 import { learnIssueNames } from "../issueNames";
 import { PageHeader } from "./PageHeader";
@@ -53,14 +54,24 @@ const DEFAULT_COLUMNS: Columns = {
   id: true, title: true, state: true, labels: true, deps: true, updated: true,
   parent: false, assignees: false, artifacts: false, checks: false, deadline: false,
 };
+/** What a phone opens with. Six columns do not fit in four hundred points: the table ran off the
+ *  right of the screen, so the last one was cut in half and the titles were squeezed into three
+ *  lines each to make room for counts nobody had asked to see. These four fit, and every one of
+ *  them is still one tap away from the rest through the column picker. */
+const NARROW_COLUMNS: Columns = {
+  ...DEFAULT_COLUMNS, deps: false, updated: false,
+};
 const COLUMNS_STORAGE_KEY = "taxis:issue-list-columns";
 
 function loadColumns(): Columns {
+  const base = window.matchMedia?.(`(max-width: ${NARROW_MAX_PX}px)`).matches
+    ? NARROW_COLUMNS
+    : DEFAULT_COLUMNS;
   try {
     const raw = localStorage.getItem(COLUMNS_STORAGE_KEY);
-    if (raw) return { ...DEFAULT_COLUMNS, ...JSON.parse(raw) };
+    if (raw) return { ...base, ...JSON.parse(raw) };
   } catch { /* ignore malformed storage */ }
-  return { ...DEFAULT_COLUMNS };
+  return { ...base };
 }
 
 // A small "Columns ▾" popover for toggling which columns are shown.
@@ -150,10 +161,10 @@ const IssueRowView = memo(function IssueRowView({
         </td>
       )}
       {cols.id && <td className="cell-id">{issue.id}</td>}
-      {cols.title && <td><Markdown text={issue.title} inline /> {issue.locked && <LockedMark />}</td>}
-      {cols.state && <td><StateBadge state={issue.state} /></td>}
+      {cols.title && <td className="cell-title"><Markdown text={issue.title} inline /> {issue.locked && <LockedMark />}</td>}
+      {cols.state && <td className="cell-state"><StateBadge state={issue.state} /></td>}
       {cols.labels && (
-        <td>{issue.labels.map((l) => { const lbl = labelById.get(l); return lbl ? <LabelChip key={l} label={lbl} /> : null; })}</td>
+        <td className="cell-labels">{issue.labels.map((l) => { const lbl = labelById.get(l); return lbl ? <LabelChip key={l} label={lbl} /> : null; })}</td>
       )}
       {cols.parent && (
         <td className="muted small">
@@ -234,6 +245,7 @@ export function IssueList({ me }: { me: Actor | null }) {
   const actorsRes = useResource<Actor[]>(paths.actors, api.listActors, REFERENCE_MAX_AGE);
 
   const { offline } = useOfflineState();
+  const narrow = useNarrow();
 
   const issues = feed.rows;
   const labels = labelsRes.data ?? EMPTY;
@@ -364,13 +376,38 @@ export function IssueList({ me }: { me: Actor | null }) {
           : "Everything you can see, as a flat list or as the containment tree."}
         actions={
           <>
+            {/* A phone draws rows as cards without a header, so the sort that lives in the column
+                headers has nowhere to be. Here instead, and only there — on a wide screen the
+                headers are the control and a second one beside them would be a second answer to
+                the same question. */}
+            {narrow && effectiveView === "list" && (
+              <select
+                className="sort-select"
+                aria-label="Sort issues"
+                value={`${sort.key}:${sort.dir}`}
+                onChange={(e) => {
+                  const [key, dir] = e.target.value.split(":") as [SortKey, "asc" | "desc"];
+                  setSort({ key, dir });
+                }}
+              >
+                <option value="id:desc">Newest first</option>
+                <option value="id:asc">Oldest first</option>
+                <option value="updated:desc">Recently updated</option>
+                <option value="title:asc">Title A–Z</option>
+                <option value="deadline:asc">Deadline</option>
+                <option value="deps:desc">Most dependencies</option>
+              </select>
+            )}
             {canTree && (
               <div className="segmented">
                 <button className={view === "list" ? "active" : ""} onClick={() => setView("list")}>List</button>
                 <button className={view === "tree" ? "active" : ""} onClick={() => setView("tree")}>Tree</button>
               </div>
             )}
-            {effectiveView === "list" && <ColumnPicker cols={cols} onChange={setCols} />}
+            {/* Not on a phone, where a row is a card rather than a set of columns — "which columns"
+                stops being the question the control answers. The sort beside it is the one that
+                still is. */}
+            {effectiveView === "list" && !narrow && <ColumnPicker cols={cols} onChange={setCols} />}
             {me && <button className="primary" onClick={() => setCreating(true)}>+ New issue</button>}
           </>
         }
@@ -405,7 +442,10 @@ export function IssueList({ me }: { me: Actor | null }) {
       )}
       {/* What is actually in hand. A list that stopped at the cap looks exactly like a list that
           reached the end, and the difference decides whether searching it is conclusive. */}
-      {(feed.streaming || feed.searching || (!feed.complete && !feed.loading)) && (
+      {/* Only where there is a feed to describe. The tree reads its own levels and holds the feed
+          at rest, so in that view this was reporting on nothing — "showing the 0 most recently
+          updated of 0", under a tree full of issues. */}
+      {effectiveView === "list" && (feed.streaming || feed.searching || (!feed.complete && !feed.loading)) && (
         <div className="feed-status small muted" role="status">
           {feed.searching
             ? "Searching the rest of the tracker…"

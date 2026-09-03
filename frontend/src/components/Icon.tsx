@@ -78,6 +78,49 @@ export function MoonIcon(p: IconProps) {
 }
 
 /** A lock beside an issue's title or row, marking it as frozen for editing. */
+/*
+ * The four destinations in the bar. Only drawn on a phone, where the bar sits at the bottom of the
+ * screen and a word alone under a thumb is a smaller target than it looks; on a wide screen the
+ * bar is text, as it has always been.
+ */
+
+export function IssuesIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="M4.5 6.5h15M4.5 12h15M4.5 17.5h9" />
+    </Svg>
+  );
+}
+
+export function GraphIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <circle cx="12" cy="5.2" r="2.6" />
+      <circle cx="5.6" cy="18.2" r="2.6" />
+      <circle cx="18.4" cy="18.2" r="2.6" />
+      <path d="M10.7 7.5 6.9 15.8M13.3 7.5l3.8 8.3" />
+    </Svg>
+  );
+}
+
+export function ReposIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="M4.8 5.6a2 2 0 0 1 2-2h10.4a2 2 0 0 1 2 2v14.8H6.8a2 2 0 0 1-2-2Z" />
+      <path d="M6.8 16.4h12.4" />
+    </Svg>
+  );
+}
+
+export function LabelsIcon(p: IconProps) {
+  return (
+    <Svg {...p}>
+      <path d="M3.8 11.3V5.2a1.4 1.4 0 0 1 1.4-1.4h6.1a1.4 1.4 0 0 1 1 .4l7.5 7.5a1.4 1.4 0 0 1 0 2l-6.1 6.1a1.4 1.4 0 0 1-2 0L4.2 12.3a1.4 1.4 0 0 1-.4-1Z" />
+      <path d="M8.2 8.2h.01" />
+    </Svg>
+  );
+}
+
 export function LockedMark({ size = 13 }: IconProps) {
   return (
     <span className="locked-mark" title="Locked for editing" role="img" aria-label="Locked">

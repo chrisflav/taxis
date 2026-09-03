@@ -7,6 +7,7 @@ import { api, paths } from "../api";
 import { EMPTY, LIST_MAX_AGE, REFERENCE_MAX_AGE, useResource } from "../cache";
 import { mirrorGraph } from "../mirror";
 import { useLocalFirst, useMirrorRevision } from "../useMirror";
+import { NARROW_MAX_PX, useNarrow } from "../viewport";
 import { emptyFilters, filtersFromParams, filtersToParams, matchesFilters, type IssueFilterState } from "../filters";
 import { learnIssueNames } from "../issueNames";
 import { Filters } from "./Filters";
@@ -57,7 +58,14 @@ export function GraphView() {
   // `direction` (there is no up/down to a circle), which is why the Down/Right control is hidden for
   // it. Kept separate from `direction` so switching back to layered restores the last direction.
   const [shape, setShape] = useState<"layered" | "radial">("layered");
-  const [direction, setDirection] = useState<GraphDirection>("down");
+  // Generations run down the screen on a wide one and across it on a narrow one, which is the
+  // opposite of what it sounds like: "down" puts each generation in a *row*, so a tracker whose
+  // issues mostly have no dependencies becomes one row twenty-five wide and fit-to-view lands at
+  // nine per cent. "Right" makes them columns — tall and narrow, which is the shape a phone is and
+  // the direction it already scrolls.
+  const [direction, setDirection] = useState<GraphDirection>(
+    () => (window.matchMedia?.(`(max-width: ${NARROW_MAX_PX}px)`).matches ? "right" : "down"),
+  );
   const canvasDirection: GraphDirection = shape === "radial" ? "radial" : direction;
   const [genFilter, setGenFilter] = useState<number[]>([]);
   const [showLabels, setShowLabels] = useState(false);
@@ -74,6 +82,8 @@ export function GraphView() {
   // the device — which is what lets it be drawn at once and with no connection, over the whole
   // tracker rather than whatever was last cached. `useResource` is passed a null key in that case,
   // which is how it is told to fetch nothing.
+  const narrow = useNarrow();
+  const [showOptions, setShowOptions] = useState(false);
   const local = useLocalFirst();
   const revision = useMirrorRevision();
   const [fromDevice, setFromDevice] = useState<GraphData | null>(null);
@@ -162,7 +172,24 @@ export function GraphView() {
     <div>
       <PageHeader {...PAGE_META.graph} />
       <Filters value={filters} onChange={setFilters} labels={labels} actors={actors} />
-      <div className="row" style={{ marginBottom: 12, justifyContent: "space-between" }}>
+      {/* How the graph is drawn — a second block of controls, and on a phone it was doing to the
+          canvas exactly what the filter block was doing to the list: four rows of options between
+          the reader and the thing they came to look at. Same answer, one button. */}
+      {narrow && (
+        <button
+          type="button"
+          className="graph-options-toggle"
+          aria-expanded={showOptions}
+          onClick={() => setShowOptions((o) => !o)}
+        >
+          {layoutMode === "dependencies" ? "Dependencies" : "Hierarchy"} · {shape === "radial" ? "Radial" : "Layered"}
+          <span aria-hidden="true">{showOptions ? " ▴" : " ▾"}</span>
+        </button>
+      )}
+      <div
+        className="row graph-options"
+        style={{ marginBottom: 12, justifyContent: "space-between", display: narrow && !showOptions ? "none" : undefined }}
+      >
         <div className="row">
           <div className="segmented">
             <button className={layoutMode === "dependencies" ? "active" : ""} onClick={() => setLayoutMode("dependencies")}>

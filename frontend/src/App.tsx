@@ -5,6 +5,7 @@ import { cachedGet, invalidateCache } from "./cache";
 import { setCurrentActor } from "./offline";
 import { setSyncActor } from "./sync";
 import { activeServer, isConfigured, isNativeApp } from "./server";
+import { GraphIcon, IssuesIcon, LabelsIcon, ReposIcon } from "./components/Icon";
 import { IssueList } from "./components/IssueList";
 import { LoginBar } from "./components/Login";
 import { NotificationBell } from "./components/NotificationBell";
@@ -203,12 +204,28 @@ export function App() {
           {/* Every destination in the bar is a view of a tracker, so until the packaged app has one
               the bar carries the wordmark and the theme toggle and nothing else — four links that
               would each land on the same "connect first" screen are four ways of not saying it. */}
+          {/* On a phone this same element is the bar across the bottom of the screen — a change of
+              position and nothing else, so there is one navigation in the markup rather than two
+              that have to be kept saying the same thing. The icons are drawn either way and hidden
+              by the stylesheet on a wide screen, where the words are the target. */}
           {isConfigured() && (
             <nav aria-label="Main">
-              <a className={navClass("issues")} aria-current={navCurrent("issues")} href="#/issues">Issues</a>
-              <a className={navClass("graph")} aria-current={navCurrent("graph")} href="#/graph">Graph</a>
-              <a className={navClass("repos")} aria-current={navCurrent("repos")} href="#/repos">Repos</a>
-              <a className={navClass("labels")} aria-current={navCurrent("labels")} href="#/labels">Labels</a>
+              <a className={navClass("issues")} aria-current={navCurrent("issues")} href="#/issues">
+                <span className="nav-icon" aria-hidden="true"><IssuesIcon size={21} /></span>
+                <span className="nav-label">Issues</span>
+              </a>
+              <a className={navClass("graph")} aria-current={navCurrent("graph")} href="#/graph">
+                <span className="nav-icon" aria-hidden="true"><GraphIcon size={21} /></span>
+                <span className="nav-label">Graph</span>
+              </a>
+              <a className={navClass("repos")} aria-current={navCurrent("repos")} href="#/repos">
+                <span className="nav-icon" aria-hidden="true"><ReposIcon size={21} /></span>
+                <span className="nav-label">Repos</span>
+              </a>
+              <a className={navClass("labels")} aria-current={navCurrent("labels")} href="#/labels">
+                <span className="nav-icon" aria-hidden="true"><LabelsIcon size={21} /></span>
+                <span className="nav-label">Labels</span>
+              </a>
             </nav>
           )}
           <div className="spacer" />

@@ -691,15 +691,124 @@ th.sortable.active { color: var(--accent); }
   .issue-rail { position: static; }
 }
 @media (max-width: 720px) {
-  header.topbar { height: auto; }
-  .topbar-inner { flex-wrap: wrap; padding: 8px 12px; row-gap: 6px; gap: 12px; }
-  header.topbar nav { flex-wrap: wrap; }
-  .topbar-inner .spacer { flex-basis: 100%; height: 0; }
-  main { padding: 16px 12px 48px; }
+  /* The bar across the top used to wrap onto three rows — wordmark, then the four links, then the
+     account button — which is two hundred and sixty points of chrome before a single issue. It is
+     one row now, and the links moved to the bottom of the screen where a thumb already is. */
+  header.topbar {
+    height: 52px;
+    /* Dropped, and not for looks: a backdrop filter makes the element a containing block, and the
+       navigation below is `position: fixed` — inside one it would resolve against this bar rather
+       than the viewport and sit under the wordmark instead of at the foot of the screen. Behind a
+       52-point strip the blur was never doing much anyway. */
+    backdrop-filter: none;
+    background: var(--panel);
+  }
+  .topbar-inner { padding: 0 12px; gap: 8px; align-items: center; min-width: 0; }
+  .topbar-inner .wordmark span { display: none; }
+  .server-tag { max-width: 38vw; }
+
+  header.topbar nav {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
+    display: flex; gap: 0;
+    background: var(--panel);
+    border-top: 1px solid var(--border);
+    /* Clears the home indicator on a phone that has one, and collapses to nothing on one that
+       does not. */
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  header.topbar nav a {
+    flex: 1 1 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 2px; padding: 7px 2px 6px; border-radius: 0; font-size: 11px; line-height: 1.2;
+    color: var(--muted); background: none;
+  }
+  header.topbar nav a.active { color: var(--accent); background: none; }
+  header.topbar nav a.active .nav-icon { transform: translateY(-1px); }
+  header.topbar nav .nav-icon { display: block; }
+  /* The bar is fixed, so the page needs room to scroll past it. */
+  main { padding: 12px 12px calc(76px + env(safe-area-inset-bottom, 0px)); }
+
   th { position: static; }
+
+  /* An issue is a card, not a table row.
+     Four columns still leave the title about a hundred and thirty points wide, which turns every
+     one of them into three or four lines and reads as a spreadsheet that will not fit. Laid out
+     this way the title gets the full width on the first line and everything that classifies it —
+     the number, the state, the labels — sits under it in one quieter line. The column headers go
+     with the layout, so the sort they carried moves to a control in the page header. */
+  .panel:has(> table) { overflow-x: visible; }
+  .panel > table, .panel > table > tbody { display: block; }
+  .panel > table > thead { display: none; }
+  /* The same shape the child rows in the issue rail already use: the number stays with the title,
+     and everything that classifies the row drops to the line below it, together. */
+  .panel > table > tbody > tr {
+    display: flex; flex-wrap: wrap; align-items: center;
+    column-gap: 8px; row-gap: 7px;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .panel > table > tbody > tr:last-child { border-bottom: none; }
+  .panel > table > tbody > tr > td { display: block; border: none; padding: 0; }
+  /* `width: 1%` is what keeps this column as narrow as its digits in a table; in a flex row it
+     collapses the box to nothing and the number ends up printed under the title. */
+  .panel > table > tbody > tr > td.cell-id {
+    width: auto; flex: 0 0 auto; min-width: 26px; align-self: flex-start; padding-top: 2px;
+  }
+  /* Wide enough to take the rest of the first line, so the badges start a line of their own — and
+     stated as the flex *basis* rather than a minimum width. Flex breaks lines on an item's
+     hypothetical size, before any shrinking, so a long title measured at its natural width did not
+     fit beside the number and dropped to a line of its own, leaving the number stranded above it. */
+  .panel > table > tbody > tr > td.cell-title {
+    flex: 1 1 calc(100% - 46px); min-width: 0; font-weight: 500; line-height: 1.35;
+  }
+  .panel > table > tbody > tr > td.cell-labels { display: flex; flex-wrap: wrap; gap: 4px; }
+  .panel > table > tbody > tr > td.cell-num { text-align: left; }
+
+  .sort-select { max-width: 46vw; }
+
+  /* The tree gets the same shape as the list: the toggle and the title take the line, and the
+     badges that classify the row sit under it rather than squeezing the title into three. */
+  .tree-row { flex-wrap: wrap; row-gap: 6px; padding: 10px 4px; }
+  .tree-title { flex: 1 1 calc(100% - 30px); min-width: 0; }
+  /* No indent under the toggle: the row already carries its depth as padding, so the badge line
+     lines up with its level without one — and indenting every badge rather than the first put a
+     thirty-point gap between each of them. */
+
+  /* The graph's own options, behind one button that says what is currently chosen. */
+  .graph-options-toggle { width: 100%; justify-content: center; margin-bottom: 10px; }
+  .graph-options { flex-wrap: wrap; row-gap: 8px; }
+  /* "Scroll to zoom, drag to pan" is mouse vocabulary, and two lines of it above a canvas that has
+     to fit in a hand is two lines the canvas does not get. Pinching a map is not a thing anyone
+     needs telling. */
+  .canvas-legend { display: none; }
+  .graph-viewport { height: 68vh; }
+
+  /* A page opens with its title, not with a paragraph about itself. The description is read once
+     and then in the way on every visit after it; on a wide screen there is room for both. */
+  .page-header { margin-bottom: 12px; }
+  .page-header h2 { font-size: 22px; }
+  .page-description { display: none; }
+  /* The title takes the line, the controls take the next one. Side by side they wrapped at some
+     unpredictable point in the middle of the group, which is what made a two-control toolbar look
+     like an accident. */
+  .page-header-top { flex-direction: column; align-items: stretch; gap: 10px; }
+  .page-header-top > .row { flex-wrap: nowrap; gap: 8px; }
+  .page-header-top > .row > * { min-width: 0; }
+
+  /* One row: the search box, and how many other filters are set. */
+  .filters-block { padding: 8px; }
+  .filters-bar { display: flex; gap: 8px; align-items: center; }
+  .filters-search { flex: 1 1 auto; min-width: 0; margin: 0; }
+  .filters-toggle { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; }
+  .filters-toggle.has-active { border-color: var(--accent); color: var(--accent); }
+  .filters-count {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
+    background: var(--accent); color: var(--accent-fg); font-size: 11px; font-weight: 600;
+  }
+  .filters-clear { align-self: flex-start; margin-top: 6px; }
+  .filters-block .filters { margin-top: 10px; }
   .filters { grid-template-columns: 1fr; gap: 8px; }
   .filters > div:first-child { grid-column: span 1; }
-  .panel:has(> table) { overflow-x: auto; }
   .issue-title { font-size: 19px; }
   .rail-actions { flex-direction: row; flex-wrap: wrap; }
   .rail-actions button { width: auto; flex: 1 1 auto; }
@@ -711,6 +820,9 @@ th.sortable.active { color: var(--accent); }
   .child-state { min-width: 0; text-align: left; }
   .graph-viewport { height: 60vh; }
 }
+
+/* The navigation is words on a wide screen; the icons are only drawn under a thumb. */
+.nav-icon { display: none; }
 
 /* Account control: one fixed-width button, everything of yours behind it. */
 .account { position: relative; }
