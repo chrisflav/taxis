@@ -42,6 +42,25 @@ export interface Check {
   lastRun: number | null;
 }
 
+/** A source repository, as the API names one: enough to name it and to build a link into the forge
+    it lives on. */
+export interface RepoRef {
+  host: string;
+  owner: string;
+  name: string;
+  /** The repository's own page, `https://host/owner/name` — not whatever URL the artifact it was
+      read off happened to be written as. */
+  url: string;
+}
+
+/** Which repository an issue is about, as `GET /issues/repos` answers: the one named by one of its
+    own artifacts, or by the nearest visible ancestor that names one. `repo` is null when nothing
+    up the chain names one. */
+export interface IssueRepo {
+  issue: number;
+  repo: RepoRef | null;
+}
+
 /** An issue reduced to what it takes to name it: returned by `GET /issues/index` and used for
     breadcrumb chains and issue pickers, which would otherwise force a view to hold every issue. */
 export interface IssueIndexEntry {

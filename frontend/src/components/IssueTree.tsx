@@ -119,7 +119,7 @@ function TreeNode({
         ) : (
           <span className="tree-toggle-spacer" />
         )}
-        <a href={`#/issues/${issue.id}`} className="tree-title">#{issue.id} <Markdown text={issue.title} inline /></a>
+        <a href={`#/issues/${issue.id}`} className="tree-title">#{issue.id} <Markdown text={issue.title} inline issue={issue.id} /></a>
         {issue.locked && <LockedMark />}
         <span className={`badge ${issue.state}`}>{issue.state}</span>
         {issue.labels.map((l) => { const lbl = labelOf(l); return lbl ? <LabelChip key={l} label={lbl} /> : null; })}

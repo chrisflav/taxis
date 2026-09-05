@@ -123,12 +123,15 @@ function FileUpload({ onUploaded, onError }: {
 // plain `text` field is an opaque string and writing it blind costs nothing; a markdown field is
 // prose that gets *displayed*, and writing it blind means finding out how it reads only after it
 // is attached. The preview is also the honest place to discover that a `$…$` did not parse.
-function MarkdownField({ value, placeholder, help, onChange }: {
+function MarkdownField({ value, placeholder, help, issue, onChange }: {
   value: string;
   placeholder: string;
   /** The field's own `help`, rendered here rather than by the caller so that it lands above the
       syntax hint instead of stacking a second grey line underneath it. */
   help: string | null;
+  /** The issue the payload will hang off, so the preview resolves a `PR#123` against the same
+      repository the attached artifact will. */
+  issue?: number;
   onChange: (v: string) => void;
 }) {
   const [preview, setPreview] = useState(false);
@@ -143,7 +146,7 @@ function MarkdownField({ value, placeholder, help, onChange }: {
       {preview ? (
         <div className="md-field-preview">
           {value.trim()
-            ? <Markdown text={value} />
+            ? <Markdown text={value} issue={issue} />
             : <span className="rail-empty">Nothing to preview yet.</span>}
         </div>
       ) : (
@@ -161,7 +164,8 @@ function MarkdownField({ value, placeholder, help, onChange }: {
       )}
       <div className="muted small">
         {help && <>{help}<br /></>}
-        Markdown and LaTeX math (KaTeX, e.g. <code>$x^2$</code>) supported. Type <code>#</code> to link another issue.
+        Markdown and LaTeX math (KaTeX, e.g. <code>$x^2$</code>) supported. Type <code>#</code> to link another
+        issue, or write <code>PR#12</code> to link a pull request on this issue's repository.
       </div>
     </div>
   );
@@ -174,11 +178,13 @@ function MarkdownField({ value, placeholder, help, onChange }: {
 // kind is what selects the schema the payload is written against, so changing it would leave the
 // values describing nothing. Swapping kind is a remove and an attach.
 export function AttachModal({
-  title, kinds, existing, onClose, onSubmit, onDone,
+  title, kinds, existing, issue, onClose, onSubmit, onDone,
 }: {
   title: string;
   kinds: PluginKind[];
   existing?: { kind: string; value: unknown };
+  /** The issue being attached to. Only a `markdown` field uses it, and only for its preview. */
+  issue?: number;
   onClose: () => void;
   onSubmit: (kind: string, value: unknown) => Promise<unknown>;
   onDone: () => void;
@@ -270,7 +276,7 @@ export function AttachModal({
             {f.type === "boolean" ? (
               <input type="checkbox" checked={!!values[f.name]} onChange={(e) => setField(f.name, e.target.checked)} />
             ) : f.type === "markdown" ? (
-              <MarkdownField value={String(values[f.name] ?? "")} placeholder={f.placeholder ?? ""} help={f.help} onChange={(v) => setField(f.name, v)} />
+              <MarkdownField value={String(values[f.name] ?? "")} placeholder={f.placeholder ?? ""} help={f.help} issue={issue} onChange={(v) => setField(f.name, v)} />
             ) : f.type === "text" ? (
               <AutoTextarea value={String(values[f.name] ?? "")} placeholder={f.placeholder ?? ""} onChange={(e) => setField(f.name, e.target.value)} />
             ) : (

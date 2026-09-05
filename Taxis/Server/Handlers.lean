@@ -221,6 +221,36 @@ def issueIndexH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
   let entries ← ctx.readM (Db.listIssueIndex · (req.actor.map (·.groups)) ids q limit)
   ok (toJson entries)
 
+/-- A repository reference as a client needs it: enough to name it and to build a link into the
+    forge it lives on. The canonical id and the pinned revision are the dependency graph's
+    business, and are left out of an answer about what an issue is about.
+
+    `url` is the repository's own page (`RepoRef.webUrl`), not the URL the reference was written
+    as — that one is a pull request when the reference came off a `github-pr` artifact. -/
+private def repoRefJson (r : Repo.RepoRef) : Json :=
+  Json.mkObj [("host", r.host), ("owner", r.owner), ("name", r.name), ("url", r.webUrl)]
+
+/-- Which repository each of `?ids=1,2,3` is about: the one named by an artifact of the issue
+    itself, or — failing that — by an artifact of its nearest visible ancestor that names one
+    (`Repo.issueRepo?`).
+
+    Its own endpoint rather than a field on the issue: what needs it is prose, and only prose that
+    actually contains a reference scoped to a repository. A page whose text carries no `PR#123`
+    never asks, which is the same bargain `/issues/index` strikes for the names behind `#123`.
+
+    Ids naming an issue the reader may not see are simply absent from the answer, exactly as they
+    are from the naming index. -/
+def issueReposH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
+  let ids := ((((req.query "ids").getD "").splitOn ",").filterMap
+    (fun p => p.trimAscii.toString.toInt?)).toArray.map (fun n => (⟨Int64.ofInt n⟩ : IssueId))
+  let groups := req.actor.map (·.groups)
+  let entries ← ctx.readM fun db => do
+    let visible ← Db.listIssueIndex db groups (some ids)
+    visible.mapM fun e => do
+      let repo ← Repo.issueRepo? db e.id groups
+      pure (Json.mkObj [("issue", toJson e.id), ("repo", (repo.map repoRefJson).getD Json.null)])
+  ok (Json.arr entries)
+
 /-- A non-admin actor may only restrict visibility to groups they belong to. -/
 private def ensureVisibilityAllowed (actor : Actor) (vis : Array GroupId) : ApiM Unit := do
   unless actor.admin do
@@ -1049,10 +1079,11 @@ def dispatch (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
 
   | .get, ["issues"] => listIssuesH ctx req
   | .post, ["issues"] => createIssueH ctx req
-  -- Must precede the `["issues", id]` route: that pattern also matches "index" and "page", and
-  -- would then fail parsing them as an id rather than falling through to here.
+  -- Must precede the `["issues", id]` route: that pattern also matches "index", "page" and
+  -- "repos", and would then fail parsing them as an id rather than falling through to here.
   | .get, ["issues", "index"] => issueIndexH ctx req
   | .get, ["issues", "page"] => issuePageH ctx req
+  | .get, ["issues", "repos"] => issueReposH ctx req
   | .get, ["issues", id] => getIssueH ctx (← Req.parseId id) req.actor
   | .get, ["issues", id, "ancestors"] => issueAncestorsH ctx (← Req.parseId id) req.actor
   | .patch, ["issues", id] => updateIssueH ctx (← Req.parseId id) req

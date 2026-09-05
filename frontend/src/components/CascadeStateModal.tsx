@@ -83,7 +83,7 @@ export function CascadeStateModal({
           {open.map((c) => (
             <div key={c.id} className="child-row">
               <span className="child-id">#{c.id}</span>
-              <span className="child-title"><Markdown text={c.title} inline /></span>
+              <span className="child-title"><Markdown text={c.title} inline issue={c.id} /></span>
             </div>
           ))}
         </div>

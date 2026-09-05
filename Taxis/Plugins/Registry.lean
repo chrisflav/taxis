@@ -35,9 +35,10 @@ structure FieldSpec where
   help : Option String := none
 deriving Repr, Inhabited, ToJson
 
-/-- Handler for one artifact `kind`: validates payloads and summarises them. Both hooks run in
-    `IO` so a kind may consult runtime state — the `file` kind resolves its payload against the
-    file stores configured at startup, and mints a fresh presigned link on every render. -/
+/-- Handler for one artifact `kind`: validates payloads and summarises them. Validation and
+    rendering run in `IO` so a kind may consult runtime state — the `file` kind resolves its
+    payload against the file stores configured at startup, and mints a fresh presigned link on
+    every render. -/
 structure ArtifactHandler where
   kind : String
   /-- Input fields the payload is built from (drives the frontend form). -/
@@ -46,6 +47,15 @@ structure ArtifactHandler where
   validate : Json → IO (Except String Unit) := fun _ => pure (.ok ())
   /-- How to present the artifact: a label and an optional link. Lets each kind render itself. -/
   render : Json → IO ArtifactDisplay := fun j => pure { label := j.compress }
+  /-- The source repository this artifact names, if it names one. `none` by default, which is
+      the honest answer for the kinds that have nothing to do with repositories.
+
+      What it buys is that "which repository is this issue about?" is answerable without the core
+      knowing any particular kind: a `PR#123` written in an issue's prose resolves against the
+      repository named by the nearest artifact up the containment chain, whatever kind happens to
+      carry it (see `Taxis.Repo.issueRepo?`). A new kind that points at a repository joins in by
+      filling this in. -/
+  repo? : Json → Option Repo.RepoRef := fun _ => none
 
 /-- Handler for one check `kind`: validates config and evaluates the check. -/
 structure CheckHandler where

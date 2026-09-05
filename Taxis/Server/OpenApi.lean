@@ -19,6 +19,9 @@ private def ref (name : String) : Json := obj [("$ref", str s!"#/components/sche
 private def typ (t : String) : Json := obj [("type", str t)]
 private def nullable (t : String) : Json := obj [("type", str t), ("nullable", jtrue)]
 private def arrayOf (items : Json) : Json := obj [("type", str "array"), ("items", items)]
+/-- A `$ref` that may also be null. OpenAPI 3.0 cannot put `nullable` beside a `$ref`, so the
+    reference goes inside an `allOf` — the documented way to say this. -/
+private def nullableRef (name : String) : Json := obj [("nullable", jtrue), ("allOf", arr [ref name])]
 private def enumStr (vals : List String) : Json := obj [("type", str "string"), ("enum", arr (vals.map str))]
 
 private def schemaObj (fields : List (String × Json)) (required : List String := []) : Json :=
@@ -104,6 +107,10 @@ private def schemas : Json := obj [
   ("ApiTokenCreated", schemaObj [("token", ref "ApiToken"), ("secret", typ "string")]),
   ("IssueIndexEntry", schemaObj [("id", typ "integer"), ("title", typ "string"),
     ("parent", nullable "integer")]),
+  -- `url` is the repository page, `https://host/owner/name` — see `RepoRef.webUrl`.
+  ("RepoRef", schemaObj [("host", typ "string"), ("owner", typ "string"), ("name", typ "string"),
+    ("url", typ "string")]),
+  ("IssueRepo", schemaObj [("issue", typ "integer"), ("repo", nullableRef "RepoRef")]),
   ("SiblingNav", schemaObj [("position", typ "integer"), ("count", typ "integer"),
     ("prev", nullable "object"), ("next", nullable "object")]),
   ("IssueDetail", schemaObj [("issue", ref "Issue"), ("assignedActors", arrayOf (ref "Actor")),
@@ -217,6 +224,10 @@ private def paths : Json := obj [
        queryParam "q" "Search titles by substring, or an issue by its number (capped at 50 matches unless limit says otherwise)",
        queryParam "limit" "Maximum number of entries to return (at most 200 with a search)"]
       none [("200", jsonResp "Issue index" (arrayOf (ref "IssueIndexEntry")))])]),
+  ("/issues/repos", obj [
+    ("get", operation "Issues" "Which repository each of the named issues is about: the one an artifact of the issue names, or — failing that — the one named by an artifact of its nearest visible ancestor. `repo` is null where nothing up the chain names one"
+      [queryParam "ids" "Comma-separated issue ids: answer for exactly these"]
+      none [("200", jsonResp "Issue repositories" (arrayOf (ref "IssueRepo")))])]),
   ("/issues/{id}", obj [
     ("get", operation "Issues" "Fetch an issue with related entities" [idParam] none
       [("200", jsonResp "Issue detail" (ref "IssueDetail")), ("404", emptyResp "Not found")]),

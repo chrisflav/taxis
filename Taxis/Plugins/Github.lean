@@ -35,6 +35,9 @@ def githubPrHandler : ArtifactHandler where
   fields := #[{ name := "url", label := "Pull request URL", required := true, placeholder := some "https://github.com/owner/repo/pull/123" }]
   validate j := pure (reqString j "url")
   render j := pure (githubPrDisplay j)
+  -- The PR URL carries the repository, so an issue whose only attachment is a pull request still
+  -- says which repository it is about.
+  repo? j := (str? j "url").bind Repo.RepoRef.parse?
 
 /-- Artifact: the source GitHub issue an imported issue came from. -/
 def githubIssueHandler : ArtifactHandler where
@@ -42,6 +45,7 @@ def githubIssueHandler : ArtifactHandler where
   fields := #[{ name := "url", label := "Issue URL", required := true, placeholder := some "https://github.com/owner/repo/issues/123" }, { name := "number", label := "Issue number", type := "number" }]
   validate j := pure (reqString j "url")
   render j := pure (githubIssueDisplay j)
+  repo? j := (str? j "url").bind Repo.RepoRef.parse?
 
 /-- Artifact: a branch on a GitHub repository. -/
 def githubBranchHandler : ArtifactHandler where
@@ -49,6 +53,13 @@ def githubBranchHandler : ArtifactHandler where
   fields := #[{ name := "owner", label := "Owner", required := true, placeholder := some "leanprover" }, { name := "repo", label := "Repository", required := true, placeholder := some "lean4" }, { name := "branch", label := "Branch", required := true, placeholder := some "master" }]
   validate j := pure (do reqString j "owner"; reqString j "repo"; reqString j "branch")
   render j := pure (githubBranchDisplay j)
+  -- Through the branch URL rather than `owner`/`repo` alone, so the reference carries the branch
+  -- as its `ref` — the same thing `parse?` reads out of any other `/tree/` URL.
+  repo? j := do
+    let owner ← str? j "owner"
+    let repo ← str? j "repo"
+    let branch ← str? j "branch"
+    Repo.RepoRef.parse? s!"https://github.com/{owner}/{repo}/tree/{branch}"
 
 /-- Evaluate the GitHub combined commit status of an attached `github-branch` artifact. -/
 def githubCiEvaluate (_db : Db.Conn) (_config : Json) (_issue : Issue) (artifacts : Array Artifact) :

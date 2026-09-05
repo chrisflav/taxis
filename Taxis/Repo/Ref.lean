@@ -84,6 +84,14 @@ def parse? (raw : String) : Option RepoRef := do
 /-- `owner/name`, the conventional short display form. -/
 def shortName (r : RepoRef) : String := s!"{r.owner}/{r.name}"
 
+/-- The repository's page on its forge.
+
+    Built from the parts rather than handed back as `url`, because `url` is the URL the reference
+    was *written* as, and that is not always the repository: a `github-pr` artifact names its
+    repository through a `.../pull/12` URL, and a manifest may require it over `git@host:owner/name`.
+    Neither is a link anyone can follow to the repository. -/
+def webUrl (r : RepoRef) : String := s!"https://{r.host}/{r.owner}/{r.name}"
+
 end RepoRef
 
 end Taxis.Repo

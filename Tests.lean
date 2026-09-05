@@ -370,6 +370,71 @@ def main : IO Unit := do
   check "node lists every issue it hangs off" (collected[0]!.issues == #[⟨1⟩, ⟨2⟩])
   check "unparseable repository artifact dropped" (collected.all (·.ref.canonical != "not a url at all"))
 
+  IO.println "The repository an issue is about"
+  -- Which artifact kinds name a repository is the plugins' business, not this module's: each
+  -- answers for its own payload, so a kind added later joins in without anything here changing.
+  let repoOf (kind : String) (payload : Json) : IO (Option String) := do
+    let ref ← Repo.artifactRepo? { id := ⟨0⟩, kind, payload }
+    pure (ref.map (·.canonical))
+  let refOf (kind : String) (payload : Json) : IO (Option String) := do
+    let ref ← Repo.artifactRepo? { id := ⟨0⟩, kind, payload }
+    pure (ref.bind (·.ref))
+  check "a repository artifact names its repository"
+    ((← repoOf "repository" (Json.mkObj [("url", "https://github.com/Owner/Repo.git")]))
+      == some "github.com/owner/repo")
+  check "a pull request names the repository it is against"
+    ((← repoOf "github-pr" (Json.mkObj [("url", "https://github.com/o/r/pull/12")]))
+      == some "github.com/o/r")
+  check "a branch names its repository"
+    ((← repoOf "github-branch" (Json.mkObj [("owner", "o"), ("repo", "r"), ("branch", "dev")]))
+      == some "github.com/o/r")
+  check "a branch carries its branch as the ref"
+    ((← refOf "github-branch" (Json.mkObj [("owner", "o"), ("repo", "r"), ("branch", "dev")]))
+      == some "dev")
+  check "a source location names its repository"
+    ((← repoOf "source" (Json.mkObj [("repo", "o/r"), ("file", "Main.lean")]))
+      == some "github.com/o/r")
+  -- An explicit `ref` wins over one read out of the URL, the same way the dependency graph reads it.
+  check "an explicit ref overrides the url's"
+    ((← refOf "repository"
+        (Json.mkObj [("url", "https://github.com/o/r/tree/main"), ("ref", "dev")])) == some "dev")
+  check "a kind with nothing to do with repositories names none"
+    ((← repoOf "context" (Json.mkObj [("title", "t"), ("text", "note")])).isNone)
+  check "an unparseable payload names none"
+    ((← repoOf "repository" (Json.mkObj [("url", "nonsense")])).isNone)
+
+  -- The chain: a repository is attached once, to the issue standing for the project, and
+  -- everything filed under it inherits it without repeating the attachment.
+  let project ← createIssue db { title := "The project" }
+  let epic ← createIssue db { title := "An epic", parent := some project.id }
+  let task ← createIssue db { title := "A task", parent := some epic.id }
+  let orphan ← createIssue db { title := "Filed under nothing" }
+  let _ ← createArtifact db project.id
+    { kind := "repository", payload := Json.mkObj [("url", "https://github.com/leanprover/lean4")] }
+  let repoOfIssue (id : IssueId) (groups : Option (Array GroupId) := none) : IO (Option String) := do
+    pure ((← Repo.issueRepo? db id groups).map (·.canonical))
+  check "an issue's own repository" ((← repoOfIssue project.id) == some "github.com/leanprover/lean4")
+  check "a child inherits it" ((← repoOfIssue epic.id) == some "github.com/leanprover/lean4")
+  check "a grandchild inherits it too" ((← repoOfIssue task.id) == some "github.com/leanprover/lean4")
+  check "an issue with nothing above it has none" ((← repoOfIssue orphan.id).isNone)
+  -- The nearest attachment wins: a task against a different repository says so, rather than being
+  -- overruled by the project it happens to be filed under.
+  let _ ← createArtifact db task.id
+    { kind := "github-pr", payload := Json.mkObj [("url", "https://github.com/leanprover/std4/pull/9")] }
+  check "the nearest repository wins" ((← repoOfIssue task.id) == some "github.com/leanprover/std4")
+  check "and does not disturb its siblings" ((← repoOfIssue epic.id) == some "github.com/leanprover/lean4")
+
+  -- A repository is never inherited through an ancestor whose existence is hidden from the reader:
+  -- the answer would otherwise disclose what the breadcrumb trail deliberately does not.
+  let secret ← createIssue db { title := "Restricted project", visibility := #[g.id] }
+  let under ← createIssue db { title := "Under it", parent := some secret.id }
+  let _ ← createArtifact db secret.id
+    { kind := "repository", payload := Json.mkObj [("url", "https://github.com/private/thing")] }
+  check "a member inherits through a restricted ancestor"
+    ((← repoOfIssue under.id (some #[g.id])) == some "github.com/private/thing")
+  check "a non-member does not" ((← repoOfIssue under.id (some #[])).isNone)
+  check "and neither does anonymous" ((← repoOfIssue under.id none).isNone)
+
   IO.println "Response compression"
   -- A gzip stream this decompresses to the input is checked from the outside, by
   -- `scripts/check-gzip.mjs`; what is checked here is the framing and the decision rule.

@@ -414,10 +414,11 @@ Two payload fields, both required:
 
 In the UI it sits in the issue's **Artifacts** rail as a single folded line — the badge and its
 label — and unfolds in place, rendered exactly as descriptions and comments are: markdown, KaTeX
-math, and `#123` issue references resolved to their titles. Folded is the default, and the point:
-context accumulates over the life of an issue, and none of it should compete with the description
-for a reader's attention. The **Add**/**✎** dialogue gives it a full editor with a *Preview* tab
-and `#`-reference autocomplete, so it can be written and revised by hand as easily as by a bot.
+math, and the `#123` and `PR#123` references described below. Folded is the default, and the
+point: context accumulates over the life of an issue, and none of it should compete with the
+description for a reader's attention. The **Add**/**✎** dialogue gives it a full editor with a
+*Preview* tab and `#`-reference autocomplete, so it can be written and revised by hand as easily
+as by a bot.
 
 Nothing is interpreted server-side — the payload is stored and handed back verbatim, and the rail's
 label is the title, not a guess made out of the text. Naming a note is the one thing whoever wrote
@@ -432,6 +433,36 @@ curl -X POST http://localhost:8080/api/issues/42/artifacts \
 
 Context is not a hiding place: it is as visible as the issue it hangs off, subject to the same
 visibility groups and to nothing else. Anything genuinely secret belongs somewhere else.
+
+## References in prose
+
+Descriptions, goals, comments and `context` artifacts are markdown, and two kinds of bare reference
+written in them become links:
+
+| Written | Becomes |
+| --- | --- |
+| `#123` | A link to issue 123 in this tracker, labelled with its title once that is known. |
+| `PR#123` | A link to pull request 123 on the repository the issue is about. |
+
+Which repository an issue *is about* is not something anyone has to restate on every issue: it is
+the one named by one of the issue's own artifacts, or — failing that — by the nearest ancestor that
+names one. Attach a `repository` to the issue standing for the project, and every issue filed under
+it resolves `PR#123` against that repository; attach a different one lower down (a `github-pr`, a
+`github-branch`, a `source` — anything that names a repository), and the nearest attachment wins.
+Whether a kind names a repository is the kind's own business, an optional `repo?` on its
+`ArtifactHandler`, so a kind added later joins in with no change to the core. A repository is never
+inherited through an ancestor you cannot see, the same rule the breadcrumb trail follows.
+
+Nothing is guessed. A `PR#123` on an issue with no repository anywhere above it stays the text it
+was written as, and so does one whose repository is on a forge that does not spell pull requests
+`/pull/123` — a link that goes nowhere is worse than the words somebody typed. Code spans and
+fenced blocks are left alone either way, so a code sample is never rewritten.
+
+Both kinds are resolved lazily and by number: prose with no references costs no requests at all,
+and prose that has them costs one small request each (`GET /issues/index` for the titles,
+`GET /issues/repos` for the repository) rather than an index of the whole tracker. Teaching the
+tracker another kind of reference is one `Linkifier` entry in `frontend/src/linkify.ts` — a pattern
+and a rule for turning a match into a link.
 
 ## API overview
 
@@ -449,6 +480,9 @@ served at **`/docs`**, backed by the OpenAPI spec at `GET /api/openapi.json`.
   `?ids=1,2,3` names a known handful, `?q=…` searches titles (or an issue number) for a picker;
   unfiltered it returns every visible issue, which grows with the tracker and is not what any page
   should ask for
+- `GET /issues/repos` — which repository each of `?ids=1,2,3` is about: the one an artifact of
+  the issue names, or the one named by an artifact of its nearest visible ancestor. What a `PR#123`
+  written in an issue is resolved against
 - `GET /issues/:id/ancestors` — the containment path above an issue, root first
 - `POST /issues/:id/artifacts`, `PATCH|DELETE /artifacts/:id`
 - `GET|POST /issues/:id/checks`, `POST /checks/:id/run`, `PATCH|DELETE /checks/:id`
