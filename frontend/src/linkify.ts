@@ -28,6 +28,8 @@ export interface LinkContext {
 
 /** Where a reference points, and what to show for it. */
 export interface Link {
+  /** The destination. Percent-encode anything interpolated into it with `urlSegment`: it is
+      written into `[text](here)`, and these values come out of payloads somebody else wrote. */
   href: string;
   /** Link text. Written into markdown, so square brackets are stripped from it. */
   text: string;
@@ -58,6 +60,26 @@ export interface Linkifier {
  *  issue pattern cannot start there. */
 const BOUNDARY = "(^|[^\\w#])";
 
+/** Square brackets in link text would close the markdown link being built around it. */
+const linkText = (s: string) => s.replace(/[[\]]/g, "");
+
+/** One value interpolated into a link destination.
+ *
+ *  `encodeURIComponent` leaves parentheses alone, and a `)` is exactly what closes `[text](here)`
+ *  — so a repository called `o)<img src=x>` would end the link early and spill the rest of itself
+ *  into the document as markup. These values come out of artifact payloads, which anyone who can
+ *  attach an artifact writes, and they land in the prose of every issue under that one. */
+const urlSegment = (s: string) =>
+  encodeURIComponent(s).replace(/[()]/g, (c) => (c === "(" ? "%28" : "%29"));
+
+/** The characters that end a markdown destination early, percent-encoded.
+ *
+ *  Applied to every linkifier's `href` by `linkify`, on top of whatever encoding the linkifier
+ *  did itself. A linkifier that forgets to encode what it interpolates should produce a link that
+ *  is merely wrong, not one that closes itself and turns the rest into markup. */
+const linkHref = (s: string) =>
+  s.replace(/[()\s<>"]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0"));
+
 /** A reference to an issue in this tracker. Always links, titled or not: the title is a nicety and
     the number is the reference. */
 const issueLinkifier: Linkifier = {
@@ -81,7 +103,7 @@ const prLinkifier: Linkifier = {
     const repo = ctx.repo;
     if (!repo || repo.host !== "github.com") return null;
     return {
-      href: `https://github.com/${repo.owner}/${repo.name}/pull/${num}`,
+      href: `https://github.com/${urlSegment(repo.owner)}/${urlSegment(repo.name)}/pull/${num}`,
       text,
       // The text says which pull request but not which repository, and on a child issue that
       // inherited its repository from an ancestor there is nothing else on the page that does.
@@ -90,13 +112,18 @@ const prLinkifier: Linkifier = {
   },
 };
 
-/** The registered linkifiers, in the order they are offered a match. */
+/** The registered linkifiers.
+ *
+ *  Order matters, and in one specific way: alternation in a regular expression is leftmost-first,
+ *  so an entry whose pattern can match a *prefix* of what a later entry matches shadows it at that
+ *  position. `#\d+` and `PR#\d+` cannot collide — `BOUNDARY` already stops the issue pattern
+ *  starting after the `R` — but a kind added later that extends an existing one (`#\d+/\d+`, say)
+ *  has to go before the entry it extends. */
 export const LINKIFIERS: Linkifier[] = [issueLinkifier, prLinkifier];
 
 /** One pass finds every kind of reference. Alternation rather than a pass per linkifier, so that
-    a longer reference wins over a shorter one that is a suffix of it, and so that no linkifier
-    ever runs over markdown a previous one has already generated. Which alternative matched is read
-    off the named groups. */
+    no linkifier ever runs over markdown a previous one has already generated. Which alternative
+    matched is read off the named groups. */
 const PATTERN = new RegExp(
   `${BOUNDARY}(?:${LINKIFIERS.map((l) => `(?<${l.kind}>${l.ref})`).join("|")})`,
   "gi",
@@ -162,9 +189,6 @@ export function containsMath(text: string): boolean {
   return found;
 }
 
-/** Square brackets in link text would close the markdown link being built around it. */
-const linkText = (s: string) => s.replace(/[[\]]/g, "");
-
 /** Turn the bare references in `text` into markdown links — `[#123 Some title](#/issues/123)`,
     `[PR#7](https://github.com/owner/repo/pull/7 "owner/repo#7")` — leaving code spans and fenced
     blocks alone, so code samples aren't rewritten.
@@ -181,7 +205,9 @@ export function linkify(text: string, ctx: LinkContext = {}): string {
       if (!hit) return whole;
       const link = hit[0].link(hit[1], ctx);
       if (!link) return whole;
+      // A `"` would close the title and let what follows it out; with the destination encoded,
+      // nothing else in a title escapes the quotes it sits between.
       const title = link.title ? ` "${link.title.replace(/"/g, "")}"` : "";
-      return `${pre}[${linkText(link.text)}](${link.href}${title})`;
+      return `${pre}[${linkText(link.text)}](${linkHref(link.href)}${title})`;
     }));
 }

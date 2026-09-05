@@ -221,14 +221,20 @@ def issueIndexH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
   let entries ← ctx.readM (Db.listIssueIndex · (req.actor.map (·.groups)) ids q limit)
   ok (toJson entries)
 
-/-- A repository reference as a client needs it: enough to name it and to build a link into the
-    forge it lives on. The canonical id and the pinned revision are the dependency graph's
-    business, and are left out of an answer about what an issue is about.
+/-- A repository reference as a client needs it: which forge, and which repository on it.
 
-    `url` is the repository's own page (`RepoRef.webUrl`), not the URL the reference was written
-    as — that one is a pull request when the reference came off a `github-pr` artifact. -/
+    Deliberately not the URL the reference was written as. That one is a pull request when the
+    reference came off a `github-pr` artifact and an `scp`-style address when it came off a
+    manifest, so it is not a link to the repository — and a client that wants one builds it from
+    these three, which is what the pull-request linkifier does. -/
 private def repoRefJson (r : Repo.RepoRef) : Json :=
-  Json.mkObj [("host", r.host), ("owner", r.owner), ("name", r.name), ("url", r.webUrl)]
+  Json.mkObj [("host", r.host), ("owner", r.owner), ("name", r.name)]
+
+/-- How many issues one call may ask about. Unlike the naming index — which answers a row per id
+    out of one statement — each id here costs a walk up its parent chain, reading the artifacts of
+    every issue on it, so the cost is bounded here rather than left to the caller. Clients batch
+    below this. -/
+private def repoIdsLimit : Nat := 100
 
 /-- Which repository each of `?ids=1,2,3` is about: the one named by an artifact of the issue
     itself, or — failing that — by an artifact of its nearest visible ancestor that names one
@@ -243,6 +249,11 @@ private def repoRefJson (r : Repo.RepoRef) : Json :=
 def issueReposH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
   let ids := ((((req.query "ids").getD "").splitOn ",").filterMap
     (fun p => p.trimAscii.toString.toInt?)).toArray.map (fun n => (⟨Int64.ofInt n⟩ : IssueId))
+  -- Refused rather than truncated: a short answer is indistinguishable from "those issues have no
+  -- repository", and silently answering a different question than the one asked is how a caller
+  -- ends up rendering a reference as plain text and never learning why.
+  if ids.size > repoIdsLimit then
+    fail (.badRequest s!"too many ids: {ids.size} (at most {repoIdsLimit} per request)")
   let groups := req.actor.map (·.groups)
   let entries ← ctx.readM fun db => do
     let visible ← Db.listIssueIndex db groups (some ids)

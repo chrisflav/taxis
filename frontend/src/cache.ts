@@ -103,7 +103,20 @@ export function invalidateCache(prefix?: string): void {
   for (const key of [...entries.keys()]) {
     if (prefix == null || key.startsWith(prefix)) entries.delete(key);
   }
+  invalidationListeners.forEach((f) => f(prefix));
 }
+
+/** Run `f` whenever something is invalidated, with the prefix that was dropped.
+ *
+ *  For a store that holds an answer *derived* from a cached response rather than the response
+ *  itself: `issueRepos` keeps "which repository is issue N about" in a plain map, because a render
+ *  has to read it without awaiting anything, and that copy would otherwise outlive the response it
+ *  was derived from. Dropping the cache is exactly the moment it stops being true. */
+export function onInvalidate(f: (prefix?: string) => void): void {
+  invalidationListeners.add(f);
+}
+
+const invalidationListeners = new Set<(prefix?: string) => void>();
 
 /** A stable empty array for resources that have not loaded yet, so memoised children compare
     equal instead of seeing a fresh `[]` on every render. */

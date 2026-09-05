@@ -107,9 +107,7 @@ private def schemas : Json := obj [
   ("ApiTokenCreated", schemaObj [("token", ref "ApiToken"), ("secret", typ "string")]),
   ("IssueIndexEntry", schemaObj [("id", typ "integer"), ("title", typ "string"),
     ("parent", nullable "integer")]),
-  -- `url` is the repository page, `https://host/owner/name` — see `RepoRef.webUrl`.
-  ("RepoRef", schemaObj [("host", typ "string"), ("owner", typ "string"), ("name", typ "string"),
-    ("url", typ "string")]),
+  ("RepoRef", schemaObj [("host", typ "string"), ("owner", typ "string"), ("name", typ "string")]),
   ("IssueRepo", schemaObj [("issue", typ "integer"), ("repo", nullableRef "RepoRef")]),
   ("SiblingNav", schemaObj [("position", typ "integer"), ("count", typ "integer"),
     ("prev", nullable "object"), ("next", nullable "object")]),
@@ -226,7 +224,7 @@ private def paths : Json := obj [
       none [("200", jsonResp "Issue index" (arrayOf (ref "IssueIndexEntry")))])]),
   ("/issues/repos", obj [
     ("get", operation "Issues" "Which repository each of the named issues is about: the one an artifact of the issue names, or — failing that — the one named by an artifact of its nearest visible ancestor. `repo` is null where nothing up the chain names one"
-      [queryParam "ids" "Comma-separated issue ids: answer for exactly these"]
+      [queryParam "ids" "Comma-separated issue ids: answer for exactly these (at most 100 per request)"]
       none [("200", jsonResp "Issue repositories" (arrayOf (ref "IssueRepo")))])]),
   ("/issues/{id}", obj [
     ("get", operation "Issues" "Fetch an issue with related entities" [idParam] none

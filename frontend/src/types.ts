@@ -42,15 +42,13 @@ export interface Check {
   lastRun: number | null;
 }
 
-/** A source repository, as the API names one: enough to name it and to build a link into the forge
-    it lives on. */
+/** A source repository, as the API names one: which forge, and which repository on it. Not the
+    URL it was written as — that is a pull request when the reference came off a `github-pr`
+    artifact — so a link into the forge is built from these three. */
 export interface RepoRef {
   host: string;
   owner: string;
   name: string;
-  /** The repository's own page, `https://host/owner/name` — not whatever URL the artifact it was
-      read off happened to be written as. */
-  url: string;
 }
 
 /** Which repository an issue is about, as `GET /issues/repos` answers: the one named by one of its

@@ -6,7 +6,6 @@ const repo: RepoRef = {
   host: "github.com",
   owner: "leanprover",
   name: "lean4",
-  url: "https://github.com/leanprover/lean4",
 };
 
 const names = new Map([[12, { title: "Fix the parser" }]]);
@@ -49,13 +48,45 @@ describe("pull-request references", () => {
 
   // The reference is real, but nothing here can say where it points, and a link that guesses is
   // worse than the text somebody wrote.
+  // A repository name is whatever somebody typed into an artifact payload, and `RepoRef.parse?`
+  // takes nearly any path segment. Unescaped, a `)` in one closed the link and spilled the rest
+  // of the name into the reader's prose as markup — on every issue under the one it was attached
+  // to. The link is wrong either way; it must not be able to stop being a link.
+  it("cannot be broken out of by a repository name", () => {
+    const hostile: RepoRef = {
+      host: "github.com",
+      owner: "o)<img src=x onerror=alert(1)>**pwned**z",
+      name: "r",
+    };
+    const out = linkify("fixed by PR#7", { repo: hostile });
+    // One link, and everything the name contains is inside its destination.
+    expect(out).toBe(
+      "fixed by [PR#7](https://github.com/o%29%3Cimg%20src%3Dx%20onerror%3Dalert%281%29%3E**pwned**z/r/pull/7"
+      + ' "o)<img src=x onerror=alert(1)>**pwned**z/r#7")');
+    // The destination in particular carries nothing that could end it early. (The title may:
+    // it is delimited by quotes, and only a quote closes it.)
+    const destination = /\]\((\S*)/.exec(out)![1];
+    expect(destination).not.toMatch(/[()\s<>"]/);
+  });
+
+  it("encodes a space, which would otherwise end the destination", () => {
+    const spaced: RepoRef = { host: "github.com", owner: "o x", name: "r" };
+    expect(linkify("PR#7", { repo: spaced })).toContain("https://github.com/o%20x/r/pull/7");
+  });
+
+  // The title sits between quotes, so only a quote can end it early.
+  it("drops a quote out of the title", () => {
+    const quoted: RepoRef = { host: "github.com", owner: 'o"x', name: "r" };
+    expect(linkify("PR#7", { repo: quoted })).toContain('"ox/r#7")');
+  });
+
   it("leaves it as text when no repository is known", () => {
     expect(linkify("fixed by PR#7")).toBe("fixed by PR#7");
     expect(linkify("fixed by PR#7", { repo: null })).toBe("fixed by PR#7");
   });
 
   it("leaves it as text on a forge that does not spell pull requests that way", () => {
-    const gitlab: RepoRef = { host: "gitlab.com", owner: "g", name: "p", url: "https://gitlab.com/g/p" };
+    const gitlab: RepoRef = { host: "gitlab.com", owner: "g", name: "p" };
     expect(linkify("fixed by PR#7", { repo: gitlab })).toBe("fixed by PR#7");
   });
 

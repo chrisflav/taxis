@@ -448,7 +448,8 @@ Which repository an issue *is about* is not something anyone has to restate on e
 the one named by one of the issue's own artifacts, or — failing that — by the nearest ancestor that
 names one. Attach a `repository` to the issue standing for the project, and every issue filed under
 it resolves `PR#123` against that repository; attach a different one lower down (a `github-pr`, a
-`github-branch`, a `source` — anything that names a repository), and the nearest attachment wins.
+`github-branch`, a `github-issue`, a `source` — anything that names a repository), and the nearest
+attachment wins.
 Whether a kind names a repository is the kind's own business, an optional `repo?` on its
 `ArtifactHandler`, so a kind added later joins in with no change to the core. A repository is never
 inherited through an ancestor you cannot see, the same rule the breadcrumb trail follows.

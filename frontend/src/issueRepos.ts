@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { RepoRef } from "./types";
 import { api, issueReposPath } from "./api";
-import { REFERENCE_MAX_AGE, cachedGet } from "./cache";
+import { REFERENCE_MAX_AGE, cachedGet, onInvalidate } from "./cache";
 
 /**
  * Which repository an issue is about, learned as it is needed.
@@ -52,6 +52,21 @@ function flush(): void {
   }
 }
 
+
+/** The path these answers are read from, and the prefix a write has to drop to make them stale. */
+const PATH = "/issues/repos";
+
+// Attaching a repository to an issue is precisely the write that should make a `PR#123` under it
+// start linking, and every write that touches an issue drops the `/issues` cache. Without this the
+// answers here — derived from those responses, not copies of them — outlived what they were
+// derived from, and the reference stayed plain text until somebody reloaded the tab.
+onInvalidate((prefix) => {
+  if (prefix != null && !PATH.startsWith(prefix) && !prefix.startsWith(PATH)) return;
+  if (known.size === 0) return;
+  known.clear();
+  notify();
+});
+
 /** Ask which repository each of `ids` is about, collapsing everything requested in the same tick
     into one request. */
 export function requestIssueRepos(ids: Iterable<number>): void {
@@ -73,7 +88,7 @@ export function requestIssueRepos(ids: Iterable<number>): void {
  *  we know nothing above the issue names a repository (it stays text). Passing no id — which is
  *  what text with no pull-request reference in it does — asks for nothing. */
 export function useIssueRepo(id: number | null | undefined): RepoRef | null | undefined {
-  const [, bump] = useState(0);
+  const [version, bump] = useState(0);
   const active = id != null;
   useEffect(() => {
     if (!active) return;
@@ -81,6 +96,10 @@ export function useIssueRepo(id: number | null | undefined): RepoRef | null | un
     subscribers.add(wake);
     return () => { subscribers.delete(wake); };
   }, [active]);
-  useEffect(() => { if (id != null) requestIssueRepos([id]); }, [id]);
+  // `version` is a dependency and not noise: a write that invalidates the store clears what was
+  // learned, and this is what asks again — otherwise the reference stays unresolved until the
+  // component happens to remount. Asking for an id already held is a no-op, so the extra runs in
+  // the ordinary case cost nothing.
+  useEffect(() => { if (id != null) requestIssueRepos([id]); }, [id, version]);
   return id == null ? undefined : known.get(id);
 }
