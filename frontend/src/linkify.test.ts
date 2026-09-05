@@ -69,6 +69,20 @@ describe("pull-request references", () => {
     expect(destination).not.toMatch(/[()\s<>"]/);
   });
 
+  // A blank line is the other way out, and the subtler one: it does not close the title, it ends
+  // the whole inline link — quotes and all — so everything after it lands in the reader's prose as
+  // markdown of its own. `RepoRef.parse?` trims only the ends of a URL, so a newline in the middle
+  // of a repository name reaches here intact.
+  it("cannot be broken out of by a blank line in the title", () => {
+    const hostile: RepoRef = { host: "github.com", owner: "a\n\n![](https:", name: "evil.example" };
+    const out = linkify("fixed by PR#7", { repo: hostile });
+    expect(out).toBe(
+      "fixed by [PR#7](https://github.com/a%0A%0A!%5B%5D%28https%3A/evil.example/pull/7"
+      + ' "a ![](https:/evil.example#7")');
+    // One line, so there is no blank line left for the link to end at.
+    expect(out).not.toMatch(/\n/);
+  });
+
   it("encodes a space, which would otherwise end the destination", () => {
     const spaced: RepoRef = { host: "github.com", owner: "o x", name: "r" };
     expect(linkify("PR#7", { repo: spaced })).toContain("https://github.com/o%20x/r/pull/7");

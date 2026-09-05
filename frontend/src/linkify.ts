@@ -76,9 +76,13 @@ const urlSegment = (s: string) =>
  *
  *  Applied to every linkifier's `href` by `linkify`, on top of whatever encoding the linkifier
  *  did itself. A linkifier that forgets to encode what it interpolates should produce a link that
- *  is merely wrong, not one that closes itself and turns the rest into markup. */
+ *  is merely wrong, not one that closes itself and turns the rest into markup.
+ *
+ *  Through `encodeURIComponent` rather than a hand-rolled `%XX`, so a non-ASCII character comes
+ *  out as its UTF-8 bytes; the parentheses are spelled out because that is the pair it leaves
+ *  alone. */
 const linkHref = (s: string) =>
-  s.replace(/[()\s<>"]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0"));
+  s.replace(/[()\s<>"]/g, (c) => (c === "(" ? "%28" : c === ")" ? "%29" : encodeURIComponent(c)));
 
 /** A reference to an issue in this tracker. Always links, titled or not: the title is a nicety and
     the number is the reference. */
@@ -205,9 +209,11 @@ export function linkify(text: string, ctx: LinkContext = {}): string {
       if (!hit) return whole;
       const link = hit[0].link(hit[1], ctx);
       if (!link) return whole;
-      // A `"` would close the title and let what follows it out; with the destination encoded,
-      // nothing else in a title escapes the quotes it sits between.
-      const title = link.title ? ` "${link.title.replace(/"/g, "")}"` : "";
+      // Two things get out of a title. A `"` closes it — and a *blank line* ends the whole inline
+      // link, quotes and all, dropping everything after it into the document as markdown of its
+      // own. So every run of whitespace collapses to one space, which leaves an ordinary title
+      // byte-for-byte as it was and leaves a crafted one with nowhere to break to.
+      const title = link.title ? ` "${link.title.replace(/\s+/g, " ").replace(/"/g, "")}"` : "";
       return `${pre}[${linkText(link.text)}](${linkHref(link.href)}${title})`;
     }));
 }

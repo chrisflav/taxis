@@ -23,6 +23,10 @@ const subscribers = new Set<() => void>();
 
 let pending = new Set<number>();
 let flushing = false;
+/** Bumped whenever what has been learned is thrown away. A response that was in flight across
+    that moment answers a question about the tracker as it was before the write, so it is dropped
+    rather than written back over a map that has just been told it is out of date. */
+let generation = 0;
 
 /** How many issues to resolve in one request. Each costs the server a walk up a parent chain, so
     this is smaller than the naming index's batch. */
@@ -37,10 +41,12 @@ function flush(): void {
   const ids = [...pending];
   pending = new Set();
   if (ids.length === 0) return;
+  const asked = generation;
   for (let i = 0; i < ids.length; i += BATCH) {
     const chunk = ids.slice(i, i + BATCH);
     cachedGet(issueReposPath(chunk), () => api.issueRepos(chunk), REFERENCE_MAX_AGE)
       .then((entries) => {
+        if (asked !== generation) return;
         // Everything asked for is settled, then the answers are written over it: an id the server
         // did not return names an issue that is gone or not visible, which has no repository just
         // as surely as one that came back without a repository.
@@ -60,10 +66,18 @@ const PATH = "/issues/repos";
 // start linking, and every write that touches an issue drops the `/issues` cache. Without this the
 // answers here — derived from those responses, not copies of them — outlived what they were
 // derived from, and the reference stayed plain text until somebody reloaded the tab.
+//
+// The condition leans on every such write dropping the bare `"/issues"` — which is what `api`
+// does, and narrowing it to one issue would quietly stop this firing, because what an issue is
+// about can change from a write to an ancestor.
 onInvalidate((prefix) => {
   if (prefix != null && !PATH.startsWith(prefix) && !prefix.startsWith(PATH)) return;
-  if (known.size === 0) return;
+  generation += 1;
+  pending = new Set();
   known.clear();
+  // Unconditional, and deliberately so even when nothing was held: a request in flight right now
+  // has just been disowned, and this is what makes whoever was waiting on it ask again. With
+  // nothing mounted there is nobody subscribed and it costs nothing.
   notify();
 });
 
