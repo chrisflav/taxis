@@ -148,7 +148,7 @@ const IssueRowView = memo(function IssueRowView({
         </td>
       )}
       {cols.id && <td className="cell-id">{issue.id}</td>}
-      {cols.title && <td><Markdown text={issue.title} inline /> {issue.locked && <LockedMark />}</td>}
+      {cols.title && <td><Markdown text={issue.title} inline issue={issue.id} /> {issue.locked && <LockedMark />}</td>}
       {cols.state && <td><StateBadge state={issue.state} /></td>}
       {cols.labels && (
         <td>{issue.labels.map((l) => { const lbl = labelById.get(l); return lbl ? <LabelChip key={l} label={lbl} /> : null; })}</td>

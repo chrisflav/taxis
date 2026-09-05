@@ -208,7 +208,8 @@ export function IssueForm({
         <IssueRefMenu options={descAc.options} onChoose={descAc.choose} pos={descAc.menuPos} menuRef={descAc.menuRef} />
       </div>
       <div className="muted small">
-        Markdown and LaTeX math (KaTeX, e.g. <code>$x^2$</code>) supported. Type <code>#</code> to link another issue.
+        Markdown and LaTeX math (KaTeX, e.g. <code>$x^2$</code>) supported. Type <code>#</code> to link another
+        issue, or write <code>PR#12</code> to link a pull request on the issue's repository.
       </div>
       <label>Goal</label>
       <div className="issue-ref-field">

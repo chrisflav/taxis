@@ -12,6 +12,7 @@ import type {
   IssueDetail,
   IssueIndexEntry,
   IssuePage,
+  IssueRepo,
   IssueState,
   Label,
   Notification,
@@ -157,10 +158,19 @@ export function issueIndexPath(query: IssueIndexQuery = {}): string {
   });
 }
 
+/** Which repository the named issues are about. Asked only by prose that actually contains a
+    reference scoped to a repository — a `PR#123` — so a page without one costs nothing. */
+export function issueReposPath(ids: number[]): string {
+  return "/issues/repos" + qs({
+    ids: ids.length ? [...ids].sort((a, b) => a - b).join(",") : undefined,
+  });
+}
+
 /** Request paths, doubling as cache keys for `useResource`. */
 export const paths = {
   issues: issuesPath,
   issueIndex: issueIndexPath,
+  issueRepos: issueReposPath,
   ancestors: (id: number) => `/issues/${id}/ancestors`,
   session: "/session",
   issue: (id: number) => `/issues/${id}`,
@@ -230,6 +240,9 @@ export const api = {
   /** Issues reduced to `{id, title, parent}` — enough to name one in a breadcrumb, a picker or a
       `#123` reference. Always asked a question (`ids` or `q`): see `IssueIndexQuery`. */
   issueIndex: (query: IssueIndexQuery = {}) => req<IssueIndexEntry[]>(issueIndexPath(query)),
+  /** Which repository each of these issues is about — its own, or the nearest ancestor's.
+      What `PR#123` in an issue's prose is resolved against. */
+  issueRepos: (ids: number[]) => req<IssueRepo[]>(issueReposPath(ids)),
   /** The containment path above an issue, root first, excluding the issue itself. The detail
       response carries its own; this is for a view that needs one for an issue it is not reading. */
   issueAncestors: (id: number) => req<IssueIndexEntry[]>(paths.ancestors(id)),

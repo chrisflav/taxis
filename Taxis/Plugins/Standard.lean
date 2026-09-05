@@ -84,6 +84,13 @@ def repositoryHandler : ArtifactHandler where
     if (Repo.RepoRef.parse? url).isNone then
       throw s!"could not read an owner/repository out of '{url}'"
   render j := pure (repositoryDisplay j)
+  -- The kind whose whole content is a repository, and the one an issue that is *about* a project
+  -- normally carries: an explicit `ref` overrides the one the URL implies, exactly as it does for
+  -- the dependency graph.
+  repo? j := do
+    let parsed ← (j.getObjValAs? String "url").toOption.bind Repo.RepoRef.parse?
+    let ref := (j.getObjValAs? String "ref").toOption.filter (!·.trimAscii.isEmpty)
+    some { parsed with ref := ref.orElse (fun _ => parsed.ref) }
 
 initialize registerCheckHandler dependenciesCompleteHandler
 initialize registerCheckHandler reviewApprovedHandler

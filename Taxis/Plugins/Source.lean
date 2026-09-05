@@ -49,6 +49,10 @@ def sourceHandler : ArtifactHandler where
     let _ ← j.getObjValAs? String "file"
     pure ()
   render j := pure (sourceDisplay j)
+  -- `repo` is an `owner/name`, which `parse?` reads as a GitHub repository — the same assumption
+  -- the display's link makes.
+  repo? j := (j.getObjValAs? String "repo").toOption.bind
+    (fun repo => Repo.RepoRef.parse? s!"https://github.com/{repo}")
 
 initialize registerArtifactHandler sourceHandler
 

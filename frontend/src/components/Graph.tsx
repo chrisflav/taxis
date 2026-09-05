@@ -209,7 +209,7 @@ export function GraphView() {
             <>
               <div className="row" style={{ gap: 6 }}>
                 <span className="muted small">#{n.issue.id}</span>
-                <span className="graph-card-title"><Markdown text={n.issue.title} inline /></span>
+                <span className="graph-card-title"><Markdown text={n.issue.title} inline issue={n.issue.id} /></span>
                 {n.issue.locked && <LockedMark />}
               </div>
               <div><span className={`badge ${n.issue.state}`}>{n.issue.state}</span></div>

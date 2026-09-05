@@ -1,7 +1,8 @@
 import { memo, useEffect, useMemo, useState } from "react";
-import { containsMath, issueRefIds, linkifyIssueRefs } from "../issueLinks";
+import { containsMath, linkify, refsIn } from "../linkify";
 import { plainTitle } from "../breadcrumbs";
 import { useIssueNames } from "../issueNames";
+import { useIssueRepo } from "../issueRepos";
 
 // Markdown rendering, loaded on demand.
 //
@@ -129,17 +130,25 @@ function useRendered(needsMath: boolean): boolean {
   return renderer != null;
 }
 
-// "#123" references are rendered as "#123 <title>" once the title is known. Which issues those are
-// is read out of the text itself, and their names are asked for by id — a page's whole prose costs
-// one small request, where this used to be handed an index of every issue in the tracker.
+// "#123" references are rendered as "#123 <title>" once the title is known, and "PR#123" as a link
+// into the repository the issue is about. Which issues and which repository those are is read out
+// of the text itself, and both are asked for by id — a page's whole prose costs one small request
+// each, where this used to be handed an index of every issue in the tracker.
+//
+// `issue` is which issue the text belongs to, and is what a repository-scoped reference is
+// resolved against. Text rendered without one (a preview in a dialogue, say) simply has no
+// pull-request references it can resolve, and leaves them as the text they were written as.
 //
 // Memoised: parsing and sanitising is the most expensive thing a list row does, and the filter bar
 // re-renders every row on each keystroke.
-export const Markdown = memo(function Markdown({ text, inline = false }: { text: string; inline?: boolean }) {
+export const Markdown = memo(function Markdown(
+  { text, inline = false, issue }: { text: string; inline?: boolean; issue?: number },
+) {
   const ready = useRendered(containsMath(text));
   // Nothing is fetched for text with no references in it, which is nearly every title.
-  const refs = useMemo(() => issueRefIds(text), [text]);
-  const names = useIssueNames(refs);
+  const refs = useMemo(() => refsIn(text), [text]);
+  const names = useIssueNames(refs.get("issue") ?? []);
+  const repo = useIssueRepo(refs.has("pr") ? issue : undefined);
 
   if (!ready) {
     // The document's own source, as text. `plainTitle` drops the syntax that reads worst in a
@@ -150,8 +159,8 @@ export const Markdown = memo(function Markdown({ text, inline = false }: { text:
       : <div className="md md-plain">{text}</div>;
   }
 
-  // Turn bare `#123` issue references into links, then parse markdown.
-  const linked = linkifyIssueRefs(text, names);
+  // Turn the bare `#123` and `PR#123` references into links, then parse markdown.
+  const linked = linkify(text, { names, repo });
   const cleanHtml = renderer!.sanitize(inline ? renderer!.parseInline(linked) : renderer!.parse(linked));
 
   return inline

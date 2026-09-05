@@ -268,6 +268,7 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
           <span className="issue-number">#{issue.id}</span>
           <InlineText
             value={issue.title}
+            issue={issue.id}
             canEdit={editableUnlessLocked}
             inline
             pending={pendingFields.has("title")}
@@ -309,6 +310,7 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
             </h3>
             <InlineText
               value={issue.description ?? ""}
+              issue={issue.id}
               canEdit={editableUnlessLocked}
               multiline
               pending={pendingFields.has("description")}
@@ -326,6 +328,7 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
               <div className="goal-body">
                 <InlineText
                   value={issue.goal ?? ""}
+                  issue={issue.id}
                   canEdit={editableUnlessLocked}
                   multiline
                   pending={pendingFields.has("goal")}
@@ -416,7 +419,7 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
                 {me && <button className="ghost" onClick={() => { setEditorsUsed(true); setAddArtifact(true); }}>Add</button>}
               </h3>
               {detail.attachedArtifacts.map((a) => (
-                <ArtifactRow key={a.id} artifact={a} canEdit={me != null}
+                <ArtifactRow key={a.id} artifact={a} issue={issue.id} canEdit={me != null}
                   onEdit={() => { setEditorsUsed(true); setEditArtifact(a); }}
                   onRemove={() => setDelArtifact(a)} />
               ))}
@@ -524,6 +527,7 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
           <AttachModal
             title="Add artifact"
             kinds={plugins?.artifactKinds ?? []}
+            issue={issue.id}
             onClose={() => setAddArtifact(false)}
             onSubmit={(kind, value) => api.addArtifact(issue.id, kind, value)}
             onDone={() => { setAddArtifact(false); load(); }}
@@ -533,6 +537,7 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
           <AttachModal
             title="Add check"
             kinds={plugins?.checkKinds ?? []}
+            issue={issue.id}
             onClose={() => setAddCheck(false)}
             onSubmit={(kind, value) => api.addCheck(issue.id, kind, value)}
             onDone={() => { setAddCheck(false); load(); }}
@@ -542,6 +547,7 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
           <AttachModal
             title="Edit artifact"
             kinds={plugins?.artifactKinds ?? []}
+            issue={issue.id}
             existing={{ kind: editArtifact.kind, value: editArtifact.payload }}
             onClose={() => setEditArtifact(null)}
             onSubmit={(_kind, value) => api.updateArtifact(editArtifact.id, value)}
@@ -552,6 +558,7 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
           <AttachModal
             title="Edit check"
             kinds={plugins?.checkKinds ?? []}
+            issue={issue.id}
             existing={{ kind: editCheck.kind, value: editCheck.config }}
             onClose={() => setEditCheck(null)}
             onSubmit={(_kind, value) => api.updateCheck(editCheck.id, value)}
@@ -572,7 +579,7 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
                 this page, so naming it here — rather than a bare "#123" — spares the reader from
                 opening the modal unsure of where the new issue will be filed. */}
             <div className="muted small" style={{ marginBottom: 12 }}>
-              Child of <span className="issue-ref-id">#{issue.id}</span> · <Markdown text={issue.title} inline />
+              Child of <span className="issue-ref-id">#{issue.id}</span> · <Markdown text={issue.title} inline issue={issue.id} />
             </div>
             {/* Creating a child is a step in working *this* issue, so stay on it: `onDone` closes
                 the modal and reloads the children list, and the new child appears in the panel
@@ -658,8 +665,10 @@ export function IssueDetail({ id, me }: { id: number; me: Actor | null }) {
 // Most kinds are a pointer somewhere else, and a pointer is a line: a badge, a label, a link. The
 // `context` kind has nowhere to point — it *is* its text — so it folds out in place instead,
 // rendered as markdown the way the description and comments are, and stays folded until asked.
-function ArtifactRow({ artifact, canEdit, onEdit, onRemove }: {
+function ArtifactRow({ artifact, issue, canEdit, onEdit, onRemove }: {
   artifact: Artifact;
+  /** The issue it hangs off — what a `PR#123` in a `context` artifact resolves against. */
+  issue: number;
   canEdit: boolean;
   onEdit: () => void;
   onRemove: () => void;
@@ -688,7 +697,7 @@ function ArtifactRow({ artifact, canEdit, onEdit, onRemove }: {
           <span className="muted small context-label" title={artifact.display.label}>{artifact.display.label}</span>
         </button>
         {actions}
-        {open && <div className="context-body"><Markdown text={text} /></div>}
+        {open && <div className="context-body"><Markdown text={text} issue={issue} /></div>}
       </div>
     );
   }
@@ -732,7 +741,7 @@ function IssueSkeleton({ id }: { id: number }) {
       <div className="page-head">
         <h2 className="issue-title">
           <span className="issue-number">#{id}</span>
-          {entry?.title ? <Markdown text={entry.title} inline /> : <span style={{ flex: 1 }}>{bar("24ch")}</span>}
+          {entry?.title ? <Markdown text={entry.title} inline issue={id} /> : <span style={{ flex: 1 }}>{bar("24ch")}</span>}
         </h2>
       </div>
 
@@ -927,7 +936,7 @@ function ChildrenPanel({
       {shown.map((c) => (
         <a key={c.id} className="child-row" href={`#/issues/${c.id}`}>
           <span className="child-id">#{c.id}</span>
-          <span className="child-title"><Markdown text={c.title} inline /></span>
+          <span className="child-title"><Markdown text={c.title} inline issue={c.id} /></span>
           {c.locked && <LockedMark />}
           {c.labels.map((l) => { const lbl = labelById.get(l); return lbl ? <LabelChip key={l} label={lbl} /> : null; })}
           {/* Last and right-aligned in a fixed slot, so every row's state reads down one column
@@ -1022,10 +1031,13 @@ function ConflictPanel({ conflict, labelName }: { conflict: Conflict; labelName:
 // An inline-editable text value: renders the value (as markdown), and — for editors — a pencil that
 // swaps the block for an input/textarea with Save/Cancel, leaving the rest of the page in place.
 function InlineText({
-  value, canEdit, onSave, inline = false, multiline = false, placeholder, placeholderClass,
+  value, issue, canEdit, onSave, inline = false, multiline = false, placeholder, placeholderClass,
   pending = false,
 }: {
   value: string;
+  /** The issue whose field this is, so its prose resolves references the way the rest of the
+      page does. */
+  issue: number;
   canEdit: boolean;
   onSave: (v: string) => Promise<unknown>;
   inline?: boolean;
@@ -1064,7 +1076,7 @@ function InlineText({
   }
 
   const body = value
-    ? <Markdown text={value} inline={inline} />
+    ? <Markdown text={value} inline={inline} issue={issue} />
     : <span className={placeholderClass ?? "muted"}>{placeholder ?? "empty"}</span>;
   return (
     <span className={inline ? "editable editable-inline" : "editable"}>
@@ -1445,7 +1457,7 @@ function Timeline({
                 </span>
                 <span className="badge pending">pending</span>
               </div>
-              <div style={{ marginTop: 4 }}><Markdown text={String(queuedBody(op).body ?? "")} /></div>
+              <div style={{ marginTop: 4 }}><Markdown text={String(queuedBody(op).body ?? "")} issue={detail.issue.id} /></div>
             </div>
           </div>
         ))}
@@ -1534,7 +1546,7 @@ function CommentItem({
           </div>
         </div>
       ) : (
-        c.body.trim() && <div style={{ marginTop: 4 }}><Markdown text={c.body} /></div>
+        c.body.trim() && <div style={{ marginTop: 4 }}><Markdown text={c.body} issue={c.issueId} /></div>
       )}
       {confirmDel && (
         <ConfirmModal
