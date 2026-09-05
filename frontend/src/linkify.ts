@@ -60,8 +60,23 @@ export interface Linkifier {
  *  issue pattern cannot start there. */
 const BOUNDARY = "(^|[^\\w#])";
 
-/** Square brackets in link text would close the markdown link being built around it. */
-const linkText = (s: string) => s.replace(/[[\]]/g, "");
+/** Link text goes into `[here](…)`, so two things have to go.
+ *
+ *  Square brackets, which close it. And — for the same reason a title collapses its whitespace —
+ *  any blank line, which does not close the text but ends the whole inline link, so that what
+ *  follows lands in the surrounding document as markdown of its own: an issue titled
+ *  `T\n\n# Heading` put a heading into every document that merely *mentioned* that issue, and took
+ *  the link with it. What reaches here is an issue title, and a title is one line, so collapsing
+ *  runs of whitespace leaves an ordinary one as it was.
+ *
+ *  What this deliberately does not do is stop a title being markdown. Inline markup in one still
+ *  renders inside the link text, because a title is rendered as markdown everywhere else it
+ *  appears too — a list row, a tree node, a graph card. The fix here is to the link's *structure*,
+ *  not to what a title is allowed to say.
+ *
+ *  The blank line is inherited rather than introduced: `linkifyIssueRefs` had it, byte for byte.
+ *  It is closed here because this is now the one place every reference kind writes its text. */
+const linkText = (s: string) => s.replace(/\s+/g, " ").replace(/[[\]]/g, "");
 
 /** One value interpolated into a link destination.
  *

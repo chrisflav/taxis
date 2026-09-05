@@ -44,8 +44,17 @@ function flush(): void {
   const asked = generation;
   for (let i = 0; i < ids.length; i += BATCH) {
     const chunk = ids.slice(i, i + BATCH);
-    cachedGet(issueReposPath(chunk), () => api.issueRepos(chunk), REFERENCE_MAX_AGE)
+    // The generation is part of the key, not merely checked when the answer lands. `cachedGet`
+    // dedupes on the key, so a request made *after* a write would otherwise be handed the
+    // pre-write request still in flight for the same path — and that answer would sail through
+    // the check below, because it arrives under the current generation. A new generation is a
+    // new question and gets a key of its own. The path is still the prefix, so one invalidation
+    // still drops every one of them.
+    const key = `${issueReposPath(chunk)}#g${asked}`;
+    cachedGet(key, () => api.issueRepos(chunk), REFERENCE_MAX_AGE)
       .then((entries) => {
+        // The other half: this one *was* in flight across the write, and is about a tracker that
+        // has since changed.
         if (asked !== generation) return;
         // Everything asked for is settled, then the answers are written over it: an id the server
         // did not return names an issue that is gone or not visible, which has no repository just

@@ -28,6 +28,20 @@ describe("issue references", () => {
     expect(linkify("`#12` and\n```\n#12\n```")).toBe("`#12` and\n```\n#12\n```");
   });
 
+  // A blank line in a title ended the whole link and dropped what followed into the surrounding
+  // document as markdown of its own — a heading, a rule, a quote, in every document that merely
+  // mentioned the issue. Inherited from the code this replaced; closed here because this is now
+  // the one place every reference kind writes its text.
+  it("cannot be broken out of by a blank line in a title", () => {
+    const hostile = new Map([[12, { title: "T\n\n# Heading" }]]);
+    expect(linkify("see #12", { names: hostile })).toBe("see [#12 T # Heading](#/issues/12)");
+  });
+
+  it("leaves the spacing of an ordinary title alone", () => {
+    const spaced = new Map([[12, { title: "Fix the parser" }]]);
+    expect(linkify("#12", { names: spaced })).toBe("[#12 Fix the parser](#/issues/12)");
+  });
+
   it("strips brackets out of a title, which would close the link", () => {
     const bracketed = new Map([[12, { title: "[wip] parser" }]]);
     expect(linkify("#12", { names: bracketed })).toBe("[#12 wip parser](#/issues/12)");
