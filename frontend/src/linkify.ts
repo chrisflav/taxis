@@ -69,10 +69,12 @@ const BOUNDARY = "(^|[^\\w#])";
  *  the link with it. What reaches here is an issue title, and a title is one line, so collapsing
  *  runs of whitespace leaves an ordinary one as it was.
  *
- *  What this deliberately does not do is stop a title being markdown. Inline markup in one still
- *  renders inside the link text, because a title is rendered as markdown everywhere else it
- *  appears too — a list row, a tree node, a graph card. The fix here is to the link's *structure*,
- *  not to what a title is allowed to say.
+ *  What this closes is the blank line, and only the blank line. Raw HTML in a title can still
+ *  restructure the markup around the reference — a `</a>` or a `<div>` puts content outside the
+ *  link — exactly as it did before, and exactly as it does wherever a title is rendered on its
+ *  own: a list row, a tree node, a graph card. Nothing about referring to an issue escalates
+ *  that, so it is not this helper's to fix, and stripping markup here would only make a title
+ *  read unlike the same title everywhere else.
  *
  *  The blank line is inherited rather than introduced: `linkifyIssueRefs` had it, byte for byte.
  *  It is closed here because this is now the one place every reference kind writes its text. */
