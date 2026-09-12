@@ -18,7 +18,7 @@ package taxis where
 
 -- A pin of the `db` library (typed schema, queries and migrations); moved forward deliberately.
 -- `db` pins `leansqlite` itself, so this package does not require it separately.
-require db from git "https://github.com/chrisflav/db" @ "bb5d2bea0529382f2cdab41c757b84111d535b5d"
+require db from git "https://github.com/chrisflav/db" @ "704232a644ef91f5eeebb24e5cc55fc024173a5b"
 
 target gzip.o pkg : FilePath := do
   let oFile := pkg.buildDir / "gzip.o"
