@@ -530,7 +530,7 @@ def repoGraphH (ctx : AppContext) (req : Req) : ApiM ApiResponse := do
     (issues.filter (visibleTo req.actor)).foldl (fun s i => s.insert i.id.val) {}
   let mine := artifacts.filter (fun (issueId, _) => visible.contains issueId.val)
   let external := match req.query "external" with
-    | some v => v == "1" || v == "true"
+    | some val => val == "1" || val == "true"
     | none => false
   let graph ← liftIO (Repo.build ctx.config.repoDepsTtlSeconds external (Repo.collect mine))
   ok graph.toJson
@@ -865,7 +865,7 @@ def createUploadUrlH (name : String) (req : Req) : ApiM ApiResponse := do
     liftIO <| IO.eprintln s!"[taxis] upload url minted by {actorTag} in store '{store.name}': {key}"
     ok (Json.mkObj [
       ("url", url), ("key", key), ("store", store.name),
-      ("headers", Json.mkObj (headers.toList.map fun (k, v) => (k, Json.str v)))])
+      ("headers", Json.mkObj (headers.toList.map fun (k, val) => (k, Json.str val)))])
 
 /-! ## Plugins -/
 

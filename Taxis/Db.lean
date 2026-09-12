@@ -16,6 +16,7 @@ import Taxis.Db.Tokens
 /-!
 # Database layer
 
-SQLite-backed persistence: connection management, schema/migrations, and repository modules
-for each entity.
+SQLite-backed persistence: connection management, the schema — declared in Lean with the
+[`db`](https://github.com/chrisflav/db) library and migrated to by `Taxis.Db.migrate` — and a
+repository module per entity.
 -/

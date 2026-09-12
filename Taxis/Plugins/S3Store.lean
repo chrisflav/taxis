@@ -80,7 +80,7 @@ def S3Config.presign (c : S3Config) (method key : String) (expires : Nat)
 def S3Config.parse (j : Json) : Except String S3Config := do
   let str (f : String) : Except String String :=
     match j.getObjValAs? String f with
-    | .ok v => if v.isEmpty then throw s!"'{f}' must not be empty" else pure v
+    | .ok val => if val.isEmpty then throw s!"'{f}' must not be empty" else pure val
     | .error _ => throw s!"missing required field '{f}'"
   -- An optional field that is *present* must still parse: `"pathStyle": "false"` silently
   -- becoming the default `true` is a misconfiguration that would only surface as failing
@@ -88,9 +88,9 @@ def S3Config.parse (j : Json) : Except String S3Config := do
   let opt (α) [FromJson α] (f : String) (dflt : α) : Except String α :=
     match j.getObjVal? f with
     | .error _ => pure dflt
-    | .ok v => match fromJson? v with
+    | .ok val => match fromJson? val with
       | .ok x => pure x
-      | .error _ => throw s!"'{f}' has the wrong type: {v.compress}"
+      | .error _ => throw s!"'{f}' has the wrong type: {val.compress}"
   let (scheme, host) ← parseEndpoint (← str "endpoint")
   return {
     scheme, host

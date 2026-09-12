@@ -57,8 +57,8 @@ def contextHandler : ArtifactHandler where
     for field in ["title", "text"] do
       match j.getObjVal? field with
       | .error _ => throw s!"missing required field '{field}'"
-      | .ok v => match v.getStr? with
-        | .error _ => throw s!"'{field}' must be a string, but is {v.compress}"
+      | .ok val => match val.getStr? with
+        | .error _ => throw s!"'{field}' must be a string, but is {val.compress}"
         | .ok s => if s.trimAscii.isEmpty then throw s!"'{field}' must not be empty"
   render j := pure { label := contextLabel ((str? j "title").getD "") }
 

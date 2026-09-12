@@ -6,8 +6,11 @@ taxis is an extensible issue tracker built in Lean 4, with a REST API backend an
 ## Architecture
 
 - **Backend** — a Lean 4 REST API on the in-core [`Std.Http`](https://lean-lang.org) async
-  server, persisting to SQLite via [`leansqlite`](https://github.com/leanprover/leansqlite)
-  (bundled — no system SQLite needed). JSON (de)serialisation uses `Lean.Data.Json`.
+  server, persisting to SQLite through the typed database library
+  [`db`](https://github.com/chrisflav/db), which runs on
+  [`leansqlite`](https://github.com/leanprover/leansqlite) (bundled — no system SQLite needed).
+  The schema is declared in Lean, in [`Taxis/Db/Schema.lean`](Taxis/Db/Schema.lean), and the
+  database is migrated to it at startup. JSON (de)serialisation uses `Lean.Data.Json`.
 - **Frontend** — a Vite + React + TypeScript single-page app in [`frontend/`](frontend),
   built to static assets and served by the backend.
 - **Extensibility** — *artifacts* (things attached to an issue: a GitHub PR, a branch),
