@@ -87,3 +87,20 @@ def withReadTransaction (db : Conn) (act : IO α) : IO α :=
   withTransaction db act
 
 end Taxis.Db
+
+namespace Taxis.Db
+
+/-- Run a typed database action against a connection. `Sqlite.M` is a reader over exactly this
+    connection type, so this is `.run db` and nothing else; it exists so that the repository
+    functions, which take a `Conn` and return `IO`, read uniformly. -/
+def run (db : Conn) (act : Sqlite.M α) : IO α :=
+  act.run db
+
+/-- The current time in seconds since the Unix epoch — what the database used to supply through
+    `unixepoch()`. The query language has no expression for a call the database evaluates, so the
+    timestamps the repository writes (`updated_at`, `last_run`, a session's expiry) are taken from
+    this clock instead; the two agree to the second, and nothing compares them more finely. -/
+def nowSeconds : IO Int := do
+  return (← Std.Time.Timestamp.now).toSecondsSinceUnixEpoch.toInt
+
+end Taxis.Db
