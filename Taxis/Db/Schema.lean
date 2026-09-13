@@ -13,10 +13,12 @@ It is declared in two halves, because the two halves say different kinds of thin
 
 * the `@[model]` structures below are the *rows*: one structure per table, one field per column,
   with the field name being the column name and the field type its SQL type. They are what a typed
-  query returns and what a typed insert takes, and they are all `@[model]` can express;
-* everything a column cannot say on its own — primary keys of the join tables, `UNIQUE` groups,
-  foreign keys with their `ON DELETE` action, column defaults and indexes — is declared on
-  `schema`, the `DatabaseRecipe` the models generate, patched by the small combinators below.
+  query returns and what a typed insert takes. The attribute also carries the table's primary key
+  — `AutoKey` for a generated id, `(primaryKey := […])` for the join tables and for `sessions`,
+  whose key is the token in the cookie;
+* everything a column cannot say on its own — `UNIQUE` groups, foreign keys with their `ON DELETE`
+  action, column defaults and indexes — is declared on `schema`, the `DatabaseRecipe` the models
+  generate, patched by the small combinators below.
 
 `schema` is what `autoUpdate` targets, so it is the single description of what the database should
 look like; `migrate` finishes by asserting that the database it leaves behind really is that
@@ -78,7 +80,7 @@ structure Groups where
   deriving Repr
 
 /-- Membership of an actor in a group. -/
-@[model (dbName := "actor_groups") taxisdb]
+@[model (dbName := "actor_groups") (primaryKey := ["actor_id", "group_id"]) taxisdb]
 structure ActorGroups where
   actor_id : Int
   group_id : Int
@@ -112,28 +114,28 @@ structure Labels where
   deriving Repr
 
 /-- A label carried by an issue. -/
-@[model (dbName := "issue_labels") taxisdb]
+@[model (dbName := "issue_labels") (primaryKey := ["issue_id", "label_id"]) taxisdb]
 structure IssueLabels where
   issue_id : Int
   label_id : Int
   deriving Repr
 
 /-- An edge of the dependency graph: `issue_id` depends on `depends_on_id`. -/
-@[model (dbName := "issue_dependencies") taxisdb]
+@[model (dbName := "issue_dependencies") (primaryKey := ["issue_id", "depends_on_id"]) taxisdb]
 structure IssueDependencies where
   issue_id : Int
   depends_on_id : Int
   deriving Repr
 
 /-- An actor assigned to an issue. -/
-@[model (dbName := "issue_assignees") taxisdb]
+@[model (dbName := "issue_assignees") (primaryKey := ["issue_id", "actor_id"]) taxisdb]
 structure IssueAssignees where
   issue_id : Int
   actor_id : Int
   deriving Repr
 
 /-- A group an issue is restricted to. An issue with no such row is visible to everyone. -/
-@[model (dbName := "issue_visibility") taxisdb]
+@[model (dbName := "issue_visibility") (primaryKey := ["issue_id", "group_id"]) taxisdb]
 structure IssueVisibility where
   issue_id : Int
   group_id : Int
@@ -165,7 +167,7 @@ structure Checks where
 
 /-- A browser session. The `id` is the opaque token in the cookie, so it is the primary key rather
 than a generated one. -/
-@[model (dbName := "sessions") taxisdb]
+@[model (dbName := "sessions") (primaryKey := ["id"]) taxisdb]
 structure Sessions where
   id : String
   actor_id : Int
@@ -212,7 +214,7 @@ structure ApiTokens where
 
 /-- Participants opt in (explicitly, or automatically as creator/assignee) to notifications about
 an issue's activity. -/
-@[model (dbName := "issue_participants") taxisdb]
+@[model (dbName := "issue_participants") (primaryKey := ["issue_id", "actor_id"]) taxisdb]
 structure IssueParticipants where
   issue_id : Int
   actor_id : Int
@@ -247,10 +249,10 @@ structure ReviewRequests where
 
 /-! ## Patching the generated recipe
 
-`@[model]` generates a table with its columns and, for an `AutoKey`, its primary key — and nothing
-else, since which of a structure's fields are unique, which reference another table and what a
-column defaults to are not things the structure says. These are the combinators that add them; each
-takes the recipe last, so a table's constraints read as a pipeline. -/
+`@[model]` generates a table with its columns and its primary key — and nothing else, since which
+of a structure's fields are unique, which reference another table and what a column defaults to
+are not things the structure says. These are the combinators that add them; each takes the recipe
+last, so a table's constraints read as a pipeline. -/
 
 /-- Apply `f` to the named table of a recipe. -/
 private def withTable (name : String) (f : TableRecipe → TableRecipe) (r : DatabaseRecipe) :
@@ -260,10 +262,6 @@ private def withTable (name : String) (f : TableRecipe → TableRecipe) (r : Dat
 /-- Give a column the value the database fills in when an insert omits it. -/
 private def withDefault (col : String) (default : ColumnDefault) (t : TableRecipe) : TableRecipe :=
   { t with columns := t.columns.map fun n c => if n == col then { c with default? := default } else c }
-
-/-- Declare the table's primary key, for the tables whose key is not a generated id. -/
-private def withPrimaryKey (cols : List String) (t : TableRecipe) : TableRecipe :=
-  { t with primaryKey := cols }
 
 /-- Declare that a column's values are unique across the table. -/
 private def withUnique (col : String) (t : TableRecipe) : TableRecipe :=
@@ -292,7 +290,6 @@ def schema : DatabaseRecipe :=
         |> withDefault "bot" (.bool false))
     |> withTable "groups" (withUnique "name")
     |> withTable "actor_groups" (fun t => t
-        |> withPrimaryKey ["actor_id", "group_id"]
         |> withForeignKey "actor_id" "actors" "id" .cascade
         |> withForeignKey "group_id" "groups" "id" .cascade)
     |> withTable "issues" (fun t => t
@@ -308,19 +305,15 @@ def schema : DatabaseRecipe :=
         |> withUnique "name"
         |> withDefault "color" (.str "#6b7280"))
     |> withTable "issue_labels" (fun t => t
-        |> withPrimaryKey ["issue_id", "label_id"]
         |> withForeignKey "issue_id" "issues" "id" .cascade
         |> withForeignKey "label_id" "labels" "id" .cascade)
     |> withTable "issue_dependencies" (fun t => t
-        |> withPrimaryKey ["issue_id", "depends_on_id"]
         |> withForeignKey "issue_id" "issues" "id" .cascade
         |> withForeignKey "depends_on_id" "issues" "id" .cascade)
     |> withTable "issue_assignees" (fun t => t
-        |> withPrimaryKey ["issue_id", "actor_id"]
         |> withForeignKey "issue_id" "issues" "id" .cascade
         |> withForeignKey "actor_id" "actors" "id" .cascade)
     |> withTable "issue_visibility" (fun t => t
-        |> withPrimaryKey ["issue_id", "group_id"]
         |> withForeignKey "issue_id" "issues" "id" .cascade
         |> withForeignKey "group_id" "groups" "id" .cascade)
     |> withTable "artifacts" (fun t => t
@@ -331,7 +324,6 @@ def schema : DatabaseRecipe :=
         |> withDefault "status" (.str "pending")
         |> withForeignKey "issue_id" "issues" "id" .cascade)
     |> withTable "sessions" (fun t => t
-        |> withPrimaryKey ["id"]
         |> withDefault "created_at" (.call "unixepoch()")
         |> withForeignKey "actor_id" "actors" "id" .cascade)
     |> withTable "comments" (fun t => t
@@ -351,7 +343,6 @@ def schema : DatabaseRecipe :=
         |> withDefault "created_at" (.call "unixepoch()")
         |> withForeignKey "actor_id" "actors" "id" .cascade)
     |> withTable "issue_participants" (fun t => t
-        |> withPrimaryKey ["issue_id", "actor_id"]
         |> withForeignKey "issue_id" "issues" "id" .cascade
         |> withForeignKey "actor_id" "actors" "id" .cascade)
     |> withTable "notifications" (fun t => t
