@@ -1,11 +1,9 @@
 import SQLite
--- The backend module rather than the library's root `Db`, which also pulls in the `query%` DSL.
--- Lean's tokens are global once imported, so that DSL's syntax turns `limit`, `offset`, `select`,
--- `guard` and `from` into keywords in every module that transitively imports it — and this
--- codebase has parameters called `limit` and `offset`. This import is the model layer, the
--- migrations and the SQLite backend, which is all of the library the schema needs; a module that
--- wants to write `query%` can import `Db.Query.DSL` for itself and pay for it there.
-import Db.Backends.SQLite.Interpretation
+-- The library root: the query language, the model layer, the declarative migrations and the SQLite
+-- backend. This used to be the backend module alone, because the `query%` DSL made `limit`,
+-- `offset`, `select` and `guard` keywords in every module downstream of it; the DSL recognises
+-- those words inside a `query%` block only now, so there is nothing left to avoid.
+import Db
 import Taxis.Domain
 
 /-!

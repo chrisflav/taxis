@@ -41,13 +41,13 @@ def next (r : Rng) : UInt64 × Rng :=
 
 /-- A number in `[0, n)`. -/
 def upto (r : Rng) (n : Nat) : Nat × Rng :=
-  let (val, r) := r.next
-  (if n == 0 then 0 else val.toNat % n, r)
+  let (v, r) := r.next
+  (if n == 0 then 0 else v.toNat % n, r)
 
 /-- True with probability `pct/100`. -/
 def chance (r : Rng) (pct : Nat) : Bool × Rng :=
-  let (val, r) := r.upto 100
-  (val < pct, r)
+  let (v, r) := r.upto 100
+  (v < pct, r)
 
 end Rng
 

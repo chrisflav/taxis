@@ -43,7 +43,7 @@ def cookie (req : Req) (name : String) : Option String := do
   for pair in raw.splitOn ";" do
     let pair := pair.trimAscii.toString
     match pair.splitOn "=" with
-    | [k, val] => if k.trimAscii.toString == name then return val.trimAscii.toString
+    | [k, v] => if k.trimAscii.toString == name then return v.trimAscii.toString
     | _ => pure ()
   none
 

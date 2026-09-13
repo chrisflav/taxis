@@ -84,12 +84,12 @@ private def depsFromToml (body : String) : Array RepoDep := Id.run do
     let some r := cur | continue
     match line.splitOn "=" with
     | key :: rest@(_ :: _) =>
-      let val := stripQuotes ("=".intercalate rest).trimAscii.toString
+      let v := stripQuotes ("=".intercalate rest).trimAscii.toString
       cur := some <| match key.trimAscii.toString with
-        | "name" => { r with name := some val }
-        | "git" => { r with git := some val }
-        | "rev" => { r with rev := some val }
-        | "scope" => { r with scope := some val }
+        | "name" => { r with name := some v }
+        | "git" => { r with git := some v }
+        | "rev" => { r with rev := some v }
+        | "scope" => { r with scope := some v }
         | _ => r
     | _ => pure ()
   if let some r := cur then
@@ -103,7 +103,7 @@ private def quotedAfter (line marker : String) : Option String :=
   match line.splitOn marker with
   | _ :: rest@(_ :: _) =>
     match (marker.intercalate rest).splitOn "\"" with
-    | _ :: val :: _ => some val
+    | _ :: v :: _ => some v
     | _ => none
   | _ => none
 

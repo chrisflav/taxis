@@ -36,7 +36,7 @@ private def getPath (j : Json) (path : String) : Option Json := Id.run do
   let mut cur := j
   for seg in path.splitOn "." do
     match navigate cur seg with
-    | some val => cur := val
+    | some v => cur := v
     | none => return none
   return some cur
 
@@ -85,11 +85,11 @@ def jsonEndpointEvaluate (_db : Db.Conn) (config : Json) (_issue : Issue) (_arti
   -- check can reach a protected endpoint.
   let baseHeaders := #[("Accept", "application/json"), ("User-Agent", "issues-tracker")]
   let headers := match (get "authValue").map (·.trimAscii.toString) with
-    | some val => if val.isEmpty then baseHeaders else
+    | some v => if v.isEmpty then baseHeaders else
         let name := match (get "authHeader").map (·.trimAscii.toString) with
           | some h => if h.isEmpty then "Authorization" else h
           | none => "Authorization"
-        baseHeaders.push (name, val)
+        baseHeaders.push (name, v)
     | none => baseHeaders
   match ← Http.requestJson "GET" url headers with
   | .error e => return (.error, some s!"fetch failed: {e}")
@@ -99,8 +99,8 @@ def jsonEndpointEvaluate (_db : Db.Conn) (config : Json) (_issue : Issue) (_arti
       let loc := if path.isEmpty then "root" else s!"path '{path}'"
       if op == "exists" then return (.failing, some s!"{loc} not present")
       else return (.error, some s!"{loc} not present in response")
-    | some val =>
-      let actual := asStr val
+    | some v =>
+      let actual := asStr v
       match applyOp op actual expected with
       | .error e => return (.error, some e)
       | .ok true =>

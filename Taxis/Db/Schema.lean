@@ -1,6 +1,4 @@
--- The model layer, the migrations and the SQLite backend. Not the library's root `Db`: see the
--- note on the same import in `Taxis.Db.Connection`.
-import Db.Backends.SQLite.Interpretation
+import Db
 import Taxis.Db.Connection
 
 /-!
