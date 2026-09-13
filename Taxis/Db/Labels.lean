@@ -1,43 +1,49 @@
 import Taxis.Db.Connection
+import Taxis.Db.Schema
 import Taxis.Domain.Input
 
 /-!
 # Label repository
+
+Every statement here is a `Query`, an `Insert`, an `Update` or a `Delete` of the `db` library
+rather than SQL text, so the column names, their types and the tables they belong to are checked
+when this module is compiled.
 -/
 
 open Lean
 
 namespace Taxis.Db
 
-private structure LabelRow where
-  id : LabelId
-  name : String
-  description : Option String
-  color : String
-deriving SQLite.Row, Inhabited
-
-private def LabelRow.toLabel (r : LabelRow) : Label :=
-  { id := r.id, name := r.name, description := r.description, color := r.color }
+open Schema (LabelsIndex)
 
 /-- Default label colour when none is supplied. -/
 private def defaultColor : String := "#6b7280"
 
+/-- A stored row as the domain value. -/
+private def labelOfRow (r : Schema.Labels) : Label :=
+  { id := ⟨Int64.ofInt r.id⟩, name := r.name, description := r.description, color := r.color }
+
 /-- Fetch a label by id. -/
 def getLabel (db : Conn) (id : LabelId) : IO (Option Label) := do
-  let rows ← (← db query!"SELECT id, name, description, color FROM labels WHERE id = {id}" as LabelRow).toArray
-  pure (rows[0]?.map LabelRow.toLabel)
+  let rows ← run db <| HasModel.fetch (α := Schema.Labels)
+    { query := .filter (.eq (.var LabelsIndex.id .int) (.int id.val.toInt)) (.all _) }
+  return rows[0]?.map labelOfRow
 
 /-- All labels, ordered by name. -/
 def listLabels (db : Conn) : IO (Array Label) := do
-  let rows ← (← db query!"SELECT id, name, description, color FROM labels ORDER BY name" as LabelRow).toArray
-  pure (rows.map LabelRow.toLabel)
+  let rows ← run db <| HasModel.fetch (α := Schema.Labels)
+    { query := .orderBy [{ column := LabelsIndex.name }] (.all _) }
+  return rows.map labelOfRow
 
-/-- Create a label. -/
+/-- Create a label.
+
+    The insert supplies every column, the colour included: `insertReturning` is what reports the
+    generated id, and it reports the row the database stored. -/
 def createLabel (db : Conn) (input : LabelInput) : IO Label := do
-  let color := input.color.getD defaultColor
-  let rows ← (← db query!"INSERT INTO labels (name, description, color) VALUES ({input.name}, {input.description}, {color})
-    RETURNING id, name, description, color" as LabelRow).toArray
-  pure (rows[0]!.toLabel)
+  let stored ← run db <| HasModel.insertReturning
+    ({ id := 0, name := input.name, description := input.description,
+       color := input.color.getD defaultColor } : Schema.Labels)
+  return labelOfRow stored
 
 /-- Update a label; absent fields are unchanged. Returns `none` if it does not exist. -/
 def updateLabel (db : Conn) (id : LabelId) (upd : LabelUpdate) : IO (Option Label) := do
@@ -47,21 +53,35 @@ def updateLabel (db : Conn) (id : LabelId) (upd : LabelUpdate) : IO (Option Labe
     let name := upd.name.getD l.name
     let description := match upd.description with | some d => some d | none => l.description
     let color := upd.color.getD l.color
-    db exec!"UPDATE labels SET name = {name}, description = {description}, color = {color} WHERE id = {id}"
+    discard <| run db <| HasModel.update (α := Schema.Labels)
+      { value
+          | .name => some (.text name)
+          | .description => some (match description with
+                                  | some d => .text d
+                                  | none => .null .text)
+          | .color => some (.text color)
+          | _ => none
+        condition := .eq (.var LabelsIndex.id .int) (.int id.val.toInt) }
     getLabel db id
 
-/-- Find a label by name, creating it if absent. Used when importing external labels. -/
+/-- Find a label by name, creating it if absent. Used when importing external labels.
+
+    The created row carries the default colour explicitly, where the insert this replaces named
+    only `name` and left the rest to the column defaults. -/
 def getOrCreateLabelByName (db : Conn) (name : String) : IO LabelId := do
-  let rows ← (← db query!"SELECT id, name, description, color FROM labels WHERE name = {name}" as LabelRow).toArray
+  let rows ← run db <| HasModel.fetch (α := Schema.Labels)
+    { query := .filter (.eq (.var LabelsIndex.name .text) (.text name)) (.all _) }
   match rows[0]? with
-  | some r => pure r.id
+  | some r => return ⟨Int64.ofInt r.id⟩
   | none =>
-    let created ← (← db query!"INSERT INTO labels (name) VALUES ({name}) RETURNING id, name, description, color" as LabelRow).toArray
-    pure created[0]!.id
+    let created ← run db <| HasModel.insertReturning
+      ({ id := 0, name := name, description := none, color := defaultColor } : Schema.Labels)
+    return ⟨Int64.ofInt created.id⟩
 
 /-- Delete a label (removing it from all issues via cascade). Returns whether a row was removed. -/
 def deleteLabel (db : Conn) (id : LabelId) : IO Bool := do
-  let removed ← (← db query!"DELETE FROM labels WHERE id = {id} RETURNING id" as LabelId).toArray
-  pure !removed.isEmpty
+  let removed ← run db <| HasModel.delete (α := Schema.Labels)
+    (.eq (.var LabelsIndex.id .int) (.int id.val.toInt))
+  return removed > 0
 
 end Taxis.Db
