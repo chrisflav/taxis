@@ -13,9 +13,11 @@ RUN npm run build
 # No official Lean4 base image is used here: elan is installed directly so the toolchain pinned by
 # lean-toolchain (currently v4.31.0) is fetched exactly as `lake` would locally.
 FROM debian:bookworm-slim AS backend
-# `build-essential` provides a `cc` for leansqlite's bundled SQLite amalgamation (C bindings) —
-# the Lean toolchain's own bundled clang isn't wired up as `cc`. `zlib1g-dev` provides the headers
-# for `bindings/gzip.c`, which compresses API responses.
+# `build-essential` provides a `cc` for the SQLite amalgamation bundled by leansqlite, which the
+# `db` library builds on (C bindings) — the Lean toolchain's own bundled clang isn't wired up as
+# `cc`. That is the whole of the database's build requirement: SQLite is compiled in, and no
+# client library for any other database is needed. `zlib1g-dev` provides the headers for
+# `bindings/gzip.c`, which compresses API responses.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl git build-essential zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*

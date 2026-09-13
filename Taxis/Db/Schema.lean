@@ -23,8 +23,8 @@ look like; `migrate` finishes by asserting that the database it leaves behind re
 description, columns, indexes and constraints alike.
 
 The column defaults are declared even though every typed insert supplies every column: they keep
-the database self-describing (a row written by `sqlite3` by hand is still a valid row), and the
-modules that have not been ported yet write `INSERT`s that name only some columns and rely on them.
+the database self-describing, so that a row written by hand through `sqlite3` — which is how one
+looks at this database, and occasionally repairs it — is still a valid row.
 
 Full-text search is done with `LIKE` because the bundled SQLite amalgamation is built without the
 FTS5 extension.

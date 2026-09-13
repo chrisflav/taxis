@@ -6,11 +6,15 @@ taxis is an extensible issue tracker built in Lean 4, with a REST API backend an
 ## Architecture
 
 - **Backend** — a Lean 4 REST API on the in-core [`Std.Http`](https://lean-lang.org) async
-  server, persisting to SQLite through the typed database library
-  [`db`](https://github.com/chrisflav/db), which runs on
-  [`leansqlite`](https://github.com/leanprover/leansqlite) (bundled — no system SQLite needed).
-  The schema is declared in Lean, in [`Taxis/Db/Schema.lean`](Taxis/Db/Schema.lean), and the
-  database is migrated to it at startup. JSON (de)serialisation uses `Lean.Data.Json`.
+  server. The schema *and every query* are written with the typed database library
+  [`db`](https://github.com/chrisflav/db): the tables are Lean structures in
+  [`Taxis/Db/Schema.lean`](Taxis/Db/Schema.lean), and each read and write is one of the library's
+  `Query`/`Insert`/`Update`/`Delete` values, so a column name, its type and the table it belongs
+  to are checked when the module compiles. There is no SQL text in the application. Storage is
+  SQLite, through the backend the library bundles
+  ([`leansqlite`](https://github.com/leanprover/leansqlite) — no system SQLite needed); the
+  database is brought to the declared schema at startup. JSON (de)serialisation uses
+  `Lean.Data.Json`.
 - **Frontend** — a Vite + React + TypeScript single-page app in [`frontend/`](frontend),
   built to static assets and served by the backend.
 - **Extensibility** — *artifacts* (things attached to an issue: a GitHub PR, a branch),
@@ -71,6 +75,8 @@ taxis is an extensible issue tracker built in Lean 4, with a REST API backend an
 Prerequisites: [`elan`](https://github.com/leanprover/elan) (Lean toolchain manager), Node.js 22+,
 and zlib's development headers (`zlib1g-dev` on Debian/Ubuntu, `zlib-devel` on Fedora, already
 present in the macOS SDK) — the server compresses its own API responses, through `bindings/gzip.c`.
+`db`, and the SQLite backend it bundles, are fetched by `lake` like any other dependency; nothing
+else has to be installed for the database.
 
 ```bash
 # Backend
@@ -89,6 +95,24 @@ Then open <http://localhost:8080>. It runs with no configuration at all; to chan
 
 For frontend development with hot reload, run `npm run dev` in `frontend/` (it proxies `/api`
 to the backend on port 8080) and `lake exe taxis` in another terminal.
+
+### Database
+
+There is nothing to set up: pointed at a path that does not exist, the server creates the database
+and every table, index and constraint the declaration names.
+
+Pointed at a database an **earlier release** wrote, it converts it on first start. Those databases
+carry a `schema_version` table, and this release reads exactly one version, **14** — the last one
+the previous release left behind. Conversion is a rebuild rather than an `ALTER` ladder: every row
+is read out through the declared schema, the old tables are dropped, the new ones are created from
+the declaration and the rows are written back with their keys. It is announced on stdout and runs
+once; afterwards the database has no `schema_version` and is an ordinary database of this release.
+A database older than 14 is refused with a message saying so — run the **previous** release
+against it first, whose own migration brings any older database up to 14, then this one.
+
+Every start ends by asserting the fixed point: after the schema update, the database is compared
+back against the declaration, and if any table, column, index or constraint still differs the
+server refuses to start rather than discovering it later, one failing query at a time.
 
 ### Run with Docker
 
