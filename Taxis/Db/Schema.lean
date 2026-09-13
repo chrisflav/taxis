@@ -20,9 +20,10 @@ It is declared in two halves, because the two halves say different kinds of thin
   action, column defaults and indexes — is declared on `schema`, the `DatabaseRecipe` the models
   generate, patched by the small combinators below.
 
-`schema` is what `autoUpdate` targets, so it is the single description of what the database should
-look like; `migrate` finishes by asserting that the database it leaves behind really is that
-description, columns, indexes and constraints alike.
+`schema` is the single description of what the database should look like. It is not applied to a
+database directly: the database is built by the migrations in `Taxis.Db.Migrations`, and
+`Taxis.Db.migrate` finishes by asserting that what they leave behind really is this description,
+columns, indexes and constraints alike.
 
 The column defaults are declared even though every typed insert supplies every column: they keep
 the database self-describing, so that a row written by hand through `sqlite3` — which is how one
@@ -434,90 +435,3 @@ release's cutover can read. -/
 def legacyVersion : Int := 14
 
 end Taxis.Db.Schema
-
-namespace Taxis.Db
-
-open Taxis.Db.Schema
-
-/-- Rebuild a database written by the pre-`db` releases through the typed API.
-
-This is a one-off copy rather than an `autoUpdate` because `autoUpdate` cannot get there:
-
-* the old databases exist in two constraint shapes. A column added by one of the old `ALTER`
-  ladders has neither the `UNIQUE` nor the `NOT NULL` that the same column got from a fresh
-  `CREATE TABLE` — `actors.github_id` is unique in a database created at v12 or later and not
-  unique in one that grew into it — and a constraint change on an existing table is exactly what
-  `autoUpdate` refuses to do;
-* the flag columns change type, from SQLite `integer` to the library's `bool`.
-
-So every row is read out through the new schema's views, every table is dropped, the target tables
-are created from the declaration, and the rows are written back with their keys. Foreign keys are
-off for the duration: the tables reference each other, the rows go back in whatever order the
-tables are listed in, and an issue may perfectly well have a parent with a higher id. The pragma is
-a no-op inside a transaction, so it is set around the one this runs in, and what it would have
-caught is checked with `PRAGMA foreign_key_check` afterwards. -/
-private def cutOverLegacyDatabase : Sqlite.M Unit := do
-  let versionRows ← DBMonad.lookup (Query.all (HasModel.model SchemaVersion).index)
-  let stored : Option Int := versionRows[0]?.map fun row => row.value SchemaVersionIndex.version
-  unless stored == some legacyVersion do
-    throw <| IO.userError <|
-      s!"this database is at schema version {repr stored}, and this release can only convert " ++
-      s!"version {legacyVersion}. Run the previous release of taxis against it first: its " ++
-      "`migrate` brings any older database up to 14."
-  -- Before the transaction: `PRAGMA foreign_keys` is a no-op inside one.
-  DBMonadWithMigrations.rawExecute "PRAGMA foreign_keys = OFF"
-  try
-    DBMonadTransactional.withTransaction (m := Sqlite.M) do
-      -- The old tables carry every column the new views select; the retired `issues.label` is
-      -- simply not one of them, and the integer flag columns decode as `Bool`.
-      let mut saved : Array ((t : (%database taxisdb).Index) × Array (Table.view t).Entry) := #[]
-      for t in Enum.all (%database taxisdb).Index do
-        saved := saved.push ⟨t, ← DBMonad.lookup (Query.all t)⟩
-      for name in (← DBMonadWithMigrations.currentDatabase).tables.keys do
-        DBMonadWithMigrations.execute (.remove name)
-      DBMonadWithMigrations.executeMany ((∅ : DatabaseRecipe).operations schema)
-      for ⟨t, rows⟩ in saved do
-        for row in rows do
-          DBMonad.insert (name := t) (.ofEntryAll ((Table.entryViewEquiv t).toFun row))
-  finally
-    DBMonadWithMigrations.rawExecute "PRAGMA foreign_keys = ON"
-  let violations ← Sqlite.query "PRAGMA foreign_key_check"
-  unless violations.isEmpty do
-    throw <| IO.userError <|
-      s!"converting the legacy database left {violations.size} row(s) violating a foreign key"
-  IO.println "[taxis] converted a legacy (schema_version 14) database to the declared schema"
-
-/-- Bring the database at `db` to `Taxis.Db.Schema.schema`.
-
-Three steps, of which the middle one is only for a database the previous releases wrote:
-
-1. read what is actually there;
-2. if it has a `schema_version` table it was written before the port, so rebuild it through the
-   typed API (`cutOverLegacyDatabase`);
-3. `autoUpdate` to the declared schema — which creates everything on a fresh database, creates the
-   indexes after a cutover, and applies whatever column additions a future release declares — and
-   then assert that the database and the declaration have converged.
-
-The assertion at the end is what catches a declaration the database cannot be brought to: an
-`autoUpdate` that silently leaves work undone would otherwise be discovered by a query failing
-much later. -/
-def migrate (db : Conn) : IO Unit := do
-  let act : Sqlite.M Unit := do
-    let current ← DBMonadWithMigrations.currentDatabase
-    if current.tables.contains "schema_version" then
-      cutOverLegacyDatabase
-    DBMonadWithMigrations.autoUpdate schema
-    -- `.without` for the same reason `autoUpdate` reads its source that way: the tables the
-    -- migration framework owns are nobody's application schema, so they are not a difference.
-    let after := (← DBMonadWithMigrations.currentDatabase).without Db.Migration.frameworkTables
-    let pending := after.operations schema
-    let indexPending := after.indexOperations schema
-    let mismatches := after.constraintMismatches schema
-    unless pending.isEmpty && indexPending.isEmpty && mismatches.isEmpty do
-      throw <| IO.userError <|
-        s!"the database did not converge to the declared schema. Pending operations: " ++
-        s!"{repr pending}. Pending index operations: {repr indexPending}. Tables whose " ++
-        s!"constraints differ: {repr mismatches}."
-  act.run db
-
-end Taxis.Db

@@ -41,6 +41,12 @@ lean_exe taxis where
 lean_exe test where
   root := `Tests
 
+/-- The migration command line: `makemigrations`, `check`, `showmigrations` and `migrate`. Build
+    tooling and an operator tool; the server applies the pending migrations itself at startup, so
+    the Docker image does not carry this. -/
+lean_exe «taxis-migrate» where
+  root := `Migrate
+
 /-- Generates the benchmark fixtures `bench/run.py` measures against. Not a default target: it is
     build tooling, and nothing that ships depends on it. -/
 lean_exe «bench-seed» where

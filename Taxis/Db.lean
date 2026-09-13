@@ -1,5 +1,7 @@
 import Taxis.Db.Connection
 import Taxis.Db.Schema
+import Taxis.Db.Migrations
+import Taxis.Db.Migrate
 import Taxis.Db.Actors
 import Taxis.Db.Groups
 import Taxis.Db.Labels
@@ -17,6 +19,6 @@ import Taxis.Db.Tokens
 # Database layer
 
 SQLite-backed persistence: connection management, the schema — declared in Lean with the
-[`db`](https://github.com/chrisflav/db) library and migrated to by `Taxis.Db.migrate` — and a
-repository module per entity.
+[`db`](https://github.com/chrisflav/db) library, built by the declarative migrations in
+`Taxis.Db.Migrations` and applied by `Taxis.Db.migrate` — and a repository module per entity.
 -/
