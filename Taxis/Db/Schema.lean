@@ -1,247 +1,435 @@
+import Db
 import Taxis.Db.Connection
 
 /-!
 # Schema and migrations
 
-The schema is applied idempotently (`CREATE TABLE IF NOT EXISTS`) and versioned through a
-`schema_version` table so it can evolve without manual database edits. Foreign keys carry
-`ON DELETE CASCADE` so deleting an issue/actor/group cleans up its join rows. Every foreign-key
-column is indexed to keep graph and assignment queries fast.
+The schema is **declared in Lean**, with the [`db`](https://github.com/chrisflav/db) library, and
+the database is brought to it rather than being described by hand-written DDL.
 
-Full-text search is done with `LIKE` because the bundled SQLite amalgamation is built without
-the FTS5 extension.
+It is declared in two halves, because the two halves say different kinds of thing:
+
+* the `@[model]` structures below are the *rows*: one structure per table, one field per column,
+  with the field name being the column name and the field type its SQL type. They are what a typed
+  query returns and what a typed insert takes. The attribute also carries the table's primary key
+  — `AutoKey` for a generated id, `(primaryKey := […])` for the join tables and for `sessions`,
+  whose key is the token in the cookie;
+* everything a column cannot say on its own — `UNIQUE` groups, foreign keys with their `ON DELETE`
+  action, column defaults and indexes — is declared on `schema`, the `DatabaseRecipe` the models
+  generate, patched by the small combinators below.
+
+`schema` is the single description of what the database should look like. It is not applied to a
+database directly: the database is built by the migrations in `Taxis.Db.Migrations`, and
+`Taxis.Db.migrate` finishes by asserting that what they leave behind really is this description,
+columns, indexes and constraints alike.
+
+The column defaults are declared even though every typed insert supplies every column: they keep
+the database self-describing, so that a row written by hand through `sqlite3` — which is how one
+looks at this database, and occasionally repairs it — is still a valid row.
+
+Full-text search is done with `LIKE` because the bundled SQLite amalgamation is built without the
+FTS5 extension.
+
+## The indexes on `issues`
+
+`idx_issues_updated`, `idx_issues_title` and `idx_issues_deadline` are the three orders the issue
+list can be read in. Without them every page of the list is a full table scan into a temporary
+B-tree: at ten thousand issues that is 41 ms for the default order against 0.7 ms with the index,
+and the cost is 2.4% of the database on disk and about 3 µs per issue written.
+`updated_at DESC, id DESC` doubles as the key the list pages on, so a cursor walks the index
+instead of counting rows with `OFFSET`. The title index is declared `caseInsensitive`, which the
+library emits as `lower("title")` — the expression form of the old `COLLATE NOCASE`, and the one
+an `order_by … nocase` can actually use.
 -/
 
-namespace Taxis.Db
+/-- The insert that supplies **every** column of an entry, the generated key included.
 
-/-- The schema version this build expects. -/
-def schemaVersion : Int64 := 14
+`Database.Insert.ofEntry` leaves an `autoIncrement` column out so the database can assign it, which
+is what an application insert wants. Copying rows between two shapes of the same table is the case
+that wants the opposite: the id is part of the data, and everything referencing it would otherwise
+point at the wrong row. -/
+def Database.Insert.ofEntryAll {d : Database} {tableName : d.Index}
+    (e : (d.tables tableName).Entry) : d.Insert tableName where
+  value idx := some (e.value idx)
+  omitted_isOptional := by simp
 
-/-- The complete DDL, safe to run repeatedly. -/
-def schemaSql : String :=
-  "
-  CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+namespace Taxis.Db.Schema
 
-  CREATE TABLE IF NOT EXISTS actors (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    email TEXT NOT NULL UNIQUE,
-    display_name TEXT NOT NULL,
-    google_sub TEXT UNIQUE,
-    github_id TEXT UNIQUE,
-    admin INTEGER NOT NULL DEFAULT 0,
-    bot INTEGER NOT NULL DEFAULT 0
-  );
+initialize_database taxisdb
 
-  CREATE TABLE IF NOT EXISTS groups (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE,
-    description TEXT
-  );
+/-- A person or a bot. `google_sub`/`github_id` link the accounts that can sign in as this actor;
+`admin` may manage actors, groups and labels, `bot` is only a marker in the interface. -/
+@[model (dbName := "actors") taxisdb]
+structure Actors where
+  id : AutoKey
+  email : String
+  display_name : String
+  google_sub : Option String
+  github_id : Option String
+  admin : Bool
+  bot : Bool
+  deriving Repr
 
-  CREATE TABLE IF NOT EXISTS actor_groups (
-    actor_id INTEGER NOT NULL REFERENCES actors(id) ON DELETE CASCADE,
-    group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
-    PRIMARY KEY (actor_id, group_id)
-  );
-  CREATE INDEX IF NOT EXISTS idx_actor_groups_group ON actor_groups(group_id);
+/-- A set of actors, used as a visibility filter. -/
+@[model (dbName := "groups") taxisdb]
+structure Groups where
+  id : AutoKey
+  name : String
+  description : Option String
+  deriving Repr
 
-  CREATE TABLE IF NOT EXISTS issues (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    title TEXT NOT NULL,
-    description TEXT NOT NULL DEFAULT '',
-    goal TEXT NOT NULL DEFAULT '',
-    state TEXT NOT NULL DEFAULT 'open',
-    locked INTEGER NOT NULL DEFAULT 0,
-    label TEXT,
-    parent_id INTEGER REFERENCES issues(id) ON DELETE SET NULL,
-    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-    updated_at INTEGER NOT NULL DEFAULT (unixepoch())
-  );
-  CREATE INDEX IF NOT EXISTS idx_issues_state ON issues(state);
-  CREATE INDEX IF NOT EXISTS idx_issues_parent ON issues(parent_id);
-  -- The three orders the issue list can be read in. Without them every page of the list is a full
-  -- table scan into a temporary B-tree: at ten thousand issues that is 41 ms for the default order
-  -- against 0.7 ms with the index, and the cost is 2.4% of the database on disk and about 3 µs per
-  -- issue written. `updated_at DESC, id DESC` doubles as the key the list pages on, so a cursor
-  -- walks the index instead of counting rows with OFFSET.
-  CREATE INDEX IF NOT EXISTS idx_issues_updated ON issues(updated_at DESC, id DESC);
-  CREATE INDEX IF NOT EXISTS idx_issues_title ON issues(title COLLATE NOCASE, id);
-  -- The index over `deadline` cannot live here: that column is added by an `ALTER` below, so on a
-  -- freshly created database it does not exist yet when this runs.
+/-- Membership of an actor in a group. -/
+@[model (dbName := "actor_groups") (primaryKey := ["actor_id", "group_id"]) taxisdb]
+structure ActorGroups where
+  actor_id : Int
+  group_id : Int
+  deriving Repr
 
-  CREATE TABLE IF NOT EXISTS labels (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE,
-    description TEXT,
-    color TEXT NOT NULL DEFAULT '#6b7280'
-  );
+/-- An issue: what the tracker tracks. `parent_id` is the hierarchical relation (the Tree view),
+`goal` the condition that has to hold for it to be completed, and `locked` freezes the fields that
+describe the work. -/
+@[model (dbName := "issues") taxisdb]
+structure Issues where
+  id : AutoKey
+  title : String
+  description : String
+  goal : String
+  state : String
+  locked : Bool
+  parent_id : Option Int
+  created_at : Int
+  updated_at : Int
+  creator_id : Option Int
+  deadline : Option Int
+  deriving Repr
 
-  CREATE TABLE IF NOT EXISTS issue_labels (
-    issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
-    label_id INTEGER NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
-    PRIMARY KEY (issue_id, label_id)
-  );
-  CREATE INDEX IF NOT EXISTS idx_issue_labels_label ON issue_labels(label_id);
+/-- A reusable named tag an issue can carry any number of. -/
+@[model (dbName := "labels") taxisdb]
+structure Labels where
+  id : AutoKey
+  name : String
+  description : Option String
+  color : String
+  deriving Repr
 
-  CREATE TABLE IF NOT EXISTS issue_dependencies (
-    issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
-    depends_on_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
-    PRIMARY KEY (issue_id, depends_on_id)
-  );
-  CREATE INDEX IF NOT EXISTS idx_issue_dependencies_dep ON issue_dependencies(depends_on_id);
+/-- A label carried by an issue. -/
+@[model (dbName := "issue_labels") (primaryKey := ["issue_id", "label_id"]) taxisdb]
+structure IssueLabels where
+  issue_id : Int
+  label_id : Int
+  deriving Repr
 
-  CREATE TABLE IF NOT EXISTS issue_assignees (
-    issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
-    actor_id INTEGER NOT NULL REFERENCES actors(id) ON DELETE CASCADE,
-    PRIMARY KEY (issue_id, actor_id)
-  );
-  CREATE INDEX IF NOT EXISTS idx_issue_assignees_actor ON issue_assignees(actor_id);
+/-- An edge of the dependency graph: `issue_id` depends on `depends_on_id`. -/
+@[model (dbName := "issue_dependencies") (primaryKey := ["issue_id", "depends_on_id"]) taxisdb]
+structure IssueDependencies where
+  issue_id : Int
+  depends_on_id : Int
+  deriving Repr
 
-  CREATE TABLE IF NOT EXISTS issue_visibility (
-    issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
-    group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
-    PRIMARY KEY (issue_id, group_id)
-  );
-  CREATE INDEX IF NOT EXISTS idx_issue_visibility_group ON issue_visibility(group_id);
+/-- An actor assigned to an issue. -/
+@[model (dbName := "issue_assignees") (primaryKey := ["issue_id", "actor_id"]) taxisdb]
+structure IssueAssignees where
+  issue_id : Int
+  actor_id : Int
+  deriving Repr
 
-  CREATE TABLE IF NOT EXISTS artifacts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
-    kind TEXT NOT NULL,
-    payload TEXT NOT NULL DEFAULT 'null'
-  );
-  CREATE INDEX IF NOT EXISTS idx_artifacts_issue ON artifacts(issue_id);
+/-- A group an issue is restricted to. An issue with no such row is visible to everyone. -/
+@[model (dbName := "issue_visibility") (primaryKey := ["issue_id", "group_id"]) taxisdb]
+structure IssueVisibility where
+  issue_id : Int
+  group_id : Int
+  deriving Repr
 
-  CREATE TABLE IF NOT EXISTS checks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
-    kind TEXT NOT NULL,
-    config TEXT NOT NULL DEFAULT 'null',
-    status TEXT NOT NULL DEFAULT 'pending',
-    detail TEXT,
-    last_run INTEGER
-  );
-  CREATE INDEX IF NOT EXISTS idx_checks_issue ON checks(issue_id);
+/-- Something attached to an issue — a pull request, a branch, a file, a note. `kind` names the
+plugin that understands `payload`, which is JSON the core stores verbatim. -/
+@[model (dbName := "artifacts") taxisdb]
+structure Artifacts where
+  id : AutoKey
+  issue_id : Int
+  kind : String
+  payload : String
+  deriving Repr
 
-  CREATE TABLE IF NOT EXISTS sessions (
-    id TEXT PRIMARY KEY,
-    actor_id INTEGER NOT NULL REFERENCES actors(id) ON DELETE CASCADE,
-    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-    expires_at INTEGER NOT NULL
-  );
-  CREATE INDEX IF NOT EXISTS idx_sessions_actor ON sessions(actor_id);
+/-- A condition on an issue that something outside the tracker decides — "CI passes on this
+branch". `kind` names the plugin, `config` is its JSON configuration, `status`/`detail`/`last_run`
+are the last verdict. -/
+@[model (dbName := "checks") taxisdb]
+structure Checks where
+  id : AutoKey
+  issue_id : Int
+  kind : String
+  config : String
+  status : String
+  detail : Option String
+  last_run : Option Int
+  deriving Repr
 
-  CREATE TABLE IF NOT EXISTS comments (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
-    author_id INTEGER REFERENCES actors(id) ON DELETE SET NULL,
-    body TEXT NOT NULL,
-    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-    updated_at INTEGER NOT NULL DEFAULT (unixepoch())
-  );
-  CREATE INDEX IF NOT EXISTS idx_comments_issue ON comments(issue_id);
-  CREATE INDEX IF NOT EXISTS idx_comments_author ON comments(author_id);
+/-- A browser session. The `id` is the opaque token in the cookie, so it is the primary key rather
+than a generated one. -/
+@[model (dbName := "sessions") (primaryKey := ["id"]) taxisdb]
+structure Sessions where
+  id : String
+  actor_id : Int
+  created_at : Int
+  expires_at : Int
+  deriving Repr
 
-  CREATE TABLE IF NOT EXISTS events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
-    actor_id INTEGER REFERENCES actors(id) ON DELETE SET NULL,
-    kind TEXT NOT NULL,
-    data TEXT NOT NULL DEFAULT '{}',
-    created_at INTEGER NOT NULL DEFAULT (unixepoch())
-  );
-  CREATE INDEX IF NOT EXISTS idx_events_issue ON events(issue_id);
-  CREATE INDEX IF NOT EXISTS idx_events_author ON events(actor_id);
+/-- A comment on an issue. `author_id` is nullable so a comment outlives its author; a comment with
+a `review` verdict is a review. -/
+@[model (dbName := "comments") taxisdb]
+structure Comments where
+  id : AutoKey
+  issue_id : Int
+  author_id : Option Int
+  body : String
+  created_at : Int
+  updated_at : Int
+  review : Option String
+  deriving Repr
 
-  CREATE TABLE IF NOT EXISTS api_tokens (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    actor_id INTEGER NOT NULL REFERENCES actors(id) ON DELETE CASCADE,
-    name TEXT NOT NULL DEFAULT '',
-    token_hash TEXT NOT NULL UNIQUE,
-    prefix TEXT NOT NULL DEFAULT '',
-    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-    last_used INTEGER
-  );
-  CREATE INDEX IF NOT EXISTS idx_api_tokens_actor ON api_tokens(actor_id);
+/-- One recorded change to an issue: its history. `data` is the JSON detail of the change. -/
+@[model (dbName := "events") taxisdb]
+structure Events where
+  id : AutoKey
+  issue_id : Int
+  actor_id : Option Int
+  kind : String
+  data : String
+  created_at : Int
+  deriving Repr
 
-  -- Participants opt in (explicitly, or automatically as creator/assignee) to notifications
-  -- about an issue's activity.
-  CREATE TABLE IF NOT EXISTS issue_participants (
-    issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
-    actor_id INTEGER NOT NULL REFERENCES actors(id) ON DELETE CASCADE,
-    PRIMARY KEY (issue_id, actor_id)
-  );
-  CREATE INDEX IF NOT EXISTS idx_issue_participants_actor ON issue_participants(actor_id);
+/-- A personal access token. Only the SHA-256 hash is stored; `prefix` is the visible head of the
+secret, so a token can be recognised in a list. -/
+@[model (dbName := "api_tokens") taxisdb]
+structure ApiTokens where
+  id : AutoKey
+  actor_id : Int
+  name : String
+  token_hash : String
+  «prefix» : String
+  created_at : Int
+  last_used : Option Int
+  deriving Repr
 
-  -- One row per (recipient, activity): fanned out from events/comments to every participant of
-  -- the issue except whoever triggered the activity.
-  CREATE TABLE IF NOT EXISTS notifications (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    actor_id INTEGER NOT NULL REFERENCES actors(id) ON DELETE CASCADE,
-    issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
-    kind TEXT NOT NULL,
-    data TEXT NOT NULL DEFAULT '{}',
-    read INTEGER NOT NULL DEFAULT 0,
-    done INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL DEFAULT (unixepoch())
-  );
-  CREATE INDEX IF NOT EXISTS idx_notifications_actor ON notifications(actor_id, read);
-  CREATE INDEX IF NOT EXISTS idx_notifications_issue ON notifications(issue_id);
+/-- Participants opt in (explicitly, or automatically as creator/assignee) to notifications about
+an issue's activity. -/
+@[model (dbName := "issue_participants") (primaryKey := ["issue_id", "actor_id"]) taxisdb]
+structure IssueParticipants where
+  issue_id : Int
+  actor_id : Int
+  deriving Repr
 
-  -- An explicit ask for `actor_id` to review an issue, independent of assignment.
-  -- `resolved_at` is set once that actor posts a review, or the request is withdrawn/fulfilled.
-  CREATE TABLE IF NOT EXISTS review_requests (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
-    actor_id INTEGER NOT NULL REFERENCES actors(id) ON DELETE CASCADE,
-    requested_by INTEGER REFERENCES actors(id) ON DELETE SET NULL,
-    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-    resolved_at INTEGER
-  );
-  CREATE INDEX IF NOT EXISTS idx_review_requests_issue ON review_requests(issue_id);
-  CREATE INDEX IF NOT EXISTS idx_review_requests_actor ON review_requests(actor_id);
-  "
+/-- One row per (recipient, activity): fanned out from events/comments to every participant of the
+issue except whoever triggered the activity. `read` (seen) and `done` (resolved) are independent.
+-/
+@[model (dbName := "notifications") taxisdb]
+structure Notifications where
+  id : AutoKey
+  actor_id : Int
+  issue_id : Int
+  kind : String
+  data : String
+  read : Bool
+  done : Bool
+  created_at : Int
+  deriving Repr
 
-/-- A single-column row holding the stored schema version. -/
-private structure VersionRow where
-  version : Int64
-deriving SQLite.Row, Inhabited
+/-- An explicit ask for `actor_id` to review an issue, independent of assignment. `resolved_at` is
+set once that actor posts a review, or the request is withdrawn/fulfilled. -/
+@[model (dbName := "review_requests") taxisdb]
+structure ReviewRequests where
+  id : AutoKey
+  issue_id : Int
+  actor_id : Int
+  requested_by : Option Int
+  created_at : Int
+  resolved_at : Option Int
+  deriving Repr
 
-/-- Apply the schema and record its version. Idempotent, and applies incremental column
-    additions to databases created by an older schema version. -/
-def migrate (db : Conn) : IO Unit := do
-  db.exec schemaSql
-  -- Later versions added columns to existing tables. `CREATE TABLE IF NOT EXISTS` won't add a
-  -- column to an existing table, so ensure them here; each `ALTER` errors harmlessly if the
-  -- column already exists.
-  try db.exec "ALTER TABLE labels ADD COLUMN color TEXT NOT NULL DEFAULT '#6b7280'" catch _ => pure ()
-  try db.exec "ALTER TABLE issues ADD COLUMN locked INTEGER NOT NULL DEFAULT 0" catch _ => pure ()
-  try db.exec "ALTER TABLE actors ADD COLUMN admin INTEGER NOT NULL DEFAULT 0" catch _ => pure ()
-  try db.exec "ALTER TABLE actors ADD COLUMN bot INTEGER NOT NULL DEFAULT 0" catch _ => pure ()
-  try db.exec "ALTER TABLE issues ADD COLUMN parent_id INTEGER" catch _ => pure ()
-  -- v7 split the old many-to-many `issue_parents` (which modelled dependency edges) into a single
-  -- hierarchical `parent_id` plus an `issue_dependencies` table. Migrate the old edges, which were
-  -- dependencies, into the new table, then retire the old one.
-  try db.exec "INSERT OR IGNORE INTO issue_dependencies (issue_id, depends_on_id)
-    SELECT child_id, parent_id FROM issue_parents" catch _ => pure ()
-  try db.exec "DROP TABLE IF EXISTS issue_parents" catch _ => pure ()
-  -- v9: issue creator/deadline, and review comments.
-  try db.exec "ALTER TABLE issues ADD COLUMN creator_id INTEGER REFERENCES actors(id) ON DELETE SET NULL" catch _ => pure ()
-  try db.exec "ALTER TABLE issues ADD COLUMN deadline INTEGER" catch _ => pure ()
-  try db.exec "ALTER TABLE comments ADD COLUMN review TEXT" catch _ => pure ()
-  -- v11: an independent "done" flag on notifications (separate from "read").
-  try db.exec "ALTER TABLE notifications ADD COLUMN done INTEGER NOT NULL DEFAULT 0" catch _ => pure ()
-  -- v12: GitHub OAuth login, alongside Google.
-  try db.exec "ALTER TABLE actors ADD COLUMN github_id TEXT" catch _ => pure ()
-  -- v13: an issue's goal condition.
-  try db.exec "ALTER TABLE issues ADD COLUMN goal TEXT NOT NULL DEFAULT ''" catch _ => pure ()
-  -- v14: sorting the issue list by deadline. Created here rather than in `schemaSql` because the
-  -- column it indexes is one of the `ALTER`s above.
-  try db.exec "CREATE INDEX IF NOT EXISTS idx_issues_deadline ON issues(deadline, id)" catch _ => pure ()
-  let rows ← (← db query!"SELECT version FROM schema_version LIMIT 1" as VersionRow).toArray
-  if rows.isEmpty then
-    db exec!"INSERT INTO schema_version (version) VALUES ({schemaVersion})"
-  else
-    db exec!"UPDATE schema_version SET version = {schemaVersion}"
+/-! ## Patching the generated recipe
 
-end Taxis.Db
+`@[model]` generates a table with its columns and its primary key — and nothing else, since which
+of a structure's fields are unique, which reference another table and what a column defaults to
+are not things the structure says. These are the combinators that add them; each takes the recipe
+last, so a table's constraints read as a pipeline. -/
+
+/-- Apply `f` to the named table of a recipe. -/
+private def withTable (name : String) (f : TableRecipe → TableRecipe) (r : DatabaseRecipe) :
+    DatabaseRecipe where
+  tables := r.tables.map fun n t => if n == name then f t else t
+
+/-- Give a column the value the database fills in when an insert omits it. -/
+private def withDefault (col : String) (default : ColumnDefault) (t : TableRecipe) : TableRecipe :=
+  { t with columns := t.columns.map fun n c => if n == col then { c with default? := default } else c }
+
+/-- Declare that a column's values are unique across the table. -/
+private def withUnique (col : String) (t : TableRecipe) : TableRecipe :=
+  { t with unique := t.unique ++ [[col]] }
+
+/-- Declare that a column references a column of another table, and what happens to this row when
+the referenced one is deleted. -/
+private def withForeignKey (col : String) (foreignTable : String) (foreignColumn : String)
+    (onDelete : ForeignKeyAction) (t : TableRecipe) : TableRecipe :=
+  { t with
+      foreignKeys := t.foreignKeys ++
+        [{ columns := [col], foreignTable := foreignTable, foreignColumns := [foreignColumn],
+           onDelete := onDelete }] }
+
+/-- The schema this build expects: the models above, with the constraints, defaults and indexes
+that `@[model]` cannot express.
+
+This is what `migrate` brings the database to, and what it then checks the database against. -/
+def schema : DatabaseRecipe :=
+  (%database taxisdb).recipe
+    |> withTable "actors" (fun t => t
+        |> withUnique "email"
+        |> withUnique "google_sub"
+        |> withUnique "github_id"
+        |> withDefault "admin" (.bool false)
+        |> withDefault "bot" (.bool false))
+    |> withTable "groups" (withUnique "name")
+    |> withTable "actor_groups" (fun t => t
+        |> withForeignKey "actor_id" "actors" "id" .cascade
+        |> withForeignKey "group_id" "groups" "id" .cascade)
+    |> withTable "issues" (fun t => t
+        |> withDefault "description" (.str "")
+        |> withDefault "goal" (.str "")
+        |> withDefault "state" (.str "open")
+        |> withDefault "locked" (.bool false)
+        |> withDefault "created_at" (.call "unixepoch()")
+        |> withDefault "updated_at" (.call "unixepoch()")
+        |> withForeignKey "parent_id" "issues" "id" .setNull
+        |> withForeignKey "creator_id" "actors" "id" .setNull)
+    |> withTable "labels" (fun t => t
+        |> withUnique "name"
+        |> withDefault "color" (.str "#6b7280"))
+    |> withTable "issue_labels" (fun t => t
+        |> withForeignKey "issue_id" "issues" "id" .cascade
+        |> withForeignKey "label_id" "labels" "id" .cascade)
+    |> withTable "issue_dependencies" (fun t => t
+        |> withForeignKey "issue_id" "issues" "id" .cascade
+        |> withForeignKey "depends_on_id" "issues" "id" .cascade)
+    |> withTable "issue_assignees" (fun t => t
+        |> withForeignKey "issue_id" "issues" "id" .cascade
+        |> withForeignKey "actor_id" "actors" "id" .cascade)
+    |> withTable "issue_visibility" (fun t => t
+        |> withForeignKey "issue_id" "issues" "id" .cascade
+        |> withForeignKey "group_id" "groups" "id" .cascade)
+    |> withTable "artifacts" (fun t => t
+        |> withDefault "payload" (.str "null")
+        |> withForeignKey "issue_id" "issues" "id" .cascade)
+    |> withTable "checks" (fun t => t
+        |> withDefault "config" (.str "null")
+        |> withDefault "status" (.str "pending")
+        |> withForeignKey "issue_id" "issues" "id" .cascade)
+    |> withTable "sessions" (fun t => t
+        |> withDefault "created_at" (.call "unixepoch()")
+        |> withForeignKey "actor_id" "actors" "id" .cascade)
+    |> withTable "comments" (fun t => t
+        |> withDefault "created_at" (.call "unixepoch()")
+        |> withDefault "updated_at" (.call "unixepoch()")
+        |> withForeignKey "issue_id" "issues" "id" .cascade
+        |> withForeignKey "author_id" "actors" "id" .setNull)
+    |> withTable "events" (fun t => t
+        |> withDefault "data" (.str "{}")
+        |> withDefault "created_at" (.call "unixepoch()")
+        |> withForeignKey "issue_id" "issues" "id" .cascade
+        |> withForeignKey "actor_id" "actors" "id" .setNull)
+    |> withTable "api_tokens" (fun t => t
+        |> withUnique "token_hash"
+        |> withDefault "name" (.str "")
+        |> withDefault "prefix" (.str "")
+        |> withDefault "created_at" (.call "unixepoch()")
+        |> withForeignKey "actor_id" "actors" "id" .cascade)
+    |> withTable "issue_participants" (fun t => t
+        |> withForeignKey "issue_id" "issues" "id" .cascade
+        |> withForeignKey "actor_id" "actors" "id" .cascade)
+    |> withTable "notifications" (fun t => t
+        |> withDefault "data" (.str "{}")
+        |> withDefault "read" (.bool false)
+        |> withDefault "done" (.bool false)
+        |> withDefault "created_at" (.call "unixepoch()")
+        |> withForeignKey "actor_id" "actors" "id" .cascade
+        |> withForeignKey "issue_id" "issues" "id" .cascade)
+    |> withTable "review_requests" (fun t => t
+        |> withDefault "created_at" (.call "unixepoch()")
+        |> withForeignKey "issue_id" "issues" "id" .cascade
+        |> withForeignKey "actor_id" "actors" "id" .cascade
+        |> withForeignKey "requested_by" "actors" "id" .setNull)
+    -- Every foreign-key column is indexed, so that the graph, assignment and notification queries
+    -- do not scan; `tableIndexes` names the columns through the model's index type, so a column
+    -- that is renamed takes its index with it instead of leaving a string behind.
+    |>.withIndexes "actor_groups" (tableIndexes ActorGroupsIndex
+        [{ name := "idx_actor_groups_group", keys := [{ column := .group_id }] }])
+    |>.withIndexes "issues" (tableIndexes IssuesIndex
+        [{ name := "idx_issues_state", keys := [{ column := .state }] },
+         { name := "idx_issues_parent", keys := [{ column := .parent_id }] },
+         { name := "idx_issues_updated",
+           keys := [{ column := .updated_at, direction := .desc },
+                    { column := .id, direction := .desc }] },
+         { name := "idx_issues_title",
+           keys := [{ column := .title, collation := .caseInsensitive }, { column := .id }] },
+         { name := "idx_issues_deadline",
+           keys := [{ column := .deadline }, { column := .id }] }])
+    |>.withIndexes "issue_labels" (tableIndexes IssueLabelsIndex
+        [{ name := "idx_issue_labels_label", keys := [{ column := .label_id }] }])
+    |>.withIndexes "issue_dependencies" (tableIndexes IssueDependenciesIndex
+        [{ name := "idx_issue_dependencies_dep", keys := [{ column := .depends_on_id }] }])
+    |>.withIndexes "issue_assignees" (tableIndexes IssueAssigneesIndex
+        [{ name := "idx_issue_assignees_actor", keys := [{ column := .actor_id }] }])
+    |>.withIndexes "issue_visibility" (tableIndexes IssueVisibilityIndex
+        [{ name := "idx_issue_visibility_group", keys := [{ column := .group_id }] }])
+    |>.withIndexes "artifacts" (tableIndexes ArtifactsIndex
+        [{ name := "idx_artifacts_issue", keys := [{ column := .issue_id }] }])
+    |>.withIndexes "checks" (tableIndexes ChecksIndex
+        [{ name := "idx_checks_issue", keys := [{ column := .issue_id }] }])
+    |>.withIndexes "sessions" (tableIndexes SessionsIndex
+        [{ name := "idx_sessions_actor", keys := [{ column := .actor_id }] }])
+    |>.withIndexes "comments" (tableIndexes CommentsIndex
+        [{ name := "idx_comments_issue", keys := [{ column := .issue_id }] },
+         { name := "idx_comments_author", keys := [{ column := .author_id }] }])
+    |>.withIndexes "events" (tableIndexes EventsIndex
+        [{ name := "idx_events_issue", keys := [{ column := .issue_id }] },
+         { name := "idx_events_author", keys := [{ column := .actor_id }] }])
+    |>.withIndexes "api_tokens" (tableIndexes ApiTokensIndex
+        [{ name := "idx_api_tokens_actor", keys := [{ column := .actor_id }] }])
+    |>.withIndexes "issue_participants" (tableIndexes IssueParticipantsIndex
+        [{ name := "idx_issue_participants_actor", keys := [{ column := .actor_id }] }])
+    |>.withIndexes "notifications" (tableIndexes NotificationsIndex
+        [{ name := "idx_notifications_actor",
+           keys := [{ column := .actor_id }, { column := .read }] },
+         { name := "idx_notifications_issue", keys := [{ column := .issue_id }] }])
+    |>.withIndexes "review_requests" (tableIndexes ReviewRequestsIndex
+        [{ name := "idx_review_requests_issue", keys := [{ column := .issue_id }] },
+         { name := "idx_review_requests_actor", keys := [{ column := .actor_id }] }])
+
+/-- Insert a model value with the value its `AutoKey` already has, rather than letting the database
+assign one. For copying rows that already exist and are already referenced — see
+`Database.Insert.ofEntryAll`. -/
+def insertFull {α : Type} {m : Type → Type} [HasModel α]
+    [DBMonad (HasModel.database α) m] (x : α) : m Unit :=
+  -- The ascription is what fixes the table the insert is into: without it the `HasTable` instance
+  -- is asked for at an index that is still a metavariable.
+  let data : (HasModel.database α).Insert (HasModel.model α).index :=
+    .ofEntryAll <| HasTable.encoding.toFun x
+  DBMonad.insert data
+
+/-! ## The database the last release wrote
+
+`schema_version` is not part of `schema`: it is the bookkeeping of the schema layer this one
+replaces, and the cutover in `Taxis.Db.migrate` reads it once and then drops it. It lives in a
+database of its own so that it cannot be mistaken for a table the target schema declares. -/
+
+initialize_database taxisLegacy
+
+/-- The single row of the `schema_version` table of a database written by an older release. -/
+@[model (dbName := "schema_version") taxisLegacy]
+structure SchemaVersion where
+  version : Int
+  deriving Repr
+
+/-- The schema version the last release before the port left behind, and the only one this
+release's cutover can read. -/
+def legacyVersion : Int := 14
+
+end Taxis.Db.Schema

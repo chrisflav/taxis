@@ -15,6 +15,286 @@ private def roundtrips [ToJson α] [FromJson α] [BEq α] (x : α) : Bool :=
   | .ok y => x == y
   | .error _ => false
 
+/-- The schema of the last release before the schema was declared in Lean: its `schemaSql`
+    verbatim, followed by the three column additions its `migrate` applied on top of that text
+    (`issues.creator_id`, `issues.deadline`, `comments.review`) and the index over the last of
+    them. The other `ALTER`s of that release only mattered for databases older than v14, which
+    this release does not convert anyway.
+
+    Frozen, and a test fixture rather than application SQL: nothing in `Taxis` emits DDL any more.
+    It exists so that the legacy cutover in `Taxis.Db.migrate` can be run against a database of
+    exactly the shape it has to convert. -/
+private def legacySchemaSql : String :=
+  "
+  CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+
+  CREATE TABLE IF NOT EXISTS actors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    google_sub TEXT UNIQUE,
+    github_id TEXT UNIQUE,
+    admin INTEGER NOT NULL DEFAULT 0,
+    bot INTEGER NOT NULL DEFAULT 0
+  );
+
+  CREATE TABLE IF NOT EXISTS groups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    description TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS actor_groups (
+    actor_id INTEGER NOT NULL REFERENCES actors(id) ON DELETE CASCADE,
+    group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    PRIMARY KEY (actor_id, group_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_actor_groups_group ON actor_groups(group_id);
+
+  CREATE TABLE IF NOT EXISTS issues (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    goal TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL DEFAULT 'open',
+    locked INTEGER NOT NULL DEFAULT 0,
+    label TEXT,
+    parent_id INTEGER REFERENCES issues(id) ON DELETE SET NULL,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+  );
+  CREATE INDEX IF NOT EXISTS idx_issues_state ON issues(state);
+  CREATE INDEX IF NOT EXISTS idx_issues_parent ON issues(parent_id);
+  CREATE INDEX IF NOT EXISTS idx_issues_updated ON issues(updated_at DESC, id DESC);
+  CREATE INDEX IF NOT EXISTS idx_issues_title ON issues(title COLLATE NOCASE, id);
+
+  CREATE TABLE IF NOT EXISTS labels (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    description TEXT,
+    color TEXT NOT NULL DEFAULT '#6b7280'
+  );
+
+  CREATE TABLE IF NOT EXISTS issue_labels (
+    issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+    label_id INTEGER NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+    PRIMARY KEY (issue_id, label_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_issue_labels_label ON issue_labels(label_id);
+
+  CREATE TABLE IF NOT EXISTS issue_dependencies (
+    issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+    depends_on_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+    PRIMARY KEY (issue_id, depends_on_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_issue_dependencies_dep ON issue_dependencies(depends_on_id);
+
+  CREATE TABLE IF NOT EXISTS issue_assignees (
+    issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+    actor_id INTEGER NOT NULL REFERENCES actors(id) ON DELETE CASCADE,
+    PRIMARY KEY (issue_id, actor_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_issue_assignees_actor ON issue_assignees(actor_id);
+
+  CREATE TABLE IF NOT EXISTS issue_visibility (
+    issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+    group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    PRIMARY KEY (issue_id, group_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_issue_visibility_group ON issue_visibility(group_id);
+
+  CREATE TABLE IF NOT EXISTS artifacts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    payload TEXT NOT NULL DEFAULT 'null'
+  );
+  CREATE INDEX IF NOT EXISTS idx_artifacts_issue ON artifacts(issue_id);
+
+  CREATE TABLE IF NOT EXISTS checks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    config TEXT NOT NULL DEFAULT 'null',
+    status TEXT NOT NULL DEFAULT 'pending',
+    detail TEXT,
+    last_run INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_checks_issue ON checks(issue_id);
+
+  CREATE TABLE IF NOT EXISTS sessions (
+    id TEXT PRIMARY KEY,
+    actor_id INTEGER NOT NULL REFERENCES actors(id) ON DELETE CASCADE,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    expires_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_sessions_actor ON sessions(actor_id);
+
+  CREATE TABLE IF NOT EXISTS comments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+    author_id INTEGER REFERENCES actors(id) ON DELETE SET NULL,
+    body TEXT NOT NULL,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+  );
+  CREATE INDEX IF NOT EXISTS idx_comments_issue ON comments(issue_id);
+  CREATE INDEX IF NOT EXISTS idx_comments_author ON comments(author_id);
+
+  CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+    actor_id INTEGER REFERENCES actors(id) ON DELETE SET NULL,
+    kind TEXT NOT NULL,
+    data TEXT NOT NULL DEFAULT '{}',
+    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+  );
+  CREATE INDEX IF NOT EXISTS idx_events_issue ON events(issue_id);
+  CREATE INDEX IF NOT EXISTS idx_events_author ON events(actor_id);
+
+  CREATE TABLE IF NOT EXISTS api_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor_id INTEGER NOT NULL REFERENCES actors(id) ON DELETE CASCADE,
+    name TEXT NOT NULL DEFAULT '',
+    token_hash TEXT NOT NULL UNIQUE,
+    prefix TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    last_used INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_api_tokens_actor ON api_tokens(actor_id);
+
+  CREATE TABLE IF NOT EXISTS issue_participants (
+    issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+    actor_id INTEGER NOT NULL REFERENCES actors(id) ON DELETE CASCADE,
+    PRIMARY KEY (issue_id, actor_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_issue_participants_actor ON issue_participants(actor_id);
+
+  CREATE TABLE IF NOT EXISTS notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor_id INTEGER NOT NULL REFERENCES actors(id) ON DELETE CASCADE,
+    issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    data TEXT NOT NULL DEFAULT '{}',
+    read INTEGER NOT NULL DEFAULT 0,
+    done INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+  );
+  CREATE INDEX IF NOT EXISTS idx_notifications_actor ON notifications(actor_id, read);
+  CREATE INDEX IF NOT EXISTS idx_notifications_issue ON notifications(issue_id);
+
+  CREATE TABLE IF NOT EXISTS review_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    issue_id INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+    actor_id INTEGER NOT NULL REFERENCES actors(id) ON DELETE CASCADE,
+    requested_by INTEGER REFERENCES actors(id) ON DELETE SET NULL,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    resolved_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_review_requests_issue ON review_requests(issue_id);
+  CREATE INDEX IF NOT EXISTS idx_review_requests_actor ON review_requests(actor_id);
+
+  ALTER TABLE issues ADD COLUMN creator_id INTEGER REFERENCES actors(id) ON DELETE SET NULL;
+  ALTER TABLE issues ADD COLUMN deadline INTEGER;
+  ALTER TABLE comments ADD COLUMN review TEXT;
+  CREATE INDEX IF NOT EXISTS idx_issues_deadline ON issues(deadline, id);
+  "
+
+/-- A handful of rows of every shape the cutover has to carry across, written the way the old code
+    wrote them. Issue 1's parent is issue 3 — a parent with a *higher* id, which is what forces
+    foreign keys off while the rows are copied back in table order. -/
+private def legacySeedSql : String :=
+  "
+  INSERT INTO schema_version (version) VALUES (14);
+
+  INSERT INTO actors (id, email, display_name, google_sub, github_id, admin, bot)
+    VALUES (1, 'old-admin@x.io', 'Old Admin', NULL, NULL, 1, 0);
+  INSERT INTO actors (id, email, display_name, google_sub, github_id, admin, bot)
+    VALUES (2, 'old-dev@x.io', 'Old Dev', 'google-old', 'github-old', 0, 0);
+
+  INSERT INTO groups (id, name, description) VALUES (1, 'legacy', 'a group from before');
+  INSERT INTO actor_groups (actor_id, group_id) VALUES (1, 1);
+
+  INSERT INTO issues (id, title, description, goal, state, locked, label, parent_id, created_at, updated_at, creator_id, deadline)
+    VALUES (3, 'The old parent', 'it came first in the file', '', 'open', 0, 'stale', NULL, 1700000000, 1700000000, 1, NULL);
+  INSERT INTO issues (id, title, description, goal, state, locked, label, parent_id, created_at, updated_at, creator_id, deadline)
+    VALUES (2, 'An unrelated old issue', '', '', 'completed', 0, NULL, NULL, 1700000100, 1700000100, 2, 1800000000);
+  INSERT INTO issues (id, title, description, goal, state, locked, label, parent_id, created_at, updated_at, creator_id, deadline)
+    VALUES (1, 'The old child', 'filed under an issue with a higher id', 'it ships', 'open', 1, NULL, 3, 1700000200, 1700000200, 1, NULL);
+
+  INSERT INTO labels (id, name, description, color) VALUES (1, 'legacy-label', 'from before', '#123456');
+  INSERT INTO issue_labels (issue_id, label_id) VALUES (1, 1);
+
+  INSERT INTO comments (id, issue_id, author_id, body, created_at, updated_at, review)
+    VALUES (1, 1, 1, 'an old comment', 1700000300, 1700000300, NULL);
+  INSERT INTO events (id, issue_id, actor_id, kind, data, created_at)
+    VALUES (1, 1, 1, 'title', '{}', 1700000400);
+
+  INSERT INTO sessions (id, actor_id, created_at, expires_at)
+    VALUES ('legacy-session-token', 1, 1700000000, 4102444800);
+  INSERT INTO api_tokens (id, actor_id, name, token_hash, prefix, created_at, last_used)
+    VALUES (1, 1, 'old token', 'legacy-token-hash', 'issues_pat_old', 1700000000, NULL);
+
+  INSERT INTO notifications (id, actor_id, issue_id, kind, data, read, done, created_at)
+    VALUES (1, 1, 1, 'comment', '{}', 1, 0, 1700000500);
+  INSERT INTO review_requests (id, issue_id, actor_id, requested_by, created_at, resolved_at)
+    VALUES (1, 1, 2, 1, 1700000600, NULL);
+  "
+
+/-- Convert a database exactly as the last release before the port left it, and read it back
+    through the ordinary repository functions.
+
+    A definition of its own, taking `main`'s `check`, rather than another stretch of `main`: the
+    elaborator's cost in a `do` block grows faster than the block does, and `main` is long already.
+-/
+private def legacyCutoverTests (check : String → Bool → IO Unit) : IO Unit := do
+  let legacyPath : System.FilePath := "/tmp/issues-selftest-legacy.sqlite"
+  for suffix in ["", "-wal", "-shm"] do
+    try IO.FS.removeFile (legacyPath.toString ++ suffix) catch _ => pure ()
+  let legacyDb ← connect legacyPath
+  legacyDb.exec legacySchemaSql
+  legacyDb.exec legacySeedSql
+  migrate legacyDb
+  let legacyChild ← getIssue legacyDb ⟨1⟩
+  check "a legacy issue survives the cutover" ((legacyChild.map (·.title)) == some "The old child")
+  check "its parent with the higher id survives"
+    ((legacyChild.bind (·.parent)).map (·.val) == some 3)
+  check "its label survives" ((legacyChild.map (·.labels)) == some #[⟨1⟩])
+  check "an integer flag column reads back as a bool"
+    (((← getActor legacyDb ⟨1⟩).map (·.admin)) == some true)
+  check "a column added by the old ALTER ladder survives"
+    (((← getActor legacyDb ⟨2⟩).bind (·.githubId)) == some "github-old")
+  check "group membership survives" ((← groupMemberCount legacyDb ⟨1⟩) == 1)
+  check "every legacy issue survives" ((← listIssues legacyDb none none none none).size == 3)
+  check "a legacy comment survives" ((← issueComments legacyDb ⟨1⟩).size == 1)
+  check "a legacy event survives" ((← issueEvents legacyDb ⟨1⟩).any (·.kind == "title"))
+  check "a legacy notification survives, still read"
+    ((← listNotifications legacyDb ⟨1⟩).any (·.read))
+  check "a legacy session still resolves"
+    (((← sessionActor legacyDb "legacy-session-token").map (·.id.val)) == some 1)
+  check "a legacy api token still resolves"
+    (((← actorForTokenHash legacyDb "legacy-token-hash").map (·.id.val)) == some 1)
+  check "a legacy review request survives" ((← issueReviewRequests legacyDb ⟨1⟩).size == 1)
+  let versionTable ← (Sqlite.query
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'schema_version'").run legacyDb
+  check "the schema_version table is gone" versionTable.isEmpty
+  -- A converted database is a fresh one: it has applied exactly the migrations a fresh one has,
+  -- so every later migration reaches both by the same call.
+  check "the cutover records the initial migration"
+    ((← Taxis.Db.run legacyDb (Db.Migration.applied (m := Sqlite.M))) == #["0001_initial"])
+  -- The cutover runs `0001_initial`'s steps, which are the `CREATE INDEX`es as well as the
+  -- `CREATE TABLE`s; the old database had none of the indexes this release declares.
+  let issueIndexes ← Taxis.Db.run legacyDb do
+    let current ← DBMonadWithMigrations.currentDatabase
+    pure ((current.tables["issues"]?.map (·.indexes.map (·.name))).getD [])
+  check "the cutover creates the indexes" (issueIndexes.contains "idx_issues_updated")
+  -- The converted database is an ordinary one, so migrating it again has nothing left to do; the
+  -- fixed-point assertions inside `migrate` are what would object.
+  let convertedTwice ←
+    try migrate legacyDb; pure true
+    catch _ => pure false
+  check "migrating a converted database again is a no-op" convertedTwice
+
 set_option maxRecDepth 4000 in
 def main : IO Unit := do
   let failures ← IO.mkRef 0
@@ -38,6 +318,20 @@ def main : IO Unit := do
     try IO.FS.removeFile (path.toString ++ suffix) catch _ => pure ()
   let db ← connect path
   migrate db
+  -- `migrate` ends by asserting that the database has converged to the declared schema, so a
+  -- second run against a database it just created is where a schema that cannot converge shows up.
+  let migratedTwice ←
+    try migrate db; pure true
+    catch _ => pure false
+  check "migrating a fresh database twice is fine" migratedTwice
+  -- What `taxis-migrate check` runs, and the reason the declaration and the migrations cannot
+  -- drift apart unnoticed: a schema change that nobody wrote a migration for fails here.
+  check "the declared schema matches the migrations"
+    (match Db.Migration.planSteps Taxis.Db.migrations Taxis.Db.Schema.schema with
+     | .ok [] => true
+     | _ => false)
+  check "a fresh database records the migrations it was built by"
+    ((← Taxis.Db.run db (Db.Migration.applied (m := Sqlite.M))) == #["0001_initial"])
 
   let g ← createGroup db { name := "core" }
   check "group created" (g.name == "core")
@@ -147,6 +441,9 @@ def main : IO Unit := do
   check "delete issue" (← deleteIssue db child.id)
   check "artifacts gone after cascade" ((← issueArtifacts db child.id).isEmpty)
   check "comments gone after cascade" ((← issueComments db child.id).isEmpty)
+
+  IO.println "Legacy database cutover"
+  legacyCutoverTests check
 
   IO.println "SHA-256"
   -- NIST test vectors.

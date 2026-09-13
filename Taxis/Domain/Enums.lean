@@ -1,11 +1,13 @@
 import Taxis.Json
-import SQLite
 
 /-!
 # Status enumerations
 
 Issue lifecycle state and check outcome, each serialised as a lowercase string on the wire
-and stored as `TEXT` in the database.
+and stored in a `text` column.
+
+`toString`/`ofString?` are the whole of that: the repositories call them where a row meets the
+domain, so nothing here has to know which database the column lives in.
 -/
 
 open Lean
@@ -42,15 +44,6 @@ instance : FromJson IssueState where
     | some v => pure v
     | none => throw s!"invalid issue state: {s}"
 
-instance : SQLite.QueryParam IssueState where
-  bind stmt i s := SQLite.QueryParam.bind stmt i s.toString
-instance : SQLite.ResultColumn IssueState where
-  get stmt i := do
-    let s ← SQLite.ResultColumn.get (α := String) stmt i
-    match ofString? s with
-    | some v => pure v
-    | none => throw (IO.userError s!"invalid issue state in database: {s}")
-
 end IssueState
 
 /-- Outcome of evaluating a check. -/
@@ -86,15 +79,6 @@ instance : FromJson CheckStatus where
     | some v => pure v
     | none => throw s!"invalid check status: {s}"
 
-instance : SQLite.QueryParam CheckStatus where
-  bind stmt i s := SQLite.QueryParam.bind stmt i s.toString
-instance : SQLite.ResultColumn CheckStatus where
-  get stmt i := do
-    let s ← SQLite.ResultColumn.get (α := String) stmt i
-    match ofString? s with
-    | some v => pure v
-    | none => throw (IO.userError s!"invalid check status in database: {s}")
-
 end CheckStatus
 
 /-- The verdict of a review comment (see `Taxis.Comment.review`). -/
@@ -123,15 +107,6 @@ instance : FromJson ReviewState where
     match ofString? s with
     | some v => pure v
     | none => throw s!"invalid review state: {s}"
-
-instance : SQLite.QueryParam ReviewState where
-  bind stmt i s := SQLite.QueryParam.bind stmt i s.toString
-instance : SQLite.ResultColumn ReviewState where
-  get stmt i := do
-    let s ← SQLite.ResultColumn.get (α := String) stmt i
-    match ofString? s with
-    | some v => pure v
-    | none => throw (IO.userError s!"invalid review state in database: {s}")
 
 end ReviewState
 

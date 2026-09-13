@@ -1,4 +1,5 @@
 import Taxis.Db.Connection
+import Taxis.Db.Schema
 import Taxis.Db.Notifications
 import Taxis.Domain.Input
 
@@ -7,30 +8,45 @@ import Taxis.Domain.Input
 
 Events form an issue's audit trail. `recordEvent` appends one row (and fans out a notification to
 the issue's participants, see `Taxis.Db.fanOutNotification`); `recordIssueChanges` diffs an issue
-before and after an update and appends one event per changed field. Reads join `actors` to
-denormalise the acting actor's display name and bot flag so the detail view renders without a
-second lookup.
+before and after an update and appends one event per changed field. Reads are a `Query.leftJoin`
+onto `actors` to denormalise the acting actor's display name and bot flag so the detail view
+renders without a second lookup; the join makes those columns nullable, which is what an event
+whose actor is gone needs.
 -/
 
 open Lean
 
 namespace Taxis.Db
 
-private structure EventRow where
-  id : EventId
-  issueId : IssueId
-  actorId : Option ActorId
-  actorName : Option String
-  actorBot : Option Bool
-  kind : String
-  data : String
-  createdAt : Timestamp
-deriving SQLite.Row, Inhabited
+open Schema (EventsIndex ActorsIndex IssuesIndex)
 
-private def EventRow.toEvent (r : EventRow) : Event :=
-  { id := r.id, issueId := r.issueId, actorId := r.actorId, actorName := r.actorName,
-    actorBot := r.actorBot.getD false, kind := r.kind,
-    data := (Json.parse r.data).toOption.getD (Json.mkObj []), createdAt := r.createdAt }
+private abbrev taxis : Database := HasModel.database Schema.Events
+
+private abbrev eventsTable : taxis.Index := (HasModel.model Schema.Events).index
+private abbrev actorsTable : taxis.Index := (HasModel.model Schema.Actors).index
+
+/-- An event with its actor, where it still has one. -/
+private abbrev eventView : View taxis :=
+  (Table.view eventsTable).prod (Table.view actorsTable).nullable
+
+private abbrev eventCol (c : Schema.EventsIndex) : eventView.Index := Sum.inl c
+private abbrev eventActorCol (c : Schema.ActorsIndex) : eventView.Index := Sum.inr c
+
+/-- The join every read here starts from. -/
+private def eventJoin : Query taxis eventView :=
+  .leftJoin (.all eventsTable) (.all actorsTable)
+    (.eq (.var (Sum.inl EventsIndex.actor_id) .int) (.var (Sum.inr ActorsIndex.id) .int))
+
+/-- A joined row as the domain value. -/
+private def eventOfRow (row : eventView.Entry) : Event :=
+  { id := ⟨Int64.ofInt (row.value (eventCol EventsIndex.id))⟩
+    issueId := ⟨Int64.ofInt (row.value (eventCol EventsIndex.issue_id))⟩
+    actorId := (row.value (eventCol EventsIndex.actor_id)).map fun a => ⟨Int64.ofInt a⟩
+    actorName := row.value (eventActorCol ActorsIndex.display_name)
+    actorBot := (row.value (eventActorCol ActorsIndex.bot)).getD false
+    kind := row.value (eventCol EventsIndex.kind)
+    data := (Json.parse (row.value (eventCol EventsIndex.data))).toOption.getD (Json.mkObj [])
+    createdAt := ⟨Int64.ofInt (row.value (eventCol EventsIndex.created_at))⟩ }
 
 /-- Event kinds that do not notify participants (title/description/goal edits and label changes are
     frequent and rarely the activity someone wants to be pinged about; see issue #26). Still
@@ -40,20 +56,32 @@ private def silentEventKinds : List String := ["title", "description", "goal", "
 /-- Append one event to an issue's history. Recording activity also stamps the issue's
     `updated_at`, so "last updated" reflects comments, artifact/check changes, etc. — not just
     edits to the issue's own fields. Fans out a notification to the issue's participants (except
-    `actorId`, who triggered it), unless `kind` is a silent one. -/
+    `actorId`, who triggered it), unless `kind` is a silent one.
+
+    Both timestamps come from `nowSeconds`, where the insert left `created_at` to the column
+    default and the stamp on the issue was `unixepoch()`; the two agree to the second. -/
 def recordEvent (db : Conn) (issueId : IssueId) (actorId : Option ActorId) (kind : String)
     (data : Json := Json.mkObj []) : IO Unit := do
-  let dataStr := data.compress
-  db exec!"INSERT INTO events (issue_id, actor_id, kind, data) VALUES ({issueId}, {actorId}, {kind}, {dataStr})"
-  db exec!"UPDATE issues SET updated_at = unixepoch() WHERE id = {issueId}"
+  let now ← nowSeconds
+  run db do
+    HasModel.insert
+      ({ id := 0, issue_id := issueId.val.toInt, actor_id := actorId.map (·.val.toInt),
+         kind := kind, data := data.compress, created_at := now } : Schema.Events)
+    discard <| HasModel.update (α := Schema.Issues)
+      { value
+          | .updated_at => some (.int now)
+          | _ => none
+        condition := .eq (.var IssuesIndex.id .int) (.int issueId.val.toInt) }
   unless silentEventKinds.contains kind do
     fanOutNotification db issueId actorId kind data
 
 /-- All events on an issue, oldest first. -/
 def issueEvents (db : Conn) (issueId : IssueId) : IO (Array Event) := do
-  let rows ← (← db query!"SELECT e.id, e.issue_id, e.actor_id, a.display_name, a.bot, e.kind, e.data, e.created_at
-    FROM events e LEFT JOIN actors a ON a.id = e.actor_id WHERE e.issue_id = {issueId} ORDER BY e.id" as EventRow).toArray
-  pure (rows.map EventRow.toEvent)
+  let rows ← run db <| DBMonad.lookup <|
+    Query.orderBy [{ column := eventCol EventsIndex.id }]
+      (.filter (.eq (.var (eventCol EventsIndex.issue_id) .int) (.int issueId.val.toInt))
+        eventJoin)
+  return rows.map eventOfRow
 
 /-- Ids present in `new` but not in `old`. -/
 private def added [BEq α] (old new : Array α) : Array α := new.filter (!old.contains ·)

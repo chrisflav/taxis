@@ -1,20 +1,23 @@
 import Taxis.Json
-import SQLite
 
 /-!
 # Typed identifiers
 
-Each entity gets a distinct id type wrapping an `Int64` (the SQLite integer primary key),
-so ids for different entities cannot be mixed up. Each id serialises to/from a bare JSON
-number and binds/reads directly as a SQLite column.
+Each entity gets a distinct id type wrapping an `Int64` (the width of the generated integer
+primary key), so ids for different entities cannot be mixed up. Each id serialises to/from a bare
+JSON number.
+
+Nothing here knows about the database. The repositories convert at their edge — a row's `Int`
+column into the id type the domain names it by — which is the only place the two representations
+meet, and is why this module has no dependency on the driver.
 -/
 
 open Lean
 
 namespace Taxis
 
-/-- Declares a typed id wrapping `Int64`, with JSON and SQLite instances. `parse?`/`toString` are
-    built via `mkIdentFrom` (not plain identifiers in the quotation) so the generated names are
+/-- Declares a typed id wrapping `Int64`, with its JSON and string instances. `parse?`/`toString`
+    are built via `mkIdentFrom` (not plain identifiers in the quotation) so the generated names are
     the literal `$id.parse?`/`$id.toString` — a plain identifier here would be macro-hygienic and
     therefore unreachable by name from outside this macro. -/
 macro "declare_id " id:ident : command => do
@@ -24,7 +27,7 @@ macro "declare_id " id:ident : command => do
   `(
     structure $id where
       val : Int64
-    deriving DecidableEq, Repr, BEq, Hashable, Inhabited, SQLite.ResultColumn, SQLite.QueryParam
+    deriving DecidableEq, Repr, BEq, Hashable, Inhabited
 
     instance : ToJson $id where toJson x := toJson x.val
     instance : FromJson $id where fromJson? j := return { val := (← fromJson? (α := Int64) j) }
@@ -52,7 +55,7 @@ declare_id ReviewRequestId
 /-- A wall-clock instant, stored as Unix time in seconds. -/
 structure Timestamp where
   epochSeconds : Int64
-deriving DecidableEq, Repr, BEq, Inhabited, SQLite.ResultColumn, SQLite.QueryParam
+deriving DecidableEq, Repr, BEq, Inhabited
 
 instance : ToJson Timestamp where toJson x := toJson x.epochSeconds
 instance : FromJson Timestamp where fromJson? j := return { epochSeconds := (← fromJson? (α := Int64) j) }

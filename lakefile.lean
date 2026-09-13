@@ -16,7 +16,9 @@ package taxis where
   -- the headers explicitly (see docker/Dockerfile).
   moreLinkArgs := #["-lz"]
 
-require leansqlite from git "https://github.com/leanprover/leansqlite" @ "v4.31.0"
+-- A pin of the `db` library (typed schema, queries and migrations); moved forward deliberately.
+-- `db` pins `leansqlite` itself, so this package does not require it separately.
+require db from git "https://github.com/chrisflav/db" @ "179f8eea5c5c2eca0079c23aa54b76277c3cf472"
 
 target gzip.o pkg : FilePath := do
   let oFile := pkg.buildDir / "gzip.o"
@@ -38,6 +40,12 @@ lean_exe taxis where
 
 lean_exe test where
   root := `Tests
+
+/-- The migration command line: `makemigrations`, `check`, `showmigrations` and `migrate`. Build
+    tooling and an operator tool; the server applies the pending migrations itself at startup, so
+    the Docker image does not carry this. -/
+lean_exe «taxis-migrate» where
+  root := `Migrate
 
 /-- Generates the benchmark fixtures `bench/run.py` measures against. Not a default target: it is
     build tooling, and nothing that ships depends on it. -/

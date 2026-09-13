@@ -61,10 +61,6 @@ private def lexicon : Array String := #[
   "universe", "inductive", "structure", "namespace", "import", "module", "definition",
   "equality", "congruence", "induction", "recursion", "termination", "unification", "metavariable"]
 
-/-- `Nat` binds as a *blob* (`QueryParam Nat := QueryParam.asBlob`), which an INTEGER column
-    rejects outright — so every number written below goes through here first. -/
-private def i64 (n : Nat) : Int64 := Int64.ofNat n
-
 /-- `n` words of filler, drawn from the lexicon. -/
 private def words (r : Rng) (n : Nat) : String × Rng := Id.run do
   let mut out := ""
@@ -75,6 +71,10 @@ private def words (r : Rng) (n : Nat) : String × Rng := Id.run do
     out := if i == 0 then lexicon[k]! else out ++ " " ++ lexicon[k]!
   return (out, rng)
 
+/-- An explicit primary key. `AutoKey` is `Int` behind a plain `def`, so it carries `Int`'s
+    numerals but not its arithmetic: a computed id has to be built rather than written. -/
+private def key (n : Nat) : AutoKey := Int.ofNat n
+
 /-- How many actors, groups and labels the fixture carries. Fixed rather than scaled: these are
     reference data, and a tracker with a hundred thousand issues still has a couple of dozen
     people and a couple of dozen labels. Keeping them fixed is also what makes the issue count the
@@ -83,20 +83,34 @@ private def actorCount : Nat := 12
 private def labelCount : Nat := 12
 private def groupCount : Nat := 3
 
-private def seedReference (db : Conn) : IO Unit := do
+/-- The reference rows, written with the ids the issue rows go on to refer to.
+
+    `Taxis.Db.Schema.insertFull` rather than `HasModel.insert`, which would leave the key to the
+    database: the generator derives every foreign key arithmetically (`creator + 1`, `l + 1`, …)
+    instead of remembering what was assigned, so the ids have to be `1..n` by construction. -/
+private def seedReference (db : Conn) : IO Unit := run db do
   for i in [0:groupCount] do
-    db exec!"INSERT INTO groups (name, description) VALUES ({s!"group-{i}"}, {s!"visibility group {i}"})"
+    Schema.insertFull
+      ({ id := key (i + 1), name := s!"group-{i}",
+         description := some s!"visibility group {i}" } : Schema.Groups)
   for i in [0:actorCount] do
     -- Every fourth actor is a bot, and the first is an admin, so the fixture exercises both flags.
     let bot := i % 4 == 3
     let admin := i == 0
-    db exec!"INSERT INTO actors (email, display_name, admin, bot)
-      VALUES ({s!"actor{i}@example.invalid"}, {s!"Actor {i}"}, {admin}, {bot})"
+    Schema.insertFull
+      ({ id := key (i + 1), email := s!"actor{i}@example.invalid", display_name := s!"Actor {i}",
+         google_sub := none, github_id := none, admin := admin, bot := bot } : Schema.Actors)
   for i in [0:labelCount] do
-    db exec!"INSERT INTO labels (name, description, color)
-      VALUES ({s!"label-{i}"}, {s!"label number {i}"}, {"#6b7280"})"
+    Schema.insertFull
+      ({ id := key (i + 1), name := s!"label-{i}", description := some s!"label number {i}",
+         color := "#6b7280" } : Schema.Labels)
 
-/-- Populate `db` with `count` issues and their relations. -/
+/-- Populate `db` with `count` issues and their relations.
+
+    The issues carry their ids for the same reason the reference rows do — everything else in the
+    fixture points at them — so they too go in through `Schema.insertFull`. Comments and events
+    are the exception: nothing refers to them, so their keys are left to the database, exactly as
+    an application insert leaves them. -/
 def seed (db : Conn) (count : Nat) : IO Unit := do
   withTransaction db do
     seedReference db
@@ -118,46 +132,58 @@ def seed (db : Conn) (count : Nat) : IO Unit := do
       -- can never cycle.
       let (hasParent, r) := rng.chance 60; rng := r
       let (parentPick, r) := rng.upto (max 1 i); rng := r
-      let parent : Option Int64 := if hasParent && i > 0 then some (i64 (parentPick + 1)) else none
-      let createdAt := i64 (1700000000 + i * 137)
-      db exec!"INSERT INTO issues
-        (id, title, description, goal, state, locked, parent_id, creator_id, created_at, updated_at)
-        VALUES ({i64 id}, {title}, {description}, {goal}, {state}, {locked},
-                {parent}, {i64 (creator + 1)}, {createdAt}, {createdAt})"
+      let parent : Option Int := if hasParent && i > 0 then some (parentPick + 1) else none
+      let createdAt : Int := 1700000000 + i * 137
+      -- `deadline` is the one column the fixture leaves empty, which is what the insert now has to
+      -- say: the row is a value of the model, so every column is named whether or not it has a
+      -- default.
+      run db <| Schema.insertFull
+        ({ id := key id, title := title, description := description, goal := goal, state := state,
+           locked := locked, parent_id := parent, created_at := createdAt,
+           updated_at := createdAt, creator_id := some (creator + 1),
+           deadline := none } : Schema.Issues)
 
+      -- Each join table is keyed on the pair it holds, so a repeated draw conflicts and is
+      -- skipped: that is what `insertIfAbsent` says, where this said `INSERT OR IGNORE`.
       let (labelN, r) := rng.upto 4; rng := r
       for _ in [0:labelN] do
         let (l, r') := rng.upto labelCount; rng := r'
         rng := r'
-        db exec!"INSERT OR IGNORE INTO issue_labels (issue_id, label_id) VALUES ({i64 id}, {i64 (l + 1)})"
+        discard <| run db <| HasModel.insertIfAbsent
+          ({ issue_id := id, label_id := l + 1 } : Schema.IssueLabels)
 
       let (depN, r) := rng.upto 3; rng := r
       for _ in [0:depN] do
         let (d, r') := rng.upto (max 1 i); rng := r'
         rng := r'
         if d + 1 != id then
-          db exec!"INSERT OR IGNORE INTO issue_dependencies (issue_id, depends_on_id) VALUES ({i64 id}, {i64 (d + 1)})"
+          discard <| run db <| HasModel.insertIfAbsent
+            ({ issue_id := id, depends_on_id := d + 1 } : Schema.IssueDependencies)
 
       let (assigneeN, r) := rng.upto 3; rng := r
       for _ in [0:assigneeN] do
         let (a, r') := rng.upto actorCount; rng := r'
         rng := r'
-        db exec!"INSERT OR IGNORE INTO issue_assignees (issue_id, actor_id) VALUES ({i64 id}, {i64 (a + 1)})"
+        discard <| run db <| HasModel.insertIfAbsent
+          ({ issue_id := id, actor_id := a + 1 } : Schema.IssueAssignees)
 
       -- A tenth of issues are restricted to a group, so the visibility filter has work to do.
       let (restricted, r) := rng.chance 10; rng := r
       if restricted then
         let (g, r') := rng.upto groupCount; rng := r'
         rng := r'
-        db exec!"INSERT OR IGNORE INTO issue_visibility (issue_id, group_id) VALUES ({i64 id}, {i64 (g + 1)})"
+        discard <| run db <| HasModel.insertIfAbsent
+          ({ issue_id := id, group_id := g + 1 } : Schema.IssueVisibility)
 
       -- ~0.8 comments per issue.
       let (commentN, r) := rng.upto 3; rng := r
       for c in [0:commentN] do
         let (body, r') := words rng 70; rng := r'
         let (author, r'') := r'.upto actorCount; rng := r''
-        db exec!"INSERT INTO comments (issue_id, author_id, body, created_at, updated_at)
-          VALUES ({i64 id}, {i64 (author + 1)}, {body}, {createdAt + i64 (c * 60)}, {createdAt + i64 (c * 60)})"
+        run db <| HasModel.insert
+          ({ id := 0, issue_id := id, author_id := some (author + 1), body := body,
+             created_at := createdAt + c * 60, updated_at := createdAt + c * 60,
+             review := none } : Schema.Comments)
 
       -- ~3.5 events per issue. Description edits carry both the old and the new text, which is
       -- what makes an issue's history the largest part of its detail response.
@@ -167,11 +193,13 @@ def seed (db : Conn) (count : Nat) : IO Unit := do
         let (to_, r'') := r'.upto actorCount; rng := r''
         let (toText, r''') := words rng 40; rng := r'''
         let data := Lean.Json.mkObj [("from", from_), ("to", toText)] |>.compress
-        db exec!"INSERT INTO events (issue_id, actor_id, kind, data, created_at)
-          VALUES ({i64 id}, {i64 (to_ + 1)}, {"description"}, {data}, {createdAt + i64 (e * 30)})"
+        run db <| HasModel.insert
+          ({ id := 0, issue_id := id, actor_id := some (to_ + 1), kind := "description",
+             data := data, created_at := createdAt + e * 30 } : Schema.Events)
 
       -- Participants, so the notification queries have rows to scan.
-      db exec!"INSERT OR IGNORE INTO issue_participants (issue_id, actor_id) VALUES ({i64 id}, {i64 (creator + 1)})"
+      discard <| run db <| HasModel.insertIfAbsent
+        ({ issue_id := id, actor_id := creator + 1 } : Schema.IssueParticipants)
 
 end Taxis.Bench
 
