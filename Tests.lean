@@ -278,6 +278,16 @@ private def legacyCutoverTests (check : String → Bool → IO Unit) : IO Unit :
   let versionTable ← (Sqlite.query
     "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'schema_version'").run legacyDb
   check "the schema_version table is gone" versionTable.isEmpty
+  -- A converted database is a fresh one: it has applied exactly the migrations a fresh one has,
+  -- so every later migration reaches both by the same call.
+  check "the cutover records the initial migration"
+    ((← Taxis.Db.run legacyDb (Db.Migration.applied (m := Sqlite.M))) == #["0001_initial"])
+  -- The cutover runs `0001_initial`'s steps, which are the `CREATE INDEX`es as well as the
+  -- `CREATE TABLE`s; the old database had none of the indexes this release declares.
+  let issueIndexes ← Taxis.Db.run legacyDb do
+    let current ← DBMonadWithMigrations.currentDatabase
+    pure ((current.tables["issues"]?.map (·.indexes.map (·.name))).getD [])
+  check "the cutover creates the indexes" (issueIndexes.contains "idx_issues_updated")
   -- The converted database is an ordinary one, so migrating it again has nothing left to do; the
   -- fixed-point assertions inside `migrate` are what would object.
   let convertedTwice ←
@@ -314,6 +324,14 @@ def main : IO Unit := do
     try migrate db; pure true
     catch _ => pure false
   check "migrating a fresh database twice is fine" migratedTwice
+  -- What `taxis-migrate check` runs, and the reason the declaration and the migrations cannot
+  -- drift apart unnoticed: a schema change that nobody wrote a migration for fails here.
+  check "the declared schema matches the migrations"
+    (match Db.Migration.planSteps Taxis.Db.migrations Taxis.Db.Schema.schema with
+     | .ok [] => true
+     | _ => false)
+  check "a fresh database records the migrations it was built by"
+    ((← Taxis.Db.run db (Db.Migration.applied (m := Sqlite.M))) == #["0001_initial"])
 
   let g ← createGroup db { name := "core" }
   check "group created" (g.name == "core")

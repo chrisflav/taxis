@@ -98,21 +98,40 @@ to the backend on port 8080) and `lake exe taxis` in another terminal.
 
 ### Database
 
-There is nothing to set up: pointed at a path that does not exist, the server creates the database
-and every table, index and constraint the declaration names.
+The schema is declared in Lean — one `@[model]` structure per table plus the recipe that carries
+what a column cannot say, in `Taxis/Db/Schema.lean` — and a database is built by the **declarative
+migrations** committed under `Taxis/Db/Migrations/`. There is nothing to set up: pointed at a path
+that does not exist, the server creates the file and applies every migration to it, printing each.
+
+Every start does that: the migrations a database has not recorded are applied, and then the fixed
+point is asserted — the database is compared back against the declaration, and if any table,
+column, index or constraint still differs the server refuses to start rather than discovering it
+later, one failing query at a time.
 
 Pointed at a database an **earlier release** wrote, it converts it on first start. Those databases
 carry a `schema_version` table, and this release reads exactly one version, **14** — the last one
-the previous release left behind. Conversion is a rebuild rather than an `ALTER` ladder: every row
-is read out through the declared schema, the old tables are dropped, the new ones are created from
-the declaration and the rows are written back with their keys. It is announced on stdout and runs
-once; afterwards the database has no `schema_version` and is an ordinary database of this release.
-A database older than 14 is refused with a message saying so — run the **previous** release
-against it first, whose own migration brings any older database up to 14, then this one.
+the previous release left behind. Conversion is a rebuild: every row is read out, the old tables
+are dropped, the initial migration is run to create the new tables and their indexes, the rows go
+back in with their keys, and that migration is recorded — so what comes out is a database of this
+release with the old rows in it, and every later migration reaches it and a fresh one alike. It is
+announced on stdout and runs once. A database older than 14 is refused with a message saying so —
+run the **previous** release against it first, whose own migration brings any older database up to
+14, then this one.
 
-Every start ends by asserting the fixed point: after the schema update, the database is compared
-back against the declaration, and if any table, column, index or constraint still differs the
-server refuses to start rather than discovering it later, one failing query at a time.
+The rest is `lake exe taxis-migrate`, which reads the same configuration the server does
+(`--config <path>`, `ISSUES_CONFIG`, `config.toml`):
+
+| command | |
+| --- | --- |
+| `migrate` | apply the pending migrations without starting the server |
+| `showmigrations` | which of them a database has |
+| `makemigrations <desc>` | write the migration that closes the gap to the declaration |
+| `check` | exit 1, listing the missing steps, if the declaration is ahead |
+
+Build-time tooling rather than part of the deployment — the Docker image does not carry it, the
+server migrating itself — so a schema change is: edit the declaration, run `makemigrations <desc>`,
+add the generated `migration_NNNN_desc` to `Taxis.Db.migrations`. `check`, which the test suite
+runs too, is what keeps the declaration and the migrations in step.
 
 ### Run with Docker
 
