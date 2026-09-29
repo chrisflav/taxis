@@ -246,17 +246,31 @@ def getMe (cfg : Config) : IO (Except String Actor) := do
 
 /-! ## Display helpers -/
 
-/-- Format a `Timestamp` as an ISO-8601 UTC string, for CLI display. -/
-def epochToIso8601 (t : Timestamp) : IO String := do
-  let child ← IO.Process.spawn {
-    cmd := "date"
-    args := #["-u", "-d", s!"@{t.epochSeconds}", "+%Y-%m-%dT%H:%M:%SZ"]
-    stdout := .piped
-    stderr := .null
-    stdin := .null
-  }
-  let out ← child.stdout.readToEnd
-  let _ ← child.wait
-  return out.trimAscii.toString
+/-- `YYYY-MM-DDTHH:MM:SSZ` for a `Timestamp`, in UTC. The date is Howard Hinnant's
+    `civil_from_days` (proleptic Gregorian, counted in 400-year eras), with floor division so
+    instants before 1970 land on the right day. Pure, and cheap enough to call once per issue. -/
+def epochToIso8601Pure (t : Timestamp) : String :=
+  let pad (w : Nat) (n : Int) : String :=
+    let s := toString n.natAbs
+    (if n < 0 then "-" else "") ++ "".pushn '0' (w - s.length) ++ s
+  let e := t.epochSeconds.toInt
+  let days := e.fdiv 86400
+  let secs := e - days * 86400
+  -- Shift the epoch to 0000-03-01, so each year ends with its (possible) leap day.
+  let z := days + 719468
+  let era := z.fdiv 146097
+  let doe := z - era * 146097                                       -- [0, 146096]
+  let yoe := (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365  -- [0, 399]
+  let doy := doe - (365 * yoe + yoe / 4 - yoe / 100)                -- [0, 365]
+  let mp := (5 * doy + 2) / 153                                     -- [0, 11], from March
+  let day := doy - (153 * mp + 2) / 5 + 1
+  let month := if mp < 10 then mp + 3 else mp - 9
+  let year := yoe + era * 400 + (if month ≤ 2 then 1 else 0)
+  s!"{pad 4 year}-{pad 2 month}-{pad 2 day}T{pad 2 (secs / 3600)}:{pad 2 (secs / 60 % 60)}:{pad 2 (secs % 60)}Z"
+
+/-- Format a `Timestamp` as an ISO-8601 UTC string, for CLI display. In `IO` only so existing
+    callers keep compiling; this used to shell out to `date`, once per call. -/
+def epochToIso8601 (t : Timestamp) : IO String :=
+  pure (epochToIso8601Pure t)
 
 end Taxis.Client
