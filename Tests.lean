@@ -684,6 +684,19 @@ def main : IO Unit := do
   check "private visible to member" (visibleTo (some member) priv)
   check "private hidden from outsider" (!visibleTo (some outsider) priv)
 
+  IO.println "Timestamp formatting"
+  let iso (s : Int64) : String := Client.epochToIso8601Pure ⟨s⟩
+  check "epoch zero" (iso 0 == "1970-01-01T00:00:00Z")
+  check "leap day" (iso 951782400 == "2000-02-29T00:00:00Z")
+  check "day after a leap day" (iso 951868800 == "2000-03-01T00:00:00Z")
+  check "no leap day in 1900" (iso (-2203891200) == "1900-03-01T00:00:00Z")
+  check "end of year" (iso 1767225599 == "2025-12-31T23:59:59Z")
+  check "start of year" (iso 1767225600 == "2026-01-01T00:00:00Z")
+  check "recent instant" (iso 1790672550 == "2026-09-29T09:02:30Z")
+  check "one second before epoch" (iso (-1) == "1969-12-31T23:59:59Z")
+  check "negative epoch" (iso (-86401) == "1969-12-30T23:59:59Z")
+  check "IO wrapper agrees" ((← Client.epochToIso8601 ⟨1790672550⟩) == iso 1790672550)
+
   let n ← failures.get
   IO.println ""
   if n > 0 then
