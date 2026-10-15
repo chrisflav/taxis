@@ -154,9 +154,9 @@ private def workChecks : List (String × Bool) :=
     ("edit: a label add writes only labels, keeping the claim label",
       editBody { addLabels := ["ready"] } == some "{\"labels\":[10,11,12]}"),
     ("edit: completing drops the claim label and sets the state",
-      editBody { status := some .completed } == some "{\"state\":\"completed\",\"labels\":[11]}"),
+      editBody { status := some .completed } == some "{\"labels\":[11],\"state\":\"completed\"}"),
     ("edit: detach and clear dependencies",
-      editBody { parent := some none, dependencies := some #[] } == some "{\"parent\":null,\"dependencies\":[]}"),
+      editBody { parent := some none, dependencies := some #[] } == some "{\"dependencies\":[],\"parent\":null}"),
     ("edit: a new description keeps the target metadata",
       match Cli.Work.planEdit cur known #[] { description := some "Rewritten" } with
       | .ok u => (u.description.map Cli.Work.targetOf) == some (some tgt) &&
