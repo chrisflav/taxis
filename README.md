@@ -495,6 +495,93 @@ served at **`/docs`**, backed by the OpenAPI spec at `GET /api/openapi.json`.
   `POST /auth/password-login`, `GET /me`, `GET /session` (the current actor — `null` when signed
   out — plus which sign-in methods are configured; one request for what the top bar needs)
 
+## Command-line client
+
+The same `taxis` binary is also a client for a running server: `taxis <command> …` talks to the
+REST API, while `taxis` with no command (or `taxis serve [--config FILE] [-v]`) runs the server as
+before. It is meant for agents as much as people — every operation an agent needs to find, take,
+work on, hand back and review an issue is an ordinary shell command, with `--help` on each.
+
+```bash
+lake build taxis            # .lake/build/bin/taxis
+taxis --help                # every command
+taxis issue claim --help    # one command's options, and the endpoints it calls
+```
+
+### Configuration
+
+`~/.config/taxis/config.toml` (or `$XDG_CONFIG_HOME/taxis/config.toml`, or the file named by
+`TAXIS_CONFIG` / `--config`):
+
+```toml
+url = "https://taxis.example.org"   # server base URL; the client appends /api/...
+token = "issues_pat_…"              # an API token (Tokens page, or POST /api/me/tokens)
+```
+
+`TAXIS_URL` / `TAXIS_TOKEN` override the file, and `--url` / `--token` override both. Whenever a
+token is configured it is sent as `Authorization: Bearer <token>` on every request — whatever its
+value, so behind a credential-injecting proxy that replaces the header the configured token can be
+a placeholder. Without a token, reads still work on an open instance and writes answer 401.
+
+Requests are made with `curl`, so the standard proxy variables apply (`HTTPS_PROXY`,
+`HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY`, and the lower-case forms), and a custom CA is taken from
+`CURL_CA_BUNDLE` or `SSL_CERT_FILE`. Method, headers and body are handed to curl on its standard
+input, never as arguments, so the token does not show up in the process list.
+
+### Commands
+
+| Command | What it does | Calls |
+| --- | --- | --- |
+| `taxis issue list [--project ID] [--parent ID] [--status S] [--state S] [--label L]… [--assignee WHO] [-q TEXT] [--target-repo O/N] [--in-review] [--limit N]` | List issues. `--project` walks the parent tree; `--project P --status open` is the open, unclaimed work; `--in-review` is open, unclaimed issues with an attached PR | `GET /api/labels`, `GET /api/issues`, (`GET /api/actors`, `GET /api/issues/:id`) |
+| `taxis issue show ID` | Status, claim, target, labels, assignees, PRs, children, context-note titles, description, comments | `GET /api/issues/:id`, `GET /api/labels`, `GET /api/issues?parent=:id` |
+| `taxis issue create --title T [-d TEXT \| --description-file F] [--project ID \| --parent ID] [--target-repo O/N --target-branch B] [--depends-on ID]… [--label L]… [--assignee WHO]… [--goal G]` | Create an issue or sub-issue | `POST /api/issues` |
+| `taxis issue edit ID [--title] [-d \| --description-file] [--goal] [--status S \| --state S] [--target-repo --target-branch \| --clear-target] [--depends-on ID… \| --no-dependencies] [--parent ID\|none] [--add-label L] [--remove-label L] [--add-assignee W] [--remove-assignee W]` | Change only the named fields; labels and assignees are added/removed individually | `GET /api/issues/:id`, `GET /api/labels`, `PATCH /api/issues/:id` |
+| `taxis issue comment ID [TEXT] [-b TEXT \| --body-file F] [--approve \| --request-changes]` | Comment, optionally as a review | `POST /api/issues/:id/comments` |
+| `taxis issue comments ID` | The comment thread | `GET /api/issues/:id/comments` |
+| `taxis issue claim ID [--task ID] [--agent NAME] [--series S]` | Claim an open issue (fails with `already_claimed` if held) | `GET /api/issues/:id`, `POST /api/issues/:id/artifacts`, `PATCH /api/issues/:id` |
+| `taxis issue release ID [--reason R] [--keep-state]` | Drop the claim and reopen | `DELETE /api/artifacts/:id`, `PATCH /api/issues/:id` |
+| `taxis issue decide ID approve\|complete\|reject --notes TEXT` | Review verdict: a review comment, plus *complete* → completed, *reject* → reopened (both drop the claim) | `POST /api/issues/:id/comments`, `DELETE /api/artifacts/:id`, `PATCH /api/issues/:id` |
+| `taxis issue split ID --child TITLE [--child-description D]… \| --children-file F [--reason R]` | Create sub-issues (inheriting the target) and drop the claim | `POST /api/issues`, `POST /api/issues/:id/comments`, `DELETE /api/artifacts/:id`, `PATCH /api/issues/:id` |
+| `taxis issue attach-pr ID --repo O/N --number N --branch B` | Attach a pull request (puts the issue in review) | `POST /api/issues/:id/artifacts` |
+| `taxis context list ID` | Context notes in full | `GET /api/issues/:id` |
+| `taxis context add ID --title T (--text X \| --text-file F)` | Attach a context note | `POST /api/issues/:id/artifacts` |
+| `taxis context update ID NOTE_ID [--title T] [--text X \| --text-file F]` | Rewrite a note in place | `GET /api/issues/:id`, `PATCH /api/artifacts/:id` |
+| `taxis label list` | Labels | `GET /api/labels` |
+| `taxis project list` / `taxis project show ID` / `taxis project create --title T [--target-repo --target-branch]` | Projects | `GET /api/issues?label=…`, `GET /api/issues/:id`, `POST /api/issues` |
+| `taxis actor list` | Actors, by email | `GET /api/actors` |
+| `taxis whoami` | The actor the token authenticates as | `GET /api/me` |
+| `taxis config` | The resolved URL and where the token came from | — |
+
+Every command takes `--json` (print the server's JSON instead of text) and the configuration
+options. Text options ending in `-file` read standard input when given `-`. Ids may be written
+`12` or `#12`.
+
+Exit status: `0` on success; `1` when a request fails — the message is the HTTP status and the
+server's own error, e.g. `taxis: HTTP 404: issue 999 not found` — or a claim is refused; `2` for
+a usage mistake (unknown option, missing argument, unknown label or actor name).
+
+### Work conventions
+
+The issue commands read and write the conventions an orchestrator (Orchestra) layers on taxis, so
+a CLI-driven agent and the orchestrator see the same state:
+
+- a **project** is an issue labelled `t-project`; its issues are its descendants;
+- **status** is `open`/`claimed`/`completed`/`abandoned`: the issue's state (`closed` reads as
+  abandoned), and for an open issue whether it carries `o-claimed`;
+- a **claim** is a `session` artifact (`task_id`, `agent`, `claimed_at`) plus the `o-claimed`
+  label. `--task` (default `$TAXIS_TASK_ID`, else `taxis-cli`) names the holder; `split` and
+  `attach-pr` refuse when another task holds the claim. `o-claimed` and `t-project` cannot be set
+  by `issue edit` — they are maintained by `claim`/`release` and `project create`, and must exist
+  on the tracker (an administrator creates labels);
+- the **target** repository/branch lives in a fenced ` ```orchestra-meta ` block at the end of the
+  description, which the CLI strips when it shows the description and keeps when it rewrites it;
+  an issue without one inherits its project's;
+- attached **pull requests** are `github-pr` artifacts and **context notes** are `context`
+  artifacts.
+
+Merging an approved pull request is the orchestrator's job: `decide approve` only records the
+review.
+
 ## MCP
 
 `POST /mcp` serves the [Model Context Protocol](https://modelcontextprotocol.io) (Streamable
@@ -513,7 +600,8 @@ configured. See `taxis-plugin/README.md` for the tool list and example client co
 lake test
 ```
 
-Runs JSON round-trip, database, plugin-registry, and visibility tests.
+Runs JSON round-trip, database, plugin-registry, and visibility tests, and the command-line
+client's argument parsing, configuration, request building and work-convention planning.
 
 ## Design notes
 
