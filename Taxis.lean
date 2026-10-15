@@ -6,3 +6,4 @@ import Taxis.Db
 import Taxis.Repo
 import Taxis.Server
 import Taxis.Client
+import Taxis.Cli

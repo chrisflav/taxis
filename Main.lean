@@ -8,7 +8,7 @@ private def configArg (args : List String) : Except String (Option System.FilePa
   | [_] => .error "--config needs a path"
   | _ :: path :: _ => .ok (some path)
 
-def main (args : List String) : IO Unit := do
+def serveMain (args : List String) : IO Unit := do
   let configPath ← match configArg args with
     | .error e => do IO.eprintln s!"[taxis] {e}"; IO.Process.exit 1
     | .ok (some p) => pure (some p)
@@ -69,3 +69,13 @@ def main (args : List String) : IO Unit := do
   Async.block do
     let server ← serve ctx
     server.waitShutdown
+
+/-- `taxis serve [--config FILE] [-v]` (or no command at all) runs the server; `taxis <command>`
+    with one of the client's commands (`issue`, `context`, `label`, `project`, `actor`, `whoami`,
+    `config`, `help`) runs the command-line client against a server (`Taxis.Cli`). -/
+def main (args : List String) : IO UInt32 := do
+  match args with
+  | "serve" :: rest => serveMain rest; return 0
+  | _ =>
+    if Taxis.Cli.isClientInvocation args then Taxis.Cli.main args
+    else serveMain args; return 0

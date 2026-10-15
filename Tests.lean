@@ -15,6 +15,179 @@ private def roundtrips [ToJson α] [FromJson α] [BEq α] (x : α) : Bool :=
   | .ok y => x == y
   | .error _ => false
 
+private def okIs [BEq α] (e : Except String α) (x : α) : Bool :=
+  match e with
+  | .ok y => y == x
+  | .error _ => false
+
+/-! ## Command-line client
+
+Pure checks, kept out of `main`'s `do` block: they need no IO, and a long run of `match`es inside
+that block makes it slow to elaborate. -/
+
+private def parseChecks : List (String × Bool) :=
+  let opts : Array Cli.Opt := #[
+    { name := "title", short := some 't', metavar := some "TEXT", help := "" },
+    { name := "label", metavar := some "NAME", help := "", repeatable := true },
+    { name := "json", help := "" }]
+  let parsedOk (args : List String) (k : Cli.Parsed → Bool) : Bool :=
+    match Cli.parseArgs opts args with | .ok p => k p | .error _ => false
+  let invokes (args : List String) (path : List String) (k : Cli.Parsed → Bool := fun _ => true) :
+      Bool :=
+    match Cli.parseInvocation args with
+    | .run c p => c.path == path && k p
+    | _ => false
+  [ ("positional and options interleave",
+      parsedOk ["5", "--title", "x y", "--json", "6"] fun p =>
+        p.positional == #["5", "6"] && p.get? "title" == some "x y" && p.has "json"),
+    ("--name=value", parsedOk ["--title=a=b"] (·.get? "title" == some "a=b")),
+    ("short option", parsedOk ["-t", "hi"] (·.get? "title" == some "hi")),
+    ("repeatable collects in order",
+      parsedOk ["--label", "a", "--label", "b"] (·.getAll "label" == #["a", "b"])),
+    ("-- ends options", parsedOk ["--", "--title"] (·.positional == #["--title"])),
+    ("unknown option refused", (Cli.parseArgs opts ["--titel", "x"]).toOption.isNone),
+    ("missing value refused", (Cli.parseArgs opts ["--title"]).toOption.isNone),
+    ("switch takes no value", (Cli.parseArgs opts ["--json=1"]).toOption.isNone),
+    ("issue list with filters",
+      invokes ["issue", "list", "--status", "open", "--json"] ["issue", "list"]
+        fun p => p.get? "status" == some "open" && p.has "json"),
+    ("global options before the command",
+      invokes ["--json", "--url", "http://x", "issue", "show", "5"] ["issue", "show"]
+        fun p => p.has "json" && p.get? "url" == some "http://x" && p.positional == #["5"]),
+    ("two-word command", invokes ["issue", "attach-pr", "3", "--repo", "a/b"] ["issue", "attach-pr"]),
+    ("one-word command", invokes ["whoami"] ["whoami"]),
+    ("unknown verb is a usage error",
+      match Cli.parseInvocation ["issue", "frobnicate"] with | .usage .. => true | _ => false),
+    ("unknown option is a usage error",
+      match Cli.parseInvocation ["issue", "list", "--bogus"] with | .usage .. => true | _ => false),
+    ("--help shows the command's help",
+      match Cli.parseInvocation ["issue", "claim", "--help"] with
+      | .help t => t.startsWith "Usage: taxis issue claim" | _ => false),
+    ("bare noun lists its commands",
+      match Cli.parseInvocation ["context"] with
+      | .help t => (t.splitOn "context add").length > 1 | _ => false),
+    ("every command documents its endpoints (but config)",
+      Cli.commands.all fun c => !c.endpoints.isEmpty || c.path == ["config"]),
+    ("no arguments runs the server", !Cli.isClientInvocation []),
+    ("server flags run the server", !Cli.isClientInvocation ["--config", "x.toml", "-v"]),
+    ("a client command runs the client", Cli.isClientInvocation ["issue", "list"]),
+    ("global flag then command runs the client", Cli.isClientInvocation ["--json", "label", "list"]),
+    ("--help alone is the client's help", Cli.isClientInvocation ["--help"]) ]
+
+private def configChecks : List (String × Bool) :=
+  let fileCfg := Json.mkObj [("url", "https://taxis.example/"), ("token", "file-token")]
+  let noEnv : String → Option String := fun _ => none
+  let env (k : String) : Option String :=
+    if k == "TAXIS_TOKEN" then some "env-token" else if k == "TAXIS_URL" then some "http://env" else none
+  let resolves (r : Except String Cli.Settings) (k : Cli.Settings → Bool) : Bool :=
+    match r with | .ok s => k s | .error _ => false
+  [ ("config file url (trailing slash dropped) and token",
+      resolves (Cli.resolveSettings (some fileCfg) none noEnv none none)
+        fun s => s.url == "https://taxis.example" && s.token == some "file-token"),
+    ("environment overrides the file",
+      resolves (Cli.resolveSettings (some fileCfg) none env none none)
+        fun s => s.url == "http://env" && s.token == some "env-token"),
+    ("flags override everything",
+      resolves (Cli.resolveSettings (some fileCfg) none env (some "http://flag") (some "placeholder"))
+        fun s => s.url == "http://flag" && s.token == some "placeholder"),
+    ("no url is an error", (Cli.resolveSettings none none noEnv none none).toOption.isNone),
+    ("default config path under XDG_CONFIG_HOME",
+      Cli.defaultConfigPath (fun k => if k == "XDG_CONFIG_HOME" then some "/x" else if k == "HOME" then some "/h" else none)
+        == some "/x/taxis/config.toml"),
+    ("default config path under HOME",
+      Cli.defaultConfigPath (fun k => if k == "HOME" then some "/h" else none) == some "/h/.config/taxis/config.toml") ]
+
+private def requestChecks : List (String × Bool) :=
+  let cfgT : Client.Config := { url := "http://h", token := some "placeholder" }
+  let cc := Http.curlConfig "PATCH" "http://h/api/issues/3" #[("Authorization", "Bearer tok")]
+    (some "{\"title\":\"x\"}") (some "/etc/ca.pem")
+  let has (s : String) := (cc.splitOn s).length == 2
+  [ ("token sent as a bearer header, placeholder or not",
+      (Client.apiHeaders cfgT).contains ("Authorization", "Bearer placeholder")),
+    ("no token, no Authorization header",
+      !(Client.apiHeaders { cfgT with token := none }).any (·.1 == "Authorization")),
+    ("api url", Client.apiUrl cfgT "/issues/3" == "http://h/api/issues/3"),
+    ("query encoding", Client.buildQuery #[("q", "a b&c"), ("state", "open")] == "?q=a%20b%26c&state=open"),
+    ("curl quoting", Http.curlQuote "a\"b\\c\nd" == "\"a\\\"b\\\\c\\nd\""),
+    ("curl config carries the method", has "request = \"PATCH\""),
+    ("curl config carries the auth header", has "header = \"Authorization: Bearer tok\""),
+    ("curl config carries the body as data-raw", has "data-raw = \"{\\\"title\\\":\\\"x\\\"}\""),
+    ("curl config carries the CA bundle", has "cacert = \"/etc/ca.pem\""),
+    ("curl config ends with the url", cc.endsWith "url = \"http://h/api/issues/3\"\n"),
+    ("server error message extracted", Http.errorMessage "{\"error\":\"issue 9 not found\"}" == "issue 9 not found"),
+    ("non-JSON error body kept", Http.errorMessage "Bad Gateway\n" == "Bad Gateway") ]
+
+private def workChecks : List (String × Bool) :=
+  let tgt : Cli.Work.RepoTarget := { repo := "acme/w", branch := "main" }
+  let withMeta := Cli.Work.replaceTarget "Do it." (some (some tgt))
+  let known : Array Label := #[{ id := ⟨10⟩, name := "o-claimed" }, { id := ⟨11⟩, name := "bug" },
+    { id := ⟨12⟩, name := "Ready" }]
+  let alice : Actor := { id := ⟨1⟩, email := "alice@x", displayName := "Alice" }
+  let bob : Actor := { id := ⟨2⟩, email := "bob@x", displayName := "Bob" }
+  let cur : Issue := { id := ⟨7⟩, title := "t", description := withMeta, labels := #[⟨10⟩, ⟨11⟩],
+                       createdAt := ⟨0⟩, updatedAt := ⟨0⟩ }
+  let editBody (r : Cli.Work.EditRequest) : Option String :=
+    (Cli.Work.planEdit cur known #[] r).toOption.map (Client.issueUpdateBody · |>.compress)
+  let mk (i : Int64) (p : Option Int64) : Issue :=
+    { id := ⟨i⟩, title := "", parent := p.map (⟨·⟩), createdAt := ⟨0⟩, updatedAt := ⟨0⟩ }
+  let createReq : Cli.Work.CreateRequest :=
+    { title := "New", parent := some ⟨1⟩, target := some tgt, labels := ["bug"], assignees := ["Alice"] }
+  [ ("target round-trips through the description", Cli.Work.targetOf withMeta == some tgt),
+    ("human text strips the metadata", Cli.Work.humanText withMeta == "Do it."),
+    ("replacing the text keeps the target",
+      Cli.Work.targetOf (Cli.Work.replaceHuman withMeta "New text") == some tgt &&
+      Cli.Work.humanText (Cli.Work.replaceHuman withMeta "New text") == "New text"),
+    ("clearing the target", Cli.Work.replaceTarget withMeta (some none) == "Do it."),
+    ("other metadata survives a target change",
+      ((Cli.Work.decodeMeta (Cli.Work.replaceTarget (Cli.Work.encodeMeta "p" [("reviewer", Json.mkObj [])])
+        (some (some tgt)))).2.getObjVal? "reviewer").toOption.isSome),
+    ("parse repo", okIs (Cli.Work.parseRepo "a/b") "a/b" && (Cli.Work.parseRepo "ab").toOption.isNone),
+    ("status: open + claim label is claimed", Cli.Work.statusOf .open #[⟨10⟩] (some ⟨10⟩) == .claimed),
+    ("status: closed is abandoned", Cli.Work.statusOf .closed #[⟨10⟩] (some ⟨10⟩) == .abandoned),
+    ("label add keeps the rest",
+      okIs (Cli.Work.planLabels known #[⟨10⟩, ⟨11⟩] ["ready"] []) #[⟨10⟩, ⟨11⟩, ⟨12⟩]),
+    ("label remove, case-insensitively", okIs (Cli.Work.planLabels known #[⟨10⟩, ⟨11⟩] [] ["BUG"]) #[⟨10⟩]),
+    ("reserved labels refused", (Cli.Work.planLabels known #[] ["o-claimed"] []).toOption.isNone),
+    ("unknown label refused", (Cli.Work.planLabels known #[] ["nope"] []).toOption.isNone),
+    ("assignees by name or email",
+      okIs (Cli.Work.planAssignees #[alice, bob] #[⟨1⟩] ["BOB"] ["alice@x"]) #[⟨2⟩]),
+    ("edit: a label add writes only labels, keeping the claim label",
+      editBody { addLabels := ["ready"] } == some "{\"labels\":[10,11,12]}"),
+    ("edit: completing drops the claim label and sets the state",
+      editBody { status := some .completed } == some "{\"labels\":[11],\"state\":\"completed\"}"),
+    ("edit: detach and clear dependencies",
+      editBody { parent := some none, dependencies := some #[] } == some "{\"dependencies\":[],\"parent\":null}"),
+    ("edit: a new description keeps the target metadata",
+      match Cli.Work.planEdit cur known #[] { description := some "Rewritten" } with
+      | .ok u => (u.description.map Cli.Work.targetOf) == some (some tgt) &&
+                 (u.description.map Cli.Work.humanText) == some "Rewritten"
+      | .error _ => false),
+    ("edit: --status and --state together refused",
+      (Cli.Work.planEdit cur known #[] { status := some .open, state := some .open }).toOption.isNone),
+    ("create: labels, assignees, parent and target",
+      match Cli.Work.planCreate known #[alice] createReq with
+      | .ok i => i.labels == #[⟨11⟩] && i.assignees == #[⟨1⟩] && i.parent == some ⟨1⟩ &&
+                 Cli.Work.targetOf i.description == some tgt
+      | .error _ => false),
+    ("split: children from options",
+      okIs (Cli.Work.childrenFromOptions #[("child", "A"), ("child-description", "da"), ("task", "x"), ("child", "B")])
+        #[{ title := "A", description := "da" }, { title := "B" }]),
+    ("split: a description before any child is refused",
+      (Cli.Work.childrenFromOptions #[("child-description", "d")]).toOption.isNone),
+    ("split: children from JSON",
+      okIs (Cli.Work.childrenFromJson (Json.arr #[Json.mkObj [("title", "A"), ("target_repo", "o/r"), ("target_branch", "b")]]))
+        #[{ title := "A", target := some { repo := "o/r", branch := "b" } }]),
+    ("descendants of a project",
+      (Cli.Work.descendantsOf #[mk 1 none, mk 2 (some 1), mk 3 (some 2), mk 4 none] ⟨1⟩).map (·.id.val) == #[2, 3]),
+    ("claim payload",
+      ((Cli.Work.sessionPayload "t1" "claude" "2026-01-01T00:00:00Z").getObjValAs? String "task_id").toOption == some "t1"),
+    ("pr payload carries the url the handler requires",
+      okIs ((Cli.Work.prPayload "a/b" 7 "feat").getObjValAs? String "url") "https://github.com/a/b/pull/7") ]
+
+private def cliChecks : List (String × List (String × Bool)) :=
+  [ ("CLI: argument parsing", parseChecks), ("CLI: configuration", configChecks),
+    ("CLI: requests", requestChecks), ("CLI: work conventions", workChecks) ]
+
 set_option maxRecDepth 4000 in
 def main : IO Unit := do
   let failures ← IO.mkRef 0
@@ -696,6 +869,10 @@ def main : IO Unit := do
   check "one second before epoch" (iso (-1) == "1969-12-31T23:59:59Z")
   check "negative epoch" (iso (-86401) == "1969-12-30T23:59:59Z")
   check "IO wrapper agrees" ((← Client.epochToIso8601 ⟨1790672550⟩) == iso 1790672550)
+
+  for (section_, checks) in cliChecks do
+    IO.println section_
+    for (name, ok) in checks do check name ok
 
   let n ← failures.get
   IO.println ""

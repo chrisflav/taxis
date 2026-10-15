@@ -34,13 +34,13 @@ instance : FromJson Config where
 
 /-! ## Transport -/
 
-private def apiHeaders (cfg : Config) : Array (String × String) :=
+def apiHeaders (cfg : Config) : Array (String × String) :=
   let base := #[("Content-Type", "application/json")]
   match cfg.token with
   | some t => base.push ("Authorization", s!"Bearer {t}")
   | none => base
 
-private def apiUrl (cfg : Config) (path : String) : String := s!"{cfg.url}/api{path}"
+def apiUrl (cfg : Config) (path : String) : String := s!"{cfg.url}/api{path}"
 
 private def hexDigit (n : Nat) : Char :=
   if n < 10 then Char.ofNat (n + '0'.toNat) else Char.ofNat (n - 10 + 'A'.toNat)
@@ -51,12 +51,12 @@ private def byteToPercent (b : UInt8) : String :=
 /-- Minimal percent-encoding for query parameter values (issue titles/search terms may contain
     spaces, `&`, `#`, etc.). Leaves alphanumerics and a handful of safe punctuation characters
     untouched. -/
-private def urlEncode (s : String) : String :=
+def urlEncode (s : String) : String :=
   String.join (s.toList.map fun c =>
     if c.isAlphanum || c == '-' || c == '_' || c == '.' || c == '~' then String.singleton c
     else String.join (c.toString.toUTF8.toList.map byteToPercent))
 
-private def buildQuery (params : Array (String × String)) : String :=
+def buildQuery (params : Array (String × String)) : String :=
   if params.isEmpty then ""
   else "?" ++ "&".intercalate (params.map (fun (k, v) => s!"{k}={urlEncode v}")).toList
 
@@ -76,14 +76,18 @@ private def decode [FromJson α] (j : Json) : Except String α := FromJson.fromJ
 
 /-! ## Issues -/
 
-/-- `GET /issues`, optionally filtered. -/
+/-- `GET /issues`, optionally filtered. `parent` keeps only the direct children of that issue,
+    `assignee` only the issues assigned to that actor. -/
 def listIssues (cfg : Config) (state : Option IssueState := none) (label : Option LabelId := none)
-    (q : Option String := none) (limit : Option Nat := none) (offset : Option Nat := none) :
+    (q : Option String := none) (limit : Option Nat := none) (offset : Option Nat := none)
+    (parent : Option IssueId := none) (assignee : Option ActorId := none) :
     IO (Except String (Array Issue)) := do
   let mut params : Array (String × String) := #[]
   if let some s := state then params := params.push ("state", s.toString)
   if let some l := label then params := params.push ("label", toString l.val)
   if let some q := q then params := params.push ("q", q)
+  if let some p := parent then params := params.push ("parent", toString p.val)
+  if let some a := assignee then params := params.push ("assignee", toString a.val)
   if let some n := limit then params := params.push ("limit", toString n)
   if let some n := offset then params := params.push ("offset", toString n)
   match ← get cfg "/issues" params with
@@ -116,7 +120,7 @@ def getIssue (cfg : Config) (id : IssueId) : IO (Except String Issue) := do
     contract in `Taxis.Json`). `IssueUpdate`'s derived `ToJson` always emits every field (`null`
     for `none`), which would clear `parent`/`deadline` instead of leaving them untouched, so it is
     not used here. -/
-private def issueUpdateBody (u : IssueUpdate) : Json :=
+def issueUpdateBody (u : IssueUpdate) : Json :=
   let opt (k : String) (v? : Option Json) : List (String × Json) := (v?.map fun v => [(k, v)]).getD []
   let tri (k : String) (v?? : Option (Option Json)) : List (String × Json) :=
     match v?? with
